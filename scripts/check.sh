@@ -26,3 +26,9 @@ CLANG_MODULE_CACHE_PATH="$clang_module_cache" \
     --cache-path "$swift_cache" \
     --config-path "$swift_config" \
     --security-path "$swift_security"
+SWIFTPM_MODULECACHE_OVERRIDE="$swift_module_cache" \
+CLANG_MODULE_CACHE_PATH="$clang_module_cache" \
+/usr/bin/xcrun swift test \
+    --cache-path "$swift_cache" \
+    --config-path "$swift_config" \
+    --security-path "$swift_security"

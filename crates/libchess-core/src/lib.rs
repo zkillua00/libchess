@@ -5,6 +5,7 @@ use std::{collections::BTreeSet, fmt, sync::Arc};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 /// Stable identifier used by configuration and the frontend protocol.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -47,6 +48,8 @@ pub enum PlatformCapability {
     Challenges,
     LiveGames,
     Matchmaking,
+    #[serde(rename = "oauth_pkce")]
+    OAuthPkce,
     PgnExport,
     RealtimeEvents,
 }
@@ -82,7 +85,7 @@ impl AccessToken {
         }
         if !value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
         {
             return Err(LibChessError::invalid_input(
                 "the access token contains unsupported characters",
@@ -94,12 +97,71 @@ impl AccessToken {
     pub fn expose(&self) -> &str {
         &self.0
     }
+
+    pub fn duplicate(&self) -> Self {
+        Self(self.0.clone())
+    }
 }
 
 impl fmt::Debug for AccessToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AccessToken([REDACTED])")
     }
+}
+
+impl Drop for AccessToken {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OAuthClientConfiguration {
+    pub client_id: String,
+    pub redirect_uri: String,
+}
+
+impl OAuthClientConfiguration {
+    pub fn new(
+        client_id: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Result<Self, LibChessError> {
+        let client_id = client_id.into();
+        let redirect_uri = redirect_uri.into();
+
+        if client_id.is_empty() || client_id.len() > 128 {
+            return Err(LibChessError::invalid_input(
+                "the OAuth client identifier must contain between 1 and 128 bytes",
+            ));
+        }
+        if client_id.chars().any(char::is_whitespace) {
+            return Err(LibChessError::invalid_input(
+                "the OAuth client identifier cannot contain whitespace",
+            ));
+        }
+        if redirect_uri.is_empty() || redirect_uri.len() > 2048 {
+            return Err(LibChessError::invalid_input(
+                "the OAuth redirect URI must contain between 1 and 2048 bytes",
+            ));
+        }
+
+        Ok(Self {
+            client_id,
+            redirect_uri,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OAuthAuthorization {
+    pub provider: ProviderId,
+    pub authorization_url: String,
+    pub scopes: Vec<String>,
+}
+
+pub struct OAuthToken {
+    pub access_token: AccessToken,
+    pub expires_in_seconds: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -167,10 +229,27 @@ pub trait PlatformBackend: Send + Sync {
     async fn account(&self) -> Result<Account, LibChessError>;
 }
 
+#[async_trait]
+pub trait PlatformOAuthSession: Send {
+    fn authorization(&self) -> &OAuthAuthorization;
+
+    async fn exchange(self: Box<Self>, callback_url: &str) -> Result<OAuthToken, LibChessError>;
+}
+
 pub trait PlatformBackendFactory: Send + Sync {
     fn descriptor(&self) -> &ProviderDescriptor;
 
     fn create(&self, token: AccessToken) -> Result<Arc<dyn PlatformBackend>, LibChessError>;
+
+    fn begin_oauth(
+        &self,
+        _configuration: OAuthClientConfiguration,
+    ) -> Result<Box<dyn PlatformOAuthSession>, LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not support OAuth PKCE",
+            self.descriptor().id
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +260,16 @@ mod tests {
     fn access_tokens_are_redacted() {
         let token = AccessToken::new("lio_secret123").expect("valid token");
         assert_eq!(format!("{token:?}"), "AccessToken([REDACTED])");
+        assert!(AccessToken::new("opaque-._~+/=").is_ok());
+        assert!(AccessToken::new("unsafe\ntoken").is_err());
+    }
+
+    #[test]
+    fn oauth_configuration_rejects_ambiguous_values() {
+        assert!(OAuthClientConfiguration::new("libchess", "org.libchess://oauth").is_ok());
+        assert!(OAuthClientConfiguration::new("", "org.libchess://oauth").is_err());
+        assert!(OAuthClientConfiguration::new("lib chess", "org.libchess://oauth").is_err());
+        assert!(OAuthClientConfiguration::new("libchess", "").is_err());
     }
 
     #[test]
@@ -195,5 +284,13 @@ mod tests {
         assert!(ProviderId::new("chess-com").is_ok());
         assert!(ProviderId::new("Chess.com").is_err());
         assert!(ProviderId::new("").is_err());
+    }
+
+    #[test]
+    fn oauth_capability_has_a_stable_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&PlatformCapability::OAuthPkce).expect("serialize capability"),
+            r#""oauth_pkce""#
+        );
     }
 }

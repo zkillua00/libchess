@@ -44,6 +44,9 @@ libchess_client_t *libchess_client_create(
  * Commands use a UTF-8 JSON envelope with `version: 1`, an optional
  * `request_id`, and one of these payloads:
  *
+ * {"type":"begin_oauth","provider":"lichess","client_id":"...","redirect_uri":"..."}
+ * {"type":"complete_oauth","callback_url":"..."}
+ * {"type":"cancel_oauth"}
  * {"type":"list_providers"}
  * {"type":"connect","provider":"lichess","access_token":"..."}
  * {"type":"refresh_account"}
@@ -66,4 +69,3 @@ void libchess_client_destroy(libchess_client_t *client);
 #endif
 
 #endif
-

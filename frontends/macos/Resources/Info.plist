@@ -10,6 +10,19 @@
     <string>LibChessMac</string>
     <key>CFBundleIdentifier</key>
     <string>org.libchess.macos</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>org.libchess.macos.oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>org.libchess.macos</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -28,4 +41,3 @@
     <true/>
 </dict>
 </plist>
-

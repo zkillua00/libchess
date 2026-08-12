@@ -8,17 +8,15 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var account: ChessAccount?
     @Published public private(set) var connectionState = ConnectionState.disconnected
     @Published public private(set) var savedCredentialAvailable = false
+    @Published public private(set) var authorizationURL: URL?
     @Published public var message: String?
 
     private let decoder: JSONDecoder
     private let tokenStore = KeychainTokenStore()
     private var nativeClient: NativeClient?
-    private var pendingToken: String?
 
     public init() {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        self.decoder = decoder
+        decoder = JSONDecoder()
 
         do {
             savedCredentialAvailable = try tokenStore.load(provider: "lichess") != nil
@@ -30,16 +28,15 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    public func connectToLichess(accessToken: String) {
-        let token = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else {
-            message = "Enter a Lichess access token."
-            return
-        }
-
-        pendingToken = token
+    public func beginLichessOAuth() {
         message = nil
-        send(ConnectCommand(provider: "lichess", accessToken: token))
+        send(
+            BeginOAuthCommand(
+                provider: "lichess",
+                clientID: LichessOAuth.clientID,
+                redirectURI: LichessOAuth.redirectURI
+            )
+        )
     }
 
     public func connectUsingSavedCredential() {
@@ -49,10 +46,31 @@ public final class LibChessStore: ObservableObject {
                 message = "No saved Lichess credential was found."
                 return
             }
-            connectToLichess(accessToken: token)
+            message = nil
+            send(ConnectCommand(provider: "lichess", accessToken: token))
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    @discardableResult
+    public func handleOpenURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == LichessOAuth.callbackScheme,
+              url.host?.lowercased() == "oauth",
+              url.path == "/lichess"
+        else {
+            return false
+        }
+
+        authorizationURL = nil
+        message = nil
+        send(CompleteOAuthCommand(callbackURL: url.absoluteString))
+        return true
+    }
+
+    public func cancelOAuth() {
+        authorizationURL = nil
+        send(BasicCommand(type: "cancel_oauth"))
     }
 
     public func refreshAccount() {
@@ -63,7 +81,7 @@ public final class LibChessStore: ObservableObject {
     public func disconnect(forgetCredential: Bool = false) {
         send(BasicCommand(type: "disconnect"))
         account = nil
-        pendingToken = nil
+        authorizationURL = nil
 
         guard forgetCredential else {
             return
@@ -106,11 +124,14 @@ public final class LibChessStore: ObservableObject {
                 }
                 if event.state == .disconnected {
                     account = nil
-                    pendingToken = nil
+                    authorizationURL = nil
                 }
             case "account_updated":
                 account = event.account
-                persistPendingCredential()
+            case "oauth_authorization_required":
+                receiveAuthorizationURL(event.authorizationURL)
+            case "oauth_credential_issued":
+                persistOAuthCredential(event)
             case "error":
                 message = event.error?.message ?? "LibChess reported an unknown error."
             default:
@@ -121,30 +142,98 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    private func persistPendingCredential() {
-        guard let pendingToken else {
+    private func receiveAuthorizationURL(_ value: String?) {
+        guard let value,
+              let url = URL(string: value),
+              url.scheme == "https",
+              url.host == "lichess.org"
+        else {
+            message = "LibChess returned an invalid Lichess authorization URL."
             return
         }
+        authorizationURL = url
+    }
+
+    private func persistOAuthCredential(_ event: WireEvent) {
+        guard let token = event.accessToken,
+              !token.isEmpty,
+              token.count <= 4096
+        else {
+            message = "Lichess returned an invalid OAuth credential."
+            return
+        }
+        let provider = event.provider ?? "lichess"
         do {
-            try tokenStore.save(pendingToken, provider: "lichess")
+            try tokenStore.save(token, provider: provider)
             savedCredentialAvailable = true
-            self.pendingToken = nil
         } catch {
             message = "Connected, but the credential could not be saved: \(error.localizedDescription)"
         }
     }
 }
 
-private struct BasicCommand: Encodable {
+public enum LichessOAuth {
+    public static let clientID = "org.libchess.macos"
+    public static let callbackScheme = "org.libchess.macos"
+    public static let redirectURI = "org.libchess.macos://oauth/lichess"
+}
+
+struct BasicCommand: Encodable {
     let version = LIBCHESS_API_VERSION
     let requestID = UUID().uuidString
     let type: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+    }
 }
 
-private struct ConnectCommand: Encodable {
+struct ConnectCommand: Encodable {
     let version = LIBCHESS_API_VERSION
     let requestID = UUID().uuidString
     let type = "connect"
     let provider: String
     let accessToken: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case provider
+        case accessToken = "access_token"
+    }
+}
+
+struct BeginOAuthCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "begin_oauth"
+    let provider: String
+    let clientID: String
+    let redirectURI: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case provider
+        case clientID = "client_id"
+        case redirectURI = "redirect_uri"
+    }
+}
+
+struct CompleteOAuthCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "complete_oauth"
+    let callbackURL: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case callbackURL = "callback_url"
+    }
 }

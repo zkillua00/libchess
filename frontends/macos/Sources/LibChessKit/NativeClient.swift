@@ -80,7 +80,6 @@ final class NativeClient {
 
     func send<Command: Encodable>(_ command: Command) throws {
         let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
         let data = try encoder.encode(command)
         let result = data.withUnsafeBytes { rawBuffer -> Int32 in
             let bytes = rawBuffer.bindMemory(to: UInt8.self)

@@ -7,9 +7,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use libchess::{Account, Client, LibChessError, ProviderDescriptor};
-use serde::{Deserialize, Serialize};
+use libchess::{AccessToken, Account, Client, LibChessError, OAuthConnection, ProviderDescriptor};
+use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
+use zeroize::Zeroize;
 
 const API_VERSION: u32 = 1;
 
@@ -45,7 +46,7 @@ impl EventSink {
             event,
         };
 
-        let Ok(bytes) = serde_json::to_vec(&envelope) else {
+        let Ok(mut bytes) = serde_json::to_vec(&envelope) else {
             return;
         };
 
@@ -54,6 +55,7 @@ impl EventSink {
             bytes.as_ptr(),
             bytes.len(),
         );
+        bytes.zeroize();
     }
 }
 
@@ -74,6 +76,15 @@ struct CommandEnvelope {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Command {
+    BeginOauth {
+        provider: String,
+        client_id: String,
+        redirect_uri: String,
+    },
+    CancelOauth,
+    CompleteOauth {
+        callback_url: String,
+    },
     Connect {
         provider: String,
         access_token: String,
@@ -106,6 +117,16 @@ enum Event {
     Error {
         error: LibChessError,
     },
+    OauthAuthorizationRequired {
+        provider: String,
+        authorization_url: String,
+        scopes: Vec<String>,
+    },
+    OauthCredentialIssued {
+        provider: String,
+        access_token: SerializableAccessToken,
+        expires_in_seconds: u64,
+    },
     Providers {
         providers: Vec<ProviderDescriptor>,
     },
@@ -117,9 +138,21 @@ enum Event {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ConnectionState {
+    Authorizing,
     Connected,
     Connecting,
     Disconnected,
+}
+
+struct SerializableAccessToken(AccessToken);
+
+impl Serialize for SerializableAccessToken {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0.expose())
+    }
 }
 
 async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: EventSink) {
@@ -137,6 +170,98 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
             WorkerMessage::Command(envelope) => {
                 let request_id = envelope.request_id.as_deref();
                 match envelope.command {
+                    Command::BeginOauth {
+                        provider,
+                        client_id,
+                        redirect_uri,
+                    } => match client.begin_oauth(&provider, client_id, redirect_uri) {
+                        Ok(authorization) => {
+                            sink.emit(
+                                request_id,
+                                Event::ConnectionStateChanged {
+                                    state: ConnectionState::Authorizing,
+                                    provider: Some(provider),
+                                },
+                            );
+                            sink.emit(
+                                request_id,
+                                Event::OauthAuthorizationRequired {
+                                    provider: authorization.provider.to_string(),
+                                    authorization_url: authorization.authorization_url,
+                                    scopes: authorization.scopes,
+                                },
+                            );
+                        }
+                        Err(error) => {
+                            sink.emit(request_id, Event::Error { error });
+                            sink.emit(
+                                request_id,
+                                Event::ConnectionStateChanged {
+                                    state: ConnectionState::Disconnected,
+                                    provider: None,
+                                },
+                            );
+                        }
+                    },
+                    Command::CancelOauth => {
+                        client.cancel_oauth();
+                        sink.emit(
+                            request_id,
+                            Event::ConnectionStateChanged {
+                                state: ConnectionState::Disconnected,
+                                provider: None,
+                            },
+                        );
+                    }
+                    Command::CompleteOauth { callback_url } => {
+                        sink.emit(
+                            request_id,
+                            Event::ConnectionStateChanged {
+                                state: ConnectionState::Connecting,
+                                provider: None,
+                            },
+                        );
+                        match client.complete_oauth(&callback_url).await {
+                            Ok(OAuthConnection {
+                                account,
+                                access_token,
+                                expires_in_seconds,
+                            }) => {
+                                let provider = account.provider.to_string();
+                                sink.emit(
+                                    request_id,
+                                    Event::OauthCredentialIssued {
+                                        provider: provider.clone(),
+                                        access_token: SerializableAccessToken(access_token),
+                                        expires_in_seconds,
+                                    },
+                                );
+                                sink.emit(
+                                    request_id,
+                                    Event::AccountUpdated {
+                                        account: account.clone(),
+                                    },
+                                );
+                                sink.emit(
+                                    request_id,
+                                    Event::ConnectionStateChanged {
+                                        state: ConnectionState::Connected,
+                                        provider: Some(provider),
+                                    },
+                                );
+                            }
+                            Err(error) => {
+                                sink.emit(request_id, Event::Error { error });
+                                sink.emit(
+                                    request_id,
+                                    Event::ConnectionStateChanged {
+                                        state: ConnectionState::Disconnected,
+                                        provider: None,
+                                    },
+                                );
+                            }
+                        }
+                    }
                     Command::ListProviders => sink.emit(
                         request_id,
                         Event::Providers {
@@ -386,6 +511,49 @@ mod tests {
             unsafe { libchess_client_send(client, malformed.as_ptr(), malformed.len()) },
             SEND_INVALID_JSON
         );
+
+        // SAFETY: This is the only destroy and no sends run concurrently.
+        unsafe { libchess_client_destroy(client) };
+        drop(sender);
+    }
+
+    #[test]
+    fn emits_a_browser_authorization_request_for_oauth() {
+        let (sender, receiver) = std_mpsc::channel::<String>();
+        let sender = Box::new(sender);
+        let context = (&*sender as *const std_mpsc::Sender<String>)
+            .cast_mut()
+            .cast();
+        // SAFETY: The boxed sender outlives the client and callback.
+        let client = unsafe { libchess_client_create(Some(collect_event), context) };
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ready event");
+        let command = br#"{"version":1,"request_id":"oauth-1","type":"begin_oauth","provider":"lichess","client_id":"org.libchess.macos","redirect_uri":"org.libchess.macos://oauth/lichess"}"#;
+
+        assert_eq!(
+            unsafe { libchess_client_send(client, command.as_ptr(), command.len()) },
+            SEND_OK
+        );
+
+        let state = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("authorization state event");
+        assert!(state.contains(r#""state":"authorizing""#));
+        let authorization = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("authorization URL event");
+        let event: serde_json::Value =
+            serde_json::from_str(&authorization).expect("authorization event JSON");
+        assert_eq!(event["type"], "oauth_authorization_required");
+        assert_eq!(event["provider"], "lichess");
+        assert_eq!(event["scopes"], serde_json::json!(["board:play"]));
+        let url = event["authorization_url"]
+            .as_str()
+            .expect("authorization URL");
+        assert!(url.starts_with("https://lichess.org/oauth?"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(!url.contains("code_verifier"));
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

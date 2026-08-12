@@ -45,5 +45,9 @@ let package = Package(
             name: "LibChessMac",
             dependencies: ["LibChessKit"]
         ),
+        .testTarget(
+            name: "LibChessKitTests",
+            dependencies: ["LibChessKit"]
+        ),
     ]
 )

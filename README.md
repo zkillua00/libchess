@@ -42,13 +42,20 @@ library:
 open .build/LibChess.app
 ```
 
-The current machine only has Apple Command Line Tools selected. The Swift
-package can still be compiled, but creating, signing, and distributing a normal
-`.app` bundle requires the full Xcode installation.
+## Lichess sign-in
 
-For this bootstrap slice, the macOS screen accepts a Lichess personal access
-token with the `board:play` scope and keeps it in Keychain. Public releases
-will use Lichess OAuth Authorization Code + PKCE instead of asking users for a
-token.
+The macOS app uses Lichess OAuth Authorization Code with PKCE. Choose **Sign in
+with Lichess**, approve the narrowly fixed `board:play` scope in the system
+browser, and Lichess returns to the app through
+`org.libchess.macos://oauth/lichess`. The Rust adapter creates and validates the
+PKCE transaction and exchanges the one-time code. The macOS wrapper stores the
+validated access token in Keychain.
+
+The callback scheme and OAuth client identifier are tied to the macOS bundle
+identifier, `org.libchess.macos`. A distributable fork should choose its own
+bundle identifier and update `LichessOAuth` plus `Info.plist` together.
+
+The release build is deliberately small: the app links the Rust library as a
+single dynamic library and uses the operating system browser and Keychain.
 
 No license has been selected yet. Add one before publishing the repository.

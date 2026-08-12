@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: LibChessStore
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationSplitView {
@@ -23,6 +24,14 @@ struct ContentView: View {
             }
         } message: {
             Text(store.message ?? "")
+        }
+        .onChange(of: store.authorizationURL) { _, authorizationURL in
+            if let authorizationURL {
+                openURL(authorizationURL)
+            }
+        }
+        .onOpenURL { callbackURL in
+            _ = store.handleOpenURL(callbackURL)
         }
     }
 
@@ -52,13 +61,15 @@ struct ContentView: View {
         switch store.connectionState {
         case .connected:
             ConnectedView()
+        case .authorizing:
+            AuthorizingView()
         case .connecting:
             VStack(spacing: 14) {
                 ProgressView()
                     .controlSize(.large)
-                Text("Connecting to Lichess…")
+                Text("Finishing Lichess sign-in…")
                     .font(.headline)
-                Text("LibChess is validating the credential directly with Lichess.")
+                Text("LibChess is exchanging the one-time code and validating your account.")
                     .foregroundStyle(.secondary)
             }
         case .disconnected:
@@ -69,6 +80,7 @@ struct ContentView: View {
     private var statusTitle: String {
         switch store.connectionState {
         case .connected: "Connected"
+        case .authorizing: "Waiting for sign-in"
         case .connecting: "Connecting"
         case .disconnected: "Not connected"
         }
@@ -77,6 +89,7 @@ struct ContentView: View {
     private var statusSymbol: String {
         switch store.connectionState {
         case .connected: "checkmark.circle.fill"
+        case .authorizing: "safari"
         case .connecting: "arrow.triangle.2.circlepath"
         case .disconnected: "circle.dashed"
         }
@@ -85,6 +98,7 @@ struct ContentView: View {
     private var statusColor: Color {
         switch store.connectionState {
         case .connected: .green
+        case .authorizing: .blue
         case .connecting: .orange
         case .disconnected: .secondary
         }
@@ -93,7 +107,6 @@ struct ContentView: View {
 
 private struct ConnectView: View {
     @EnvironmentObject private var store: LibChessStore
-    @State private var token = ""
 
     var body: some View {
         VStack {
@@ -104,25 +117,18 @@ private struct ConnectView: View {
                     .foregroundStyle(.tint)
 
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("Connect Lichess")
+                    Text("Sign in to Lichess")
                         .font(.largeTitle.bold())
-                    Text("This first vertical slice validates your account through the Rust provider layer. The public app will replace this developer token step with OAuth PKCE.")
+                    Text("LibChess opens Lichess in your browser and asks only for permission to play games on your behalf.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                SecureField("Personal access token", text: $token)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        store.connectToLichess(accessToken: token)
-                    }
-
                 HStack {
-                    Button("Connect") {
-                        store.connectToLichess(accessToken: token)
+                    Button("Sign in with Lichess") {
+                        store.beginLichessOAuth()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     if store.savedCredentialAvailable {
                         Button("Use Saved Credential") {
@@ -131,15 +137,10 @@ private struct ConnectView: View {
                     }
 
                     Spacer()
-
-                    Link(
-                        "Manage Lichess tokens",
-                        destination: URL(string: "https://lichess.org/account/oauth/token")!
-                    )
                 }
 
                 Label(
-                    "The token is sent only to Lichess and is stored in macOS Keychain after validation.",
+                    "Authentication stays in your browser. The resulting credential is stored in macOS Keychain after Lichess validates it.",
                     systemImage: "lock.shield"
                 )
                 .font(.callout)
@@ -151,6 +152,48 @@ private struct ConnectView: View {
             Spacer()
         }
         .padding(32)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct AuthorizingView: View {
+    @EnvironmentObject private var store: LibChessStore
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Spacer()
+
+            Image(systemName: "safari")
+                .font(.system(size: 58))
+                .foregroundStyle(.tint)
+
+            VStack(spacing: 8) {
+                Text("Finish signing in through Lichess")
+                    .font(.largeTitle.bold())
+                Text("Approve the board:play permission in your browser. LibChess will continue automatically when Lichess returns you here.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 520)
+            }
+
+            HStack(spacing: 12) {
+                if let authorizationURL = store.authorizationURL {
+                    Button("Reopen Browser") {
+                        openURL(authorizationURL)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Button("Cancel", role: .cancel) {
+                    store.cancelOAuth()
+                }
+            }
+
+            Spacer()
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -180,13 +223,13 @@ private struct ConnectedView: View {
                 Button("Disconnect") {
                     store.disconnect()
                 }
-                Button("Disconnect and Forget", role: .destructive) {
+                Button("Disconnect and Remove from This Mac", role: .destructive) {
                     store.disconnect(forgetCredential: true)
                 }
             }
 
             GroupBox("Next vertical slice") {
-                Text("OAuth PKCE, incoming event streaming, active games, and the native board will attach here without changing the frontend/backend boundary.")
+                Text("Incoming event streaming, active games, and the native board will attach here without changing the frontend/backend boundary.")
                     .frame(maxWidth: 520, alignment: .leading)
                     .foregroundStyle(.secondary)
                     .padding(6)
@@ -200,4 +243,3 @@ private struct ConnectedView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
-

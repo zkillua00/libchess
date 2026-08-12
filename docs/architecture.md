@@ -41,7 +41,9 @@ not a substitute chess server. They intentionally implement different ports:
 The provider descriptor advertises capabilities implemented by the current
 adapter build. A frontend can therefore hide unsupported actions without
 branching on `provider == lichess`; it never advertises merely theoretical
-platform capabilities.
+platform capabilities. Capability names are forward-compatible wire values:
+native wrappers retain unknown names so adding a backend capability does not
+prevent an older frontend from starting.
 
 New platform adapters register a factory with `ClientBuilder`; existing native
 frontends continue to use the same command/event protocol.
@@ -57,12 +59,45 @@ offline analysis, and local computer games are separate contexts.
 
 Provider adapters receive credentials in memory but never persist or log them.
 Each native wrapper owns secure persistence using its platform facility. The
-macOS wrapper uses Keychain. The planned OAuth flow is split cleanly:
+macOS wrapper uses Keychain. OAuth is split cleanly:
 
-1. Rust creates the PKCE authorization request.
-2. The native frontend opens the system browser and receives the callback.
-3. Rust validates the callback and exchanges the code.
-4. The native wrapper stores the resulting opaque token securely.
+1. The frontend asks `libchess` to begin OAuth for an advertised provider.
+2. The provider adapter creates the state, verifier, S256 challenge, and
+   authorization URL. It owns the pending session and fixes the scopes it
+   supports; the frontend cannot broaden them.
+3. The native frontend opens the system browser and receives the callback.
+4. Rust checks the callback target, expiry, unique state, and authorization
+   result before exchanging the one-time code.
+5. The adapter validates the token response and account before returning the
+   credential to the native wrapper for secure persistence.
+
+For Lichess, the implemented scope is `board:play`, the pending authorization
+expires after ten minutes, and code challenge method `S256` is mandatory. The
+PKCE verifier never enters an FFI command or event. The access token crosses
+the ABI once in a dedicated credential event because secure storage is an OS
+responsibility; Rust redacts it from debug output and zeroizes owned copies on
+drop.
+
+The corresponding frontend-neutral exchange is:
+
+```text
+begin_oauth command
+        |
+        v
+oauth_authorization_required event ---> native system browser
+                                                |
+                                                v
+complete_oauth command <---------------- callback URL
+        |
+        +-- oauth_credential_issued event ---> OS credential store
+        +-- account_updated event
+        `-- connected state
+```
+
+Windows and Linux will supply their own client identifier, callback URI,
+browser launcher, and credential store while reusing this exact backend
+protocol. A future Chess.com adapter can own a different OAuth endpoint and
+scope policy behind the same provider factory.
 
 ## Concurrency and streaming
 

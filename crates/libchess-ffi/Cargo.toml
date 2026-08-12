@@ -13,4 +13,4 @@ libchess = { path = "../libchess" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-
+zeroize.workspace = true

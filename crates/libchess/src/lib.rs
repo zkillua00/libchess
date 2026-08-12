@@ -3,8 +3,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 pub use libchess_core::{
-    AccessToken, Account, ChessContext, ErrorKind, LibChessError, PlatformBackend,
-    PlatformBackendFactory, PlatformCapability, ProviderDescriptor, ProviderId,
+    AccessToken, Account, ChessContext, ErrorKind, LibChessError, OAuthAuthorization,
+    OAuthClientConfiguration, OAuthToken, PlatformBackend, PlatformBackendFactory,
+    PlatformCapability, PlatformOAuthSession, ProviderDescriptor, ProviderId,
     ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
@@ -35,6 +36,7 @@ impl ClientBuilder {
             factories: self.factories,
             backend: None,
             account: None,
+            oauth_session: None,
         }
     }
 }
@@ -49,6 +51,13 @@ pub struct Client {
     factories: BTreeMap<ProviderId, Arc<dyn PlatformBackendFactory>>,
     backend: Option<Arc<dyn PlatformBackend>>,
     account: Option<Account>,
+    oauth_session: Option<Box<dyn PlatformOAuthSession>>,
+}
+
+pub struct OAuthConnection {
+    pub account: Account,
+    pub access_token: AccessToken,
+    pub expires_in_seconds: u64,
 }
 
 impl Client {
@@ -68,16 +77,70 @@ impl Client {
         provider: &str,
         access_token: String,
     ) -> Result<Account, LibChessError> {
+        self.connect_with_access_token(provider, AccessToken::new(access_token)?)
+            .await
+    }
+
+    async fn connect_with_access_token(
+        &mut self,
+        provider: &str,
+        access_token: AccessToken,
+    ) -> Result<Account, LibChessError> {
         let id = ProviderId::new(provider)?;
         let factory = self.factories.get(&id).ok_or_else(|| {
             LibChessError::unsupported(format!("provider '{provider}' is not installed"))
         })?;
-        let backend = factory.create(AccessToken::new(access_token)?)?;
+        let backend = factory.create(access_token)?;
         let account = backend.account().await?;
 
         self.backend = Some(backend);
         self.account = Some(account.clone());
         Ok(account)
+    }
+
+    pub fn begin_oauth(
+        &mut self,
+        provider: &str,
+        client_id: String,
+        redirect_uri: String,
+    ) -> Result<OAuthAuthorization, LibChessError> {
+        let id = ProviderId::new(provider)?;
+        let factory = self.factories.get(&id).ok_or_else(|| {
+            LibChessError::unsupported(format!("provider '{provider}' is not installed"))
+        })?;
+        let configuration = OAuthClientConfiguration::new(client_id, redirect_uri)?;
+        let session = factory.begin_oauth(configuration)?;
+        let authorization = session.authorization().clone();
+        self.oauth_session = Some(session);
+        Ok(authorization)
+    }
+
+    pub async fn complete_oauth(
+        &mut self,
+        callback_url: &str,
+    ) -> Result<OAuthConnection, LibChessError> {
+        let session = self.oauth_session.take().ok_or_else(|| {
+            LibChessError::invalid_input("there is no pending OAuth authorization request")
+        })?;
+        let provider = session.authorization().provider.clone();
+        let OAuthToken {
+            access_token,
+            expires_in_seconds,
+        } = session.exchange(callback_url).await?;
+        let token_for_storage = access_token.duplicate();
+        let account = self
+            .connect_with_access_token(provider.as_str(), access_token)
+            .await?;
+
+        Ok(OAuthConnection {
+            account,
+            access_token: token_for_storage,
+            expires_in_seconds,
+        })
+    }
+
+    pub fn cancel_oauth(&mut self) -> bool {
+        self.oauth_session.take().is_some()
     }
 
     pub async fn refresh_account(&mut self) -> Result<Account, LibChessError> {
@@ -91,6 +154,7 @@ impl Client {
     }
 
     pub fn disconnect(&mut self) {
+        self.oauth_session = None;
         self.account = None;
         self.backend = None;
     }
@@ -123,9 +187,37 @@ mod tests {
                 .contains(&PlatformCapability::Account)
         );
         assert!(
+            providers[0]
+                .capabilities
+                .contains(&PlatformCapability::OAuthPkce)
+        );
+        assert!(
             !providers[0]
                 .capabilities
                 .contains(&PlatformCapability::LiveGames)
         );
+    }
+
+    #[test]
+    fn starts_and_cancels_provider_owned_oauth() {
+        let mut client = Client::new();
+
+        let authorization = client
+            .begin_oauth(
+                "lichess",
+                "org.libchess.macos".to_owned(),
+                "org.libchess.macos://oauth/lichess".to_owned(),
+            )
+            .expect("OAuth authorization");
+
+        assert_eq!(authorization.provider.as_str(), "lichess");
+        assert_eq!(authorization.scopes, ["board:play"]);
+        assert!(
+            authorization
+                .authorization_url
+                .starts_with("https://lichess.org/oauth?")
+        );
+        assert!(client.cancel_oauth());
+        assert!(!client.cancel_oauth());
     }
 }
