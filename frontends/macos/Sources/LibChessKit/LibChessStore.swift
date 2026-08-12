@@ -9,11 +9,15 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var connectionState = ConnectionState.disconnected
     @Published public private(set) var savedCredentialAvailable = false
     @Published public private(set) var authorizationURL: URL?
+    @Published public private(set) var createdBotGame: BotGame?
+    @Published public private(set) var gameURLToOpen: URL?
+    @Published public private(set) var isCreatingBotGame = false
     @Published public var message: String?
 
     private let decoder: JSONDecoder
     private let tokenStore = KeychainTokenStore()
     private var nativeClient: NativeClient?
+    private var pendingBotGameRequestID: String?
 
     public init() {
         decoder = JSONDecoder()
@@ -78,10 +82,71 @@ public final class LibChessStore: ObservableObject {
         send(BasicCommand(type: "refresh_account"))
     }
 
+    public var connectedProvider: ProviderDescriptor? {
+        guard let provider = account?.provider else {
+            return nil
+        }
+        return providers.first(where: { $0.id == provider })
+    }
+
+    public var supportsBotGames: Bool {
+        guard let descriptor = connectedProvider else {
+            return false
+        }
+        return descriptor.capabilities.contains(.botGames) && !descriptor.botOpponents.isEmpty
+    }
+
+    public var botOpponents: [BotOpponent] {
+        connectedProvider?.botOpponents ?? []
+    }
+
+    public func createBotGame(
+        opponentID: String,
+        initialSeconds: Int,
+        incrementSeconds: Int,
+        color: GameColorPreference
+    ) {
+        guard !isCreatingBotGame else {
+            return
+        }
+        guard botOpponents.contains(where: { $0.id == opponentID }),
+              (1 ... 10_800).contains(initialSeconds),
+              (0 ... 60).contains(incrementSeconds)
+        else {
+            message = "Choose an available bot and valid clock settings."
+            return
+        }
+
+        message = nil
+        createdBotGame = nil
+        gameURLToOpen = nil
+        isCreatingBotGame = true
+        let command = CreateBotGameCommand(
+            opponentID: opponentID,
+            initialSeconds: UInt32(initialSeconds),
+            incrementSeconds: UInt32(incrementSeconds),
+            color: color
+        )
+        pendingBotGameRequestID = command.requestID
+        let sent = send(command)
+        if !sent {
+            isCreatingBotGame = false
+            pendingBotGameRequestID = nil
+        }
+    }
+
+    public func didOpenCreatedGame() {
+        gameURLToOpen = nil
+    }
+
     public func disconnect(forgetCredential: Bool = false) {
         send(BasicCommand(type: "disconnect"))
         account = nil
         authorizationURL = nil
+        createdBotGame = nil
+        gameURLToOpen = nil
+        isCreatingBotGame = false
+        pendingBotGameRequestID = nil
 
         guard forgetCredential else {
             return
@@ -94,14 +159,17 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    private func send<Command: Encodable>(_ command: Command) {
+    @discardableResult
+    private func send<Command: Encodable>(_ command: Command) -> Bool {
         do {
             guard let nativeClient else {
                 throw NativeClientError.couldNotCreate
             }
             try nativeClient.send(command)
+            return true
         } catch {
             message = error.localizedDescription
+            return false
         }
     }
 
@@ -132,7 +200,13 @@ public final class LibChessStore: ObservableObject {
                 receiveAuthorizationURL(event.authorizationURL)
             case "oauth_credential_issued":
                 persistOAuthCredential(event)
+            case "bot_game_created":
+                receiveBotGame(event.game, requestID: event.requestID)
             case "error":
+                if event.requestID == pendingBotGameRequestID {
+                    isCreatingBotGame = false
+                    pendingBotGameRequestID = nil
+                }
                 message = event.error?.message ?? "LibChess reported an unknown error."
             default:
                 break
@@ -169,6 +243,44 @@ public final class LibChessStore: ObservableObject {
         } catch {
             message = "Connected, but the credential could not be saved: \(error.localizedDescription)"
         }
+    }
+
+    private func receiveBotGame(_ game: BotGame?, requestID: String?) {
+        guard let pendingBotGameRequestID,
+              requestID == pendingBotGameRequestID
+        else {
+            return
+        }
+        self.pendingBotGameRequestID = nil
+
+        guard let game,
+              let provider = connectedProvider,
+              game.provider == provider.id,
+              botOpponents.contains(game.opponent),
+              game.id.utf8.count == 8,
+              game.id.utf8.allSatisfy({ byte in
+                  (48 ... 57).contains(byte)
+                      || (65 ... 90).contains(byte)
+                      || (97 ... 122).contains(byte)
+              }),
+              let url = URL(string: game.url),
+              let providerWebURLValue = provider.webURL,
+              let providerWebURL = URL(string: providerWebURLValue),
+              providerWebURL.scheme?.lowercased() == "https",
+              url.scheme?.lowercased() == providerWebURL.scheme?.lowercased(),
+              url.host?.lowercased() == providerWebURL.host?.lowercased(),
+              url.port == providerWebURL.port,
+              url.user == nil,
+              url.password == nil
+        else {
+            isCreatingBotGame = false
+            message = "LibChess returned an invalid bot game destination."
+            return
+        }
+
+        isCreatingBotGame = false
+        createdBotGame = game
+        gameURLToOpen = url
     }
 }
 
@@ -235,5 +347,39 @@ struct CompleteOAuthCommand: Encodable {
         case requestID = "request_id"
         case type
         case callbackURL = "callback_url"
+    }
+}
+
+struct CreateBotGameCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID: String
+    let type = "create_bot_game"
+    let opponentID: String
+    let initialSeconds: UInt32
+    let incrementSeconds: UInt32
+    let color: GameColorPreference
+
+    init(
+        requestID: String = UUID().uuidString,
+        opponentID: String,
+        initialSeconds: UInt32,
+        incrementSeconds: UInt32,
+        color: GameColorPreference
+    ) {
+        self.requestID = requestID
+        self.opponentID = opponentID
+        self.initialSeconds = initialSeconds
+        self.incrementSeconds = incrementSeconds
+        self.color = color
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case opponentID = "opponent_id"
+        case initialSeconds = "initial_seconds"
+        case incrementSeconds = "increment_seconds"
+        case color
     }
 }

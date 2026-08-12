@@ -58,4 +58,16 @@ bundle identifier and update `LichessOAuth` plus `Info.plist` together.
 The release build is deliberately small: the app links the Rust library as a
 single dynamic library and uses the operating system browser and Keychain.
 
+## Create a bot game
+
+After connecting, the macOS app can create a casual standard game against a
+bot advertised by the active provider. Lichess currently advertises its eight
+AI levels. Choose the opponent, a blitz-or-slower clock, and your preferred
+color, then select **Create and Open**. The first slice opens the resulting game
+on Lichess; native board play and move streaming are the next layer.
+
+The frontend sends an opaque bot opponent identifier through the shared C ABI.
+It does not encode Lichess's numeric-level API. This leaves a future Chess.com
+adapter free to advertise named bot personalities through the same contract.
+
 No license has been selected yet. Add one before publishing the repository.

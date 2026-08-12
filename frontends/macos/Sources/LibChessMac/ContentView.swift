@@ -30,6 +30,12 @@ struct ContentView: View {
                 openURL(authorizationURL)
             }
         }
+        .onChange(of: store.gameURLToOpen) { _, gameURL in
+            if let gameURL {
+                openURL(gameURL)
+                store.didOpenCreatedGame()
+            }
+        }
         .onOpenURL { callbackURL in
             _ = store.handleOpenURL(callbackURL)
         }
@@ -202,44 +208,226 @@ private struct ConnectedView: View {
     @EnvironmentObject private var store: LibChessStore
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(spacing: 16) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 46))
+                        .foregroundStyle(.green)
 
-            Image(systemName: "person.crop.circle.badge.checkmark")
-                .font(.system(size: 64))
-                .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.account?.displayName ?? "Connected")
+                            .font(.title.bold())
+                        Text("\(store.connectedProvider?.displayName ?? "Chess provider") account verified through LibChess")
+                            .foregroundStyle(.secondary)
+                    }
 
-            VStack(spacing: 8) {
-                Text(store.account?.displayName ?? "Connected")
-                    .font(.largeTitle.bold())
-                Text("Lichess account verified through LibChess")
-                    .foregroundStyle(.secondary)
-            }
+                    Spacer()
 
-            HStack(spacing: 12) {
-                Button("Refresh Account") {
-                    store.refreshAccount()
+                    Menu("Account") {
+                        Button("Refresh Account") {
+                            store.refreshAccount()
+                        }
+                        Button("Disconnect") {
+                            store.disconnect()
+                        }
+                        Divider()
+                        Button("Disconnect and Remove from This Mac", role: .destructive) {
+                            store.disconnect(forgetCredential: true)
+                        }
+                    }
                 }
-                Button("Disconnect") {
-                    store.disconnect()
+
+                if store.supportsBotGames {
+                    BotGameCreatorView()
+                } else {
+                    GroupBox("Play a bot") {
+                        Label(
+                            "The connected provider does not advertise bot game creation.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                    }
                 }
-                Button("Disconnect and Remove from This Mac", role: .destructive) {
-                    store.disconnect(forgetCredential: true)
+
+                if let game = store.createdBotGame {
+                    CreatedBotGameView(game: game)
+                }
+
+                GroupBox("Coming next") {
+                    Text("The native board, game-state stream, move submission, clocks, and game actions will attach to the created game in the next slices.")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(.secondary)
+                        .padding(6)
                 }
             }
-
-            GroupBox("Next vertical slice") {
-                Text("Incoming event streaming, active games, and the native board will attach here without changing the frontend/backend boundary.")
-                    .frame(maxWidth: 520, alignment: .leading)
-                    .foregroundStyle(.secondary)
-                    .padding(6)
-            }
-            .frame(maxWidth: 560)
-
-            Spacer()
+            .padding(32)
+            .frame(maxWidth: 760)
         }
-        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct BotGameCreatorView: View {
+    @EnvironmentObject private var store: LibChessStore
+    @State private var opponentID = ""
+    @State private var timeControl = BotTimeControlPreset.rapid
+    @State private var color = GameColorPreference.random
+
+    var body: some View {
+        GroupBox("Play a bot") {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Create a casual standard game against a bot from \(store.connectedProvider?.displayName ?? "the connected provider"). The opponent catalog comes from LibChess, so this frontend does not encode provider-specific bot levels.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 14) {
+                    GridRow {
+                        Text("Opponent")
+                        Picker("Opponent", selection: opponentSelection) {
+                            ForEach(store.botOpponents) { opponent in
+                                Text(opponent.displayName).tag(opponent.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    GridRow {
+                        Text("Time control")
+                        Picker("Time control", selection: $timeControl) {
+                            ForEach(BotTimeControlPreset.options) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    GridRow {
+                        Text("Play as")
+                        Picker("Play as", selection: $color) {
+                            Label("White", systemImage: "circle.fill")
+                                .tag(GameColorPreference.white)
+                            Label("Random", systemImage: "shuffle")
+                                .tag(GameColorPreference.random)
+                            Label("Black", systemImage: "circle")
+                                .tag(GameColorPreference.black)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+                }
+
+                HStack {
+                    Label("Standard chess · Casual · Blitz or slower", systemImage: "checkmark.shield")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Button {
+                        store.createBotGame(
+                            opponentID: selectedOpponentID,
+                            initialSeconds: timeControl.initialSeconds,
+                            incrementSeconds: timeControl.incrementSeconds,
+                            color: color
+                        )
+                    } label: {
+                        HStack(spacing: 7) {
+                            if store.isCreatingBotGame {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(store.isCreatingBotGame ? "Creating…" : "Create and Open")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isCreatingBotGame || selectedOpponentID.isEmpty)
+                }
+            }
+            .padding(10)
+        }
+    }
+
+    private var selectedOpponentID: String {
+        if store.botOpponents.contains(where: { $0.id == opponentID }) {
+            return opponentID
+        }
+        guard !store.botOpponents.isEmpty else {
+            return ""
+        }
+        return store.botOpponents[(store.botOpponents.count - 1) / 2].id
+    }
+
+    private var opponentSelection: Binding<String> {
+        Binding(
+            get: { selectedOpponentID },
+            set: { opponentID = $0 }
+        )
+    }
+}
+
+private struct CreatedBotGameView: View {
+    let game: BotGame
+
+    var body: some View {
+        GroupBox("Last created game") {
+            HStack(spacing: 14) {
+                Image(systemName: "checkerboard.rectangle")
+                    .font(.title)
+                    .foregroundStyle(.tint)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game.opponent.displayName)
+                        .font(.headline)
+                    Text("\(game.playerColor.label) · \(game.clock.label)")
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if let url = URL(string: game.url) {
+                    Link("Open Game", destination: url)
+                }
+            }
+            .padding(8)
+        }
+    }
+}
+
+private struct BotTimeControlPreset: Hashable, Identifiable {
+    let initialSeconds: Int
+    let incrementSeconds: Int
+
+    var id: String { "\(initialSeconds)-\(incrementSeconds)" }
+    var label: String { "\(initialSeconds / 60) + \(incrementSeconds)" }
+
+    static let rapid = Self(initialSeconds: 600, incrementSeconds: 0)
+    static let options = [
+        Self(initialSeconds: 180, incrementSeconds: 0),
+        Self(initialSeconds: 180, incrementSeconds: 2),
+        Self(initialSeconds: 300, incrementSeconds: 0),
+        Self(initialSeconds: 300, incrementSeconds: 3),
+        rapid,
+        Self(initialSeconds: 900, incrementSeconds: 10),
+        Self(initialSeconds: 1_800, incrementSeconds: 0),
+    ]
+}
+
+private extension PlayerColor {
+    var label: String {
+        switch self {
+        case .white: "Playing White"
+        case .black: "Playing Black"
+        }
+    }
+}
+
+private extension ClockTimeControl {
+    var label: String {
+        "\(initialSeconds / 60) + \(incrementSeconds)"
     }
 }

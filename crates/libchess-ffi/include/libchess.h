@@ -49,6 +49,7 @@ libchess_client_t *libchess_client_create(
  * {"type":"cancel_oauth"}
  * {"type":"list_providers"}
  * {"type":"connect","provider":"lichess","access_token":"..."}
+ * {"type":"create_bot_game","opponent_id":"level-4","initial_seconds":600,"increment_seconds":0,"color":"random"}
  * {"type":"refresh_account"}
  * {"type":"disconnect"}
  */

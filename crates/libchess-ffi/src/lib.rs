@@ -7,7 +7,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use libchess::{AccessToken, Account, Client, LibChessError, OAuthConnection, ProviderDescriptor};
+use libchess::{
+    AccessToken, Account, BotGame, BotGameRequest, Client, ColorPreference, LibChessError,
+    OAuthConnection, ProviderDescriptor,
+};
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
 use zeroize::Zeroize;
@@ -89,6 +92,12 @@ enum Command {
         provider: String,
         access_token: String,
     },
+    CreateBotGame {
+        opponent_id: String,
+        initial_seconds: u32,
+        increment_seconds: u32,
+        color: ColorPreference,
+    },
     Disconnect,
     ListProviders,
     RefreshAccount,
@@ -113,6 +122,9 @@ enum Event {
         state: ConnectionState,
         #[serde(skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
+    },
+    BotGameCreated {
+        game: BotGame,
     },
     Error {
         error: LibChessError,
@@ -308,6 +320,28 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             }
                         }
                     }
+                    Command::CreateBotGame {
+                        opponent_id,
+                        initial_seconds,
+                        increment_seconds,
+                        color,
+                    } => {
+                        let request = BotGameRequest::new(
+                            opponent_id,
+                            initial_seconds,
+                            increment_seconds,
+                            color,
+                        );
+                        match request {
+                            Ok(request) => match client.create_bot_game(request).await {
+                                Ok(game) => {
+                                    sink.emit(request_id, Event::BotGameCreated { game });
+                                }
+                                Err(error) => sink.emit(request_id, Event::Error { error }),
+                            },
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
                     Command::RefreshAccount => match client.refresh_account().await {
                         Ok(account) => {
                             sink.emit(request_id, Event::AccountUpdated { account });
@@ -478,6 +512,8 @@ mod tests {
             .expect("ready event");
         assert!(ready.contains(r#""type":"ready""#));
         assert!(ready.contains(r#""id":"lichess""#));
+        assert!(ready.contains(r#""bot_opponents""#));
+        assert!(ready.contains(r#""id":"level-1""#));
 
         let command = br#"{"version":1,"request_id":"providers-1","type":"list_providers"}"#;
         assert_eq!(
@@ -511,6 +547,38 @@ mod tests {
             unsafe { libchess_client_send(client, malformed.as_ptr(), malformed.len()) },
             SEND_INVALID_JSON
         );
+
+        // SAFETY: This is the only destroy and no sends run concurrently.
+        unsafe { libchess_client_destroy(client) };
+        drop(sender);
+    }
+
+    #[test]
+    fn validates_bot_game_commands_before_calling_a_provider() {
+        let (sender, receiver) = std_mpsc::channel::<String>();
+        let sender = Box::new(sender);
+        let context = (&*sender as *const std_mpsc::Sender<String>)
+            .cast_mut()
+            .cast();
+        // SAFETY: The boxed sender outlives the client and callback.
+        let client = unsafe { libchess_client_create(Some(collect_event), context) };
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ready event");
+        let command = br#"{"version":1,"request_id":"bot-1","type":"create_bot_game","opponent_id":"Level 1","initial_seconds":600,"increment_seconds":0,"color":"random"}"#;
+
+        assert_eq!(
+            unsafe { libchess_client_send(client, command.as_ptr(), command.len()) },
+            SEND_OK
+        );
+
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("validation error event");
+        assert!(error.contains(r#""request_id":"bot-1""#));
+        assert!(error.contains(r#""type":"error""#));
+        assert!(error.contains(r#""kind":"invalid_input""#));
+        assert!(error.contains("bot opponent identifiers"));
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

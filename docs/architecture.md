@@ -48,6 +48,44 @@ prevent an older frontend from starting.
 New platform adapters register a factory with `ClientBuilder`; existing native
 frontends continue to use the same command/event protocol.
 
+## Game creation
+
+Bot games are the first creation flow. A provider that advertises the
+`bot_games` capability also advertises a catalog of opaque bot identifiers and
+display names. Frontends render that catalog and return the selected identifier
+unchanged; only the provider adapter interprets it. Lichess currently maps
+`level-1` through `level-8` to its AI challenge levels. A future Chess.com
+adapter can advertise named personalities without changing the common models
+or native frontends.
+
+Provider descriptors also carry their trusted web origin. The current slice
+uses it to validate the returned game URL before a native frontend opens it,
+without hard-coding `lichess.org` into the shared UI.
+
+The shared request contains only normalized game choices: opponent identifier,
+clock, and requested player color. The Lichess adapter currently fixes the
+remaining choices to standard, casual chess and rejects clocks faster than
+Blitz for Board API compliance. It posts the provider-specific form, validates
+the returned game identifier, variant, color, and rating mode, then emits a
+normalized bot-game result:
+
+```text
+create_bot_game command
+        |
+        v
+active PlatformBackend
+        |
+        v
+provider bot-game endpoint
+        |
+        v
+bot_game_created event ---> native board (future)
+                       `--> provider game URL (current slice)
+```
+
+Human challenges, matchmaking, correspondence clocks, variants, and local
+engine games are intentionally outside this first creation contract.
+
 ## Live-play safety invariant
 
 Engine analysis is rejected whenever the active context is a live online game,

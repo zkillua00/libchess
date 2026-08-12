@@ -3,9 +3,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 pub use libchess_core::{
-    AccessToken, Account, ChessContext, ErrorKind, LibChessError, OAuthAuthorization,
+    AccessToken, Account, BotGame, BotGameRequest, BotOpponent, BotOpponentId, ChessContext,
+    ClockTimeControl, ColorPreference, ErrorKind, LibChessError, OAuthAuthorization,
     OAuthClientConfiguration, OAuthToken, PlatformBackend, PlatformBackendFactory,
-    PlatformCapability, PlatformOAuthSession, ProviderDescriptor, ProviderId,
+    PlatformCapability, PlatformOAuthSession, PlayerColor, ProviderDescriptor, ProviderId,
     ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
@@ -153,6 +154,14 @@ impl Client {
         Ok(account)
     }
 
+    pub async fn create_bot_game(&self, request: BotGameRequest) -> Result<BotGame, LibChessError> {
+        let backend = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| LibChessError::invalid_input("no provider is connected"))?;
+        backend.create_bot_game(request).await
+    }
+
     pub fn disconnect(&mut self) {
         self.oauth_session = None;
         self.account = None;
@@ -181,6 +190,7 @@ mod tests {
 
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id.as_str(), "lichess");
+        assert_eq!(providers[0].web_url, "https://lichess.org/");
         assert!(
             providers[0]
                 .capabilities
@@ -191,6 +201,13 @@ mod tests {
                 .capabilities
                 .contains(&PlatformCapability::OAuthPkce)
         );
+        assert!(
+            providers[0]
+                .capabilities
+                .contains(&PlatformCapability::BotGames)
+        );
+        assert_eq!(providers[0].bot_opponents.len(), 8);
+        assert_eq!(providers[0].bot_opponents[0].id.as_str(), "level-1");
         assert!(
             !providers[0]
                 .capabilities

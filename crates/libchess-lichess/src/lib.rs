@@ -9,8 +9,9 @@ use std::{
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use libchess_core::{
-    AccessToken, Account, ErrorKind, LibChessError, OAuthAuthorization, OAuthClientConfiguration,
-    OAuthToken, PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession,
+    AccessToken, Account, BotGame, BotGameRequest, BotOpponent, ColorPreference, ErrorKind,
+    LibChessError, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PlatformBackend,
+    PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
     ProviderDescriptor, ProviderId,
 };
 use reqwest::{Client, StatusCode, Url, header};
@@ -42,14 +43,22 @@ impl LichessFactory {
 
         // Descriptors report the capabilities implemented by this adapter
         // build, not every capability offered by the remote platform.
-        let capabilities =
-            BTreeSet::from([PlatformCapability::Account, PlatformCapability::OAuthPkce]);
+        let capabilities = BTreeSet::from([
+            PlatformCapability::Account,
+            PlatformCapability::BotGames,
+            PlatformCapability::OAuthPkce,
+        ]);
+        let bot_opponents = (1_u8..=8)
+            .map(|level| BotOpponent::new(format!("level-{level}"), format!("Level {level}")))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
             descriptor: ProviderDescriptor {
                 id: ProviderId::new("lichess")?,
                 display_name: "Lichess".to_owned(),
+                web_url: base_url.to_string(),
                 capabilities,
+                bot_opponents,
             },
             base_url,
         })
@@ -310,6 +319,108 @@ impl PlatformBackend for LichessBackend {
             title: account.title,
         })
     }
+
+    async fn create_bot_game(&self, request: BotGameRequest) -> Result<BotGame, LibChessError> {
+        // Lichess Board API clients may create AI games at blitz speed or
+        // slower. Lichess classifies speed using initial + 40 * increment.
+        let estimated_seconds = request
+            .clock
+            .initial_seconds
+            .saturating_add(request.clock.increment_seconds.saturating_mul(40));
+        if estimated_seconds < 180 {
+            return Err(LibChessError::invalid_input(
+                "Lichess bot games must use a blitz-or-slower time control",
+            ));
+        }
+
+        let opponent = self
+            .descriptor
+            .bot_opponents
+            .iter()
+            .find(|opponent| opponent.id == request.opponent_id)
+            .cloned()
+            .ok_or_else(|| {
+                LibChessError::invalid_input(format!(
+                    "Lichess does not advertise bot opponent '{}'",
+                    request.opponent_id
+                ))
+            })?;
+        let level = opponent
+            .id
+            .as_str()
+            .strip_prefix("level-")
+            .and_then(|value| value.parse::<u8>().ok())
+            .filter(|level| (1..=8).contains(level))
+            .ok_or_else(|| {
+                LibChessError::new(
+                    ErrorKind::Provider,
+                    "the installed Lichess bot catalog is invalid",
+                    false,
+                )
+            })?;
+
+        let form = LichessAiChallengeRequest {
+            level,
+            clock_limit: request.clock.initial_seconds,
+            clock_increment: request.clock.increment_seconds,
+            color: request.color,
+            variant: "standard",
+        };
+        let response = self
+            .http
+            .post(self.endpoint("api/challenge/ai")?)
+            .header(header::ACCEPT, "application/json")
+            .bearer_auth(self.token.expose())
+            .form(&form)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(map_transport_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            if status == StatusCode::BAD_REQUEST {
+                let detail = response
+                    .json::<LichessErrorResponse>()
+                    .await
+                    .ok()
+                    .and_then(|response| response.error)
+                    .map(|message| truncate(&message, 256));
+                let message = detail.map_or_else(
+                    || "Lichess rejected the bot game settings".to_owned(),
+                    |detail| format!("Lichess rejected the bot game settings: {detail}"),
+                );
+                return Err(LibChessError::invalid_input(message));
+            }
+            return Err(map_status(status));
+        }
+
+        let game = response.json::<LichessAiGame>().await.map_err(|error| {
+            LibChessError::new(
+                ErrorKind::Provider,
+                format!("Lichess returned an invalid bot game response: {error}"),
+                false,
+            )
+        })?;
+        validate_game_id(&game.id)?;
+        if game.variant.key != "standard" || game.rated {
+            return Err(LibChessError::new(
+                ErrorKind::Provider,
+                "Lichess returned a bot game outside the requested standard casual mode",
+                false,
+            ));
+        }
+        let game_url = self.endpoint(&game.id)?;
+
+        Ok(BotGame {
+            provider: self.descriptor.id.clone(),
+            id: game.id,
+            url: game_url.into(),
+            player_color: game.player,
+            opponent,
+            clock: request.clock,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -317,6 +428,35 @@ struct LichessAccount {
     id: String,
     username: String,
     title: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LichessAiChallengeRequest {
+    level: u8,
+    #[serde(rename = "clock.limit")]
+    clock_limit: u32,
+    #[serde(rename = "clock.increment")]
+    clock_increment: u32,
+    color: ColorPreference,
+    variant: &'static str,
+}
+
+#[derive(Deserialize)]
+struct LichessAiGame {
+    id: String,
+    variant: LichessVariant,
+    rated: bool,
+    player: PlayerColor,
+}
+
+#[derive(Deserialize)]
+struct LichessVariant {
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct LichessErrorResponse {
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -450,6 +590,18 @@ fn validate_authorization_code(code: &str) -> Result<(), LibChessError> {
     } else {
         Err(authentication_error(
             "the OAuth callback contained an invalid authorization code",
+        ))
+    }
+}
+
+fn validate_game_id(id: &str) -> Result<(), LibChessError> {
+    if id.len() == 8 && id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        Ok(())
+    } else {
+        Err(LibChessError::new(
+            ErrorKind::Provider,
+            "Lichess returned an invalid game identifier",
+            false,
         ))
     }
 }
@@ -600,6 +752,102 @@ mod tests {
 
         assert_eq!(error.kind, ErrorKind::Authentication);
         assert!(!error.to_string().contains("lio_test_token"));
+    }
+
+    #[tokio::test]
+    async fn creates_a_standard_bot_game_and_normalizes_the_result() {
+        let body = r#"{
+            "id":"v8BRXYtM",
+            "variant":{"key":"standard","name":"Standard","short":"Std"},
+            "speed":"rapid",
+            "rated":false,
+            "source":"ai",
+            "status":{"id":20,"name":"started"},
+            "player":"black"
+        }"#;
+        let (base_url, captured_request) = serve_token_once(mock_response("201 Created", body));
+        let factory = LichessFactory::new(&base_url).expect("factory");
+        let backend = factory
+            .create(AccessToken::new("lio_test_token").expect("token"))
+            .expect("backend");
+        let request = BotGameRequest::new("level-6", 600, 5, ColorPreference::Random)
+            .expect("bot game request");
+
+        let game = backend
+            .create_bot_game(request)
+            .await
+            .expect("created bot game");
+
+        assert_eq!(game.provider.as_str(), "lichess");
+        assert_eq!(game.id, "v8BRXYtM");
+        assert_eq!(game.url, format!("{base_url}v8BRXYtM"));
+        assert_eq!(game.player_color, PlayerColor::Black);
+        assert_eq!(game.opponent.id.as_str(), "level-6");
+        assert_eq!(game.opponent.display_name, "Level 6");
+        assert_eq!(game.clock.initial_seconds, 600);
+        assert_eq!(game.clock.increment_seconds, 5);
+
+        let request = captured_request.recv().expect("captured bot game request");
+        assert!(request.starts_with("POST /api/challenge/ai HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer lio_test_token"));
+        let body = request.split_once("\r\n\r\n").expect("request body").1;
+        let form = Url::parse(&format!("http://localhost/?{body}")).expect("form body");
+        assert_eq!(
+            unique_query_value(&form, "level").expect("level"),
+            Some("6".to_owned())
+        );
+        assert_eq!(
+            unique_query_value(&form, "clock.limit").expect("clock limit"),
+            Some("600".to_owned())
+        );
+        assert_eq!(
+            unique_query_value(&form, "clock.increment").expect("clock increment"),
+            Some("5".to_owned())
+        );
+        assert_eq!(
+            unique_query_value(&form, "color").expect("color"),
+            Some("random".to_owned())
+        );
+        assert_eq!(
+            unique_query_value(&form, "variant").expect("variant"),
+            Some("standard".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_time_controls_faster_than_lichess_allows_without_network_access() {
+        let factory = LichessFactory::new("http://127.0.0.1:1/").expect("factory");
+        let backend = factory
+            .create(AccessToken::new("lio_test_token").expect("token"))
+            .expect("backend");
+        let request = BotGameRequest::new("level-4", 60, 0, ColorPreference::White)
+            .expect("otherwise valid request");
+
+        let error = backend
+            .create_bot_game(request)
+            .await
+            .expect_err("bullet game should be rejected");
+
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("blitz-or-slower"));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_bot_that_the_provider_did_not_advertise() {
+        let factory = LichessFactory::new("http://127.0.0.1:1/").expect("factory");
+        let backend = factory
+            .create(AccessToken::new("lio_test_token").expect("token"))
+            .expect("backend");
+        let request = BotGameRequest::new("mittens", 300, 0, ColorPreference::Random)
+            .expect("provider-neutral bot request");
+
+        let error = backend
+            .create_bot_game(request)
+            .await
+            .expect_err("unknown Lichess bot should be rejected");
+
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("does not advertise bot opponent"));
     }
 
     #[test]
