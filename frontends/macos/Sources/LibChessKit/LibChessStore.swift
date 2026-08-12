@@ -93,27 +93,44 @@ public final class LibChessStore: ObservableObject {
         guard let descriptor = connectedProvider else {
             return false
         }
-        return descriptor.capabilities.contains(.botGames) && !descriptor.botOpponents.isEmpty
+        return descriptor.capabilities.contains(.botGames)
+            && !descriptor.botOpponents.isEmpty
+            && descriptor.botGameOptions != nil
     }
 
     public var botOpponents: [BotOpponent] {
         connectedProvider?.botOpponents ?? []
     }
 
+    public var botGameOptions: BotGameOptions? {
+        connectedProvider?.botGameOptions
+    }
+
+    public var botVariants: [GameVariant] {
+        botGameOptions?.variants ?? []
+    }
+
     public func createBotGame(
         opponentID: String,
-        initialSeconds: Int,
-        incrementSeconds: Int,
-        color: GameColorPreference
+        variantID: String,
+        timeControl: BotGameTimeControl,
+        color: GameColorPreference,
+        initialFEN: String?
     ) {
         guard !isCreatingBotGame else {
             return
         }
+        let normalizedFEN = initialFEN?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
         guard botOpponents.contains(where: { $0.id == opponentID }),
-              (1 ... 10_800).contains(initialSeconds),
-              (0 ... 60).contains(incrementSeconds)
+              let options = botGameOptions,
+              let variant = options.variants.first(where: { $0.id == variantID }),
+              options.colors.contains(color),
+              supports(timeControl, using: options),
+              customPositionIsValid(normalizedFEN, for: variant)
         else {
-            message = "Choose an available bot and valid clock settings."
+            message = "Choose settings advertised by the connected chess provider."
             return
         }
 
@@ -123,9 +140,10 @@ public final class LibChessStore: ObservableObject {
         isCreatingBotGame = true
         let command = CreateBotGameCommand(
             opponentID: opponentID,
-            initialSeconds: UInt32(initialSeconds),
-            incrementSeconds: UInt32(incrementSeconds),
-            color: color
+            variantID: variantID,
+            timeControl: timeControl,
+            color: color,
+            initialFEN: normalizedFEN
         )
         pendingBotGameRequestID = command.requestID
         let sent = send(command)
@@ -255,8 +273,12 @@ public final class LibChessStore: ObservableObject {
 
         guard let game,
               let provider = connectedProvider,
+              let options = provider.botGameOptions,
               game.provider == provider.id,
               botOpponents.contains(game.opponent),
+              options.variants.contains(game.variant),
+              supports(game.timeControl, using: options),
+              customPositionIsValid(game.initialFEN, for: game.variant),
               game.id.utf8.count == 8,
               game.id.utf8.allSatisfy({ byte in
                   (48 ... 57).contains(byte)
@@ -281,6 +303,44 @@ public final class LibChessStore: ObservableObject {
         isCreatingBotGame = false
         createdBotGame = game
         gameURLToOpen = url
+    }
+
+    private func supports(_ timeControl: BotGameTimeControl, using options: BotGameOptions) -> Bool {
+        switch timeControl {
+        case let .clock(initialSeconds, incrementSeconds):
+            guard let clock = options.clock,
+                  clock.initialSeconds.contains(initialSeconds),
+                  clock.incrementSeconds.contains(incrementSeconds)
+            else {
+                return false
+            }
+            let estimatedDuration = UInt64(initialSeconds) + UInt64(incrementSeconds) * 40
+            return clock.minimumEstimatedDurationSeconds.map {
+                estimatedDuration >= UInt64($0)
+            } ?? true
+        case let .correspondence(daysPerMove):
+            return options.correspondenceDays.contains(daysPerMove)
+        case .unlimited:
+            return options.unlimited
+        }
+    }
+
+    private func customPositionIsValid(_ fen: String?, for variant: GameVariant) -> Bool {
+        if variant.requiresCustomPosition && fen == nil {
+            return false
+        }
+        guard let fen else {
+            return true
+        }
+        return variant.supportsCustomPosition
+            && fen.utf8.count <= 1_024
+            && fen.unicodeScalars.allSatisfy { (32 ... 126).contains($0.value) }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
@@ -355,22 +415,25 @@ struct CreateBotGameCommand: Encodable {
     let requestID: String
     let type = "create_bot_game"
     let opponentID: String
-    let initialSeconds: UInt32
-    let incrementSeconds: UInt32
+    let variantID: String
+    let timeControl: BotGameTimeControl
     let color: GameColorPreference
+    let initialFEN: String?
 
     init(
         requestID: String = UUID().uuidString,
         opponentID: String,
-        initialSeconds: UInt32,
-        incrementSeconds: UInt32,
-        color: GameColorPreference
+        variantID: String,
+        timeControl: BotGameTimeControl,
+        color: GameColorPreference,
+        initialFEN: String?
     ) {
         self.requestID = requestID
         self.opponentID = opponentID
-        self.initialSeconds = initialSeconds
-        self.incrementSeconds = incrementSeconds
+        self.variantID = variantID
+        self.timeControl = timeControl
         self.color = color
+        self.initialFEN = initialFEN
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -378,8 +441,9 @@ struct CreateBotGameCommand: Encodable {
         case requestID = "request_id"
         case type
         case opponentID = "opponent_id"
-        case initialSeconds = "initial_seconds"
-        case incrementSeconds = "increment_seconds"
+        case variantID = "variant_id"
+        case timeControl = "time_control"
         case color
+        case initialFEN = "initial_fen"
     }
 }

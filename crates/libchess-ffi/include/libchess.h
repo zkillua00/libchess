@@ -49,7 +49,9 @@ libchess_client_t *libchess_client_create(
  * {"type":"cancel_oauth"}
  * {"type":"list_providers"}
  * {"type":"connect","provider":"lichess","access_token":"..."}
- * {"type":"create_bot_game","opponent_id":"level-4","initial_seconds":600,"increment_seconds":0,"color":"random"}
+ * {"type":"create_bot_game","opponent_id":"level-4","variant_id":"standard","time_control":{"type":"clock","initial_seconds":600,"increment_seconds":0},"color":"random"}
+ * {"type":"create_bot_game","opponent_id":"level-8","variant_id":"atomic","time_control":{"type":"correspondence","days_per_move":7},"color":"white"}
+ * {"type":"create_bot_game","opponent_id":"level-2","variant_id":"from-position","time_control":{"type":"unlimited"},"color":"black","initial_fen":"..."}
  * {"type":"refresh_account"}
  * {"type":"disconnect"}
  */

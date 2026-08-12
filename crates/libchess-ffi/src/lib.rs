@@ -8,8 +8,8 @@ use std::{
 };
 
 use libchess::{
-    AccessToken, Account, BotGame, BotGameRequest, Client, ColorPreference, LibChessError,
-    OAuthConnection, ProviderDescriptor,
+    AccessToken, Account, BotGame, BotGameRequest, BotGameTimeControl, Client, ColorPreference,
+    LibChessError, OAuthConnection, ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -94,9 +94,11 @@ enum Command {
     },
     CreateBotGame {
         opponent_id: String,
-        initial_seconds: u32,
-        increment_seconds: u32,
+        variant_id: String,
+        time_control: BotGameTimeControl,
         color: ColorPreference,
+        #[serde(default)]
+        initial_fen: Option<String>,
     },
     Disconnect,
     ListProviders,
@@ -322,15 +324,17 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                     }
                     Command::CreateBotGame {
                         opponent_id,
-                        initial_seconds,
-                        increment_seconds,
+                        variant_id,
+                        time_control,
                         color,
+                        initial_fen,
                     } => {
                         let request = BotGameRequest::new(
                             opponent_id,
-                            initial_seconds,
-                            increment_seconds,
+                            variant_id,
+                            time_control,
                             color,
+                            initial_fen,
                         );
                         match request {
                             Ok(request) => match client.create_bot_game(request).await {
@@ -565,7 +569,7 @@ mod tests {
         receiver
             .recv_timeout(Duration::from_secs(2))
             .expect("ready event");
-        let command = br#"{"version":1,"request_id":"bot-1","type":"create_bot_game","opponent_id":"Level 1","initial_seconds":600,"increment_seconds":0,"color":"random"}"#;
+        let command = br#"{"version":1,"request_id":"bot-1","type":"create_bot_game","opponent_id":"Level 1","variant_id":"standard","time_control":{"type":"clock","initial_seconds":600,"increment_seconds":0},"color":"random"}"#;
 
         assert_eq!(
             unsafe { libchess_client_send(client, command.as_ptr(), command.len()) },

@@ -3,8 +3,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 pub use libchess_core::{
-    AccessToken, Account, BotGame, BotGameRequest, BotOpponent, BotOpponentId, ChessContext,
-    ClockTimeControl, ColorPreference, ErrorKind, LibChessError, OAuthAuthorization,
+    AccessToken, Account, BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent,
+    BotOpponentId, ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference,
+    ErrorKind, GameVariant, GameVariantId, LibChessError, OAuthAuthorization,
     OAuthClientConfiguration, OAuthToken, PlatformBackend, PlatformBackendFactory,
     PlatformCapability, PlatformOAuthSession, PlayerColor, ProviderDescriptor, ProviderId,
     ensure_engine_allowed,
@@ -208,6 +209,13 @@ mod tests {
         );
         assert_eq!(providers[0].bot_opponents.len(), 8);
         assert_eq!(providers[0].bot_opponents[0].id.as_str(), "level-1");
+        let bot_options = providers[0]
+            .bot_game_options
+            .as_ref()
+            .expect("bot-game options");
+        assert_eq!(bot_options.variants.len(), 10);
+        assert_eq!(bot_options.correspondence_days.len(), 7);
+        assert!(bot_options.unlimited);
         assert!(
             !providers[0]
                 .capabilities

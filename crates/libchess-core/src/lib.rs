@@ -120,6 +120,8 @@ pub struct ProviderDescriptor {
     pub capabilities: BTreeSet<PlatformCapability>,
     #[serde(default)]
     pub bot_opponents: Vec<BotOpponent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_game_options: Option<BotGameOptions>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -130,7 +132,7 @@ pub struct Account {
     pub title: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorPreference {
     White,
@@ -145,6 +147,74 @@ pub enum PlayerColor {
     Black,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct GameVariantId(String);
+
+impl GameVariantId {
+    pub fn new(value: impl Into<String>) -> Result<Self, LibChessError> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if valid {
+            Ok(Self(value))
+        } else {
+            Err(LibChessError::invalid_input(
+                "game variant identifiers must contain only lowercase ASCII letters, digits, or '-'",
+            ))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for GameVariantId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameVariant {
+    pub id: GameVariantId,
+    pub display_name: String,
+    pub supports_custom_position: bool,
+    pub requires_custom_position: bool,
+}
+
+impl GameVariant {
+    pub fn new(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        supports_custom_position: bool,
+        requires_custom_position: bool,
+    ) -> Result<Self, LibChessError> {
+        let display_name = display_name.into();
+        if display_name.is_empty() || display_name.len() > 128 {
+            return Err(LibChessError::invalid_input(
+                "the game variant display name must contain between 1 and 128 bytes",
+            ));
+        }
+        if requires_custom_position && !supports_custom_position {
+            return Err(LibChessError::invalid_input(
+                "a game variant cannot require an unsupported custom position",
+            ));
+        }
+
+        Ok(Self {
+            id: GameVariantId::new(id)?,
+            display_name,
+            supports_custom_position,
+            requires_custom_position,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ClockTimeControl {
     pub initial_seconds: u32,
@@ -152,43 +222,110 @@ pub struct ClockTimeControl {
 }
 
 impl ClockTimeControl {
-    pub fn new(initial_seconds: u32, increment_seconds: u32) -> Result<Self, LibChessError> {
-        if initial_seconds == 0 || initial_seconds > 10_800 {
-            return Err(LibChessError::invalid_input(
-                "the initial clock must be between 1 and 10800 seconds",
-            ));
-        }
-        if increment_seconds > 60 {
-            return Err(LibChessError::invalid_input(
-                "the clock increment cannot exceed 60 seconds",
-            ));
-        }
-
-        Ok(Self {
+    pub fn new(initial_seconds: u32, increment_seconds: u32) -> Self {
+        Self {
             initial_seconds,
             increment_seconds,
-        })
+        }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BotGameTimeControl {
+    Clock {
+        initial_seconds: u32,
+        increment_seconds: u32,
+    },
+    Correspondence {
+        days_per_move: u8,
+    },
+    Unlimited,
+}
+
+impl BotGameTimeControl {
+    pub fn clock(initial_seconds: u32, increment_seconds: u32) -> Self {
+        Self::Clock {
+            initial_seconds,
+            increment_seconds,
+        }
+    }
+
+    pub fn correspondence(days_per_move: u8) -> Self {
+        Self::Correspondence { days_per_move }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ClockTimeControlOptions {
+    pub initial_seconds: Vec<u32>,
+    pub increment_seconds: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_estimated_duration_seconds: Option<u32>,
+}
+
+impl ClockTimeControlOptions {
+    pub fn supports(&self, initial_seconds: u32, increment_seconds: u32) -> bool {
+        let advertised = self.initial_seconds.contains(&initial_seconds)
+            && self.increment_seconds.contains(&increment_seconds);
+        let estimated_duration =
+            initial_seconds.saturating_add(increment_seconds.saturating_mul(40));
+        advertised
+            && self
+                .minimum_estimated_duration_seconds
+                .is_none_or(|minimum| estimated_duration >= minimum)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BotGameOptions {
+    pub variants: Vec<GameVariant>,
+    pub colors: BTreeSet<ColorPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<ClockTimeControlOptions>,
+    #[serde(default)]
+    pub correspondence_days: Vec<u8>,
+    pub unlimited: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BotGameRequest {
     pub opponent_id: BotOpponentId,
-    pub clock: ClockTimeControl,
+    pub variant_id: GameVariantId,
+    pub time_control: BotGameTimeControl,
     pub color: ColorPreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_fen: Option<String>,
 }
 
 impl BotGameRequest {
     pub fn new(
         opponent_id: impl Into<String>,
-        initial_seconds: u32,
-        increment_seconds: u32,
+        variant_id: impl Into<String>,
+        time_control: BotGameTimeControl,
         color: ColorPreference,
+        initial_fen: Option<String>,
     ) -> Result<Self, LibChessError> {
+        let initial_fen = initial_fen
+            .map(|fen| fen.trim().to_owned())
+            .filter(|fen| !fen.is_empty());
+        if let Some(fen) = &initial_fen
+            && (fen.len() > 1024
+                || !fen
+                    .bytes()
+                    .all(|byte| byte == b' ' || byte.is_ascii_graphic()))
+        {
+            return Err(LibChessError::invalid_input(
+                "the initial FEN must be a single ASCII line no longer than 1024 bytes",
+            ));
+        }
+
         Ok(Self {
             opponent_id: BotOpponentId::new(opponent_id)?,
-            clock: ClockTimeControl::new(initial_seconds, increment_seconds)?,
+            variant_id: GameVariantId::new(variant_id)?,
+            time_control,
             color,
+            initial_fen,
         })
     }
 }
@@ -200,7 +337,10 @@ pub struct BotGame {
     pub url: String,
     pub player_color: PlayerColor,
     pub opponent: BotOpponent,
-    pub clock: ClockTimeControl,
+    pub variant: GameVariant,
+    pub time_control: BotGameTimeControl,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_fen: Option<String>,
 }
 
 /// Deliberately redacts its value from logs and panic messages.
@@ -421,12 +561,63 @@ mod tests {
     }
 
     #[test]
-    fn bot_game_requests_have_safe_opponent_ids_and_bounded_clocks() {
-        assert!(BotGameRequest::new("level-1", 180, 0, ColorPreference::White).is_ok());
-        assert!(BotGameRequest::new("mittens", 10_800, 60, ColorPreference::Random).is_ok());
-        assert!(BotGameRequest::new("Level 1", 300, 0, ColorPreference::Black).is_err());
-        assert!(BotGameRequest::new("level-4", 0, 0, ColorPreference::Random).is_err());
-        assert!(BotGameRequest::new("level-4", 300, 61, ColorPreference::Random).is_err());
+    fn bot_game_requests_validate_identifiers_and_custom_positions() {
+        assert!(
+            BotGameRequest::new(
+                "level-1",
+                "standard",
+                BotGameTimeControl::clock(180, 0),
+                ColorPreference::White,
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            BotGameRequest::new(
+                "Level 1",
+                "standard",
+                BotGameTimeControl::Unlimited,
+                ColorPreference::Black,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            BotGameRequest::new(
+                "level-4",
+                "Chess960",
+                BotGameTimeControl::correspondence(3),
+                ColorPreference::Random,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            BotGameRequest::new(
+                "level-4",
+                "from-position",
+                BotGameTimeControl::Unlimited,
+                ColorPreference::Random,
+                Some("8/8/8/8/8/8/8/K6k w - - 0 1\ninvalid".to_owned()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn clock_options_support_exact_ranges_and_speed_floors() {
+        let options = ClockTimeControlOptions {
+            initial_seconds: vec![0, 15, 30, 45, 60, 90, 120, 180, 300, 10_800],
+            increment_seconds: (0..=60).collect(),
+            minimum_estimated_duration_seconds: Some(180),
+        };
+
+        assert!(options.supports(180, 0));
+        assert!(options.supports(0, 5));
+        assert!(!options.supports(0, 4));
+        assert!(!options.supports(75, 5));
+        assert!(!options.supports(10_801, 0));
+        assert!(!options.supports(300, 61));
     }
 
     #[test]

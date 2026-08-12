@@ -60,14 +60,30 @@ single dynamic library and uses the operating system browser and Keychain.
 
 ## Create a bot game
 
-After connecting, the macOS app can create a casual standard game against a
-bot advertised by the active provider. Lichess currently advertises its eight
-AI levels. Choose the opponent, a blitz-or-slower clock, and your preferred
-color, then select **Create and Open**. The first slice opens the resulting game
-on Lichess; native board play and move streaming are the next layer.
+After connecting, the macOS app can create a casual game against a bot
+advertised by the active provider. Lichess currently advertises its eight AI
+levels and the complete AI-challenge option set:
 
-The frontend sends an opaque bot opponent identifier through the shared C ABI.
-It does not encode Lichess's numeric-level API. This leaves a future Chess.com
-adapter free to advertise named bot personalities through the same contract.
+- Standard, Chess960, Crazyhouse, Antichess, Atomic, Horde, King of the Hill,
+  Racing Kings, Three-check, and From Position
+- every accepted initial clock value: 0, 15, 30, 45, 60, or 90 seconds, then
+  every whole minute from 2 through 180; and every increment from 0 through 60
+  seconds, subject to the Board API's Blitz-or-slower restriction
+- correspondence controls of 1, 2, 3, 5, 7, 10, or 14 days per move
+- unlimited games
+- White, Black, or random color
+- optional X-FEN positions for Standard and Chess960, and required X-FEN for
+  From Position
+
+Choose the settings, then select **Create and Open**. Lichess AI games are
+always casual, so rated play is not a missing frontend option. The current
+slice opens the resulting game on Lichess; native board play and move streaming
+are the next layer.
+
+The frontend sends opaque opponent and variant identifiers plus a normalized
+time-control value through the shared C ABI. It does not encode Lichess's
+numeric levels, variant keys, ranges, or correspondence intervals. This leaves
+a future Chess.com adapter free to advertise named bot personalities and a
+different supported option set through the same contract.
 
 No license has been selected yet. Add one before publishing the repository.

@@ -17,7 +17,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesStableOAuthCapabilityName() throws {
         let data = Data(
-            #"{"version":1,"type":"ready","providers":[{"id":"lichess","display_name":"Lichess","web_url":"https://lichess.org/","capabilities":["account","bot_games","oauth_pkce","future_capability"],"bot_opponents":[{"id":"level-1","display_name":"Level 1"}]}]}"#.utf8
+            #"{"version":1,"type":"ready","providers":[{"id":"lichess","display_name":"Lichess","web_url":"https://lichess.org/","capabilities":["account","bot_games","oauth_pkce","future_capability"],"bot_opponents":[{"id":"level-1","display_name":"Level 1"}],"bot_game_options":{"variants":[{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false},{"id":"from-position","display_name":"From Position","supports_custom_position":true,"requires_custom_position":true}],"colors":["white","black","random"],"clock":{"initial_seconds":[0,15,30,45,60,90,120,10800],"increment_seconds":[0,1,2,3,60],"minimum_estimated_duration_seconds":180},"correspondence_days":[1,2,3,5,7,10,14],"unlimited":true}}]}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
@@ -29,6 +29,24 @@ final class WireProtocolTests: XCTestCase {
             [.account, .botGames, .oauthPkce, PlatformCapability(rawValue: "future_capability")]
         )
         XCTAssertEqual(event.providers?.first?.botOpponents.first?.id, "level-1")
+        XCTAssertEqual(event.providers?.first?.botGameOptions?.variants.count, 2)
+        XCTAssertEqual(
+            event.providers?.first?.botGameOptions?.variants.last?.requiresCustomPosition,
+            true
+        )
+        XCTAssertEqual(
+            event.providers?.first?.botGameOptions?.clock?.initialSeconds,
+            [0, 15, 30, 45, 60, 90, 120, 10_800]
+        )
+        XCTAssertEqual(
+            event.providers?.first?.botGameOptions?.clock?.incrementSeconds,
+            [0, 1, 2, 3, 60]
+        )
+        XCTAssertEqual(
+            event.providers?.first?.botGameOptions?.correspondenceDays,
+            [1, 2, 3, 5, 7, 10, 14]
+        )
+        XCTAssertEqual(event.providers?.first?.botGameOptions?.unlimited, true)
     }
 
     func testDecodesOAuthCredentialEventWithExplicitWireKeys() throws {
@@ -70,7 +88,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesCreatedBotGameEvent() throws {
         let data = Data(
-            #"{"version":1,"request_id":"bot-1","type":"bot_game_created","game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"black","opponent":{"id":"level-6","display_name":"Level 6"},"clock":{"initial_seconds":600,"increment_seconds":5}}}"#.utf8
+            #"{"version":1,"request_id":"bot-1","type":"bot_game_created","game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"black","opponent":{"id":"level-6","display_name":"Level 6"},"variant":{"id":"atomic","display_name":"Atomic","supports_custom_position":false,"requires_custom_position":false},"time_control":{"type":"correspondence","days_per_move":7}}}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
@@ -81,27 +99,65 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(event.game?.playerColor, .black)
         XCTAssertEqual(event.game?.opponent.id, "level-6")
         XCTAssertEqual(event.game?.opponent.displayName, "Level 6")
-        XCTAssertEqual(event.game?.clock.initialSeconds, 600)
-        XCTAssertEqual(event.game?.clock.incrementSeconds, 5)
+        XCTAssertEqual(event.game?.variant.id, "atomic")
+        XCTAssertEqual(event.game?.timeControl, .correspondence(daysPerMove: 7))
+        XCTAssertNil(event.game?.initialFEN)
     }
 
-    func testEncodesBotGameCommandWithExplicitWireKeys() throws {
-        let command = CreateBotGameCommand(
+    func testEncodesEveryBotGameTimeControlWithExplicitWireKeys() throws {
+        let clock = CreateBotGameCommand(
             opponentID: "level-6",
-            initialSeconds: 600,
-            incrementSeconds: 5,
-            color: .random
+            variantID: "standard",
+            timeControl: .clock(initialSeconds: 600, incrementSeconds: 5),
+            color: .random,
+            initialFEN: nil
+        )
+        let correspondence = CreateBotGameCommand(
+            opponentID: "level-8",
+            variantID: "atomic",
+            timeControl: .correspondence(daysPerMove: 7),
+            color: .white,
+            initialFEN: nil
+        )
+        let unlimited = CreateBotGameCommand(
+            opponentID: "level-2",
+            variantID: "from-position",
+            timeControl: .unlimited,
+            color: .black,
+            initialFEN: "8/8/8/8/8/8/4K3/6k1 w - - 0 1"
         )
 
-        let object = try jsonObject(command)
+        let clockObject = try jsonObject(clock)
+        let correspondenceObject = try jsonObject(correspondence)
+        let unlimitedObject = try jsonObject(unlimited)
 
-        XCTAssertEqual(object["type"] as? String, "create_bot_game")
-        XCTAssertEqual(object["opponent_id"] as? String, "level-6")
-        XCTAssertEqual(object["initial_seconds"] as? Int, 600)
-        XCTAssertEqual(object["increment_seconds"] as? Int, 5)
-        XCTAssertEqual(object["color"] as? String, "random")
-        XCTAssertNil(object["initialSeconds"])
-        XCTAssertNotNil(object["request_id"])
+        XCTAssertEqual(clockObject["type"] as? String, "create_bot_game")
+        XCTAssertEqual(clockObject["opponent_id"] as? String, "level-6")
+        XCTAssertEqual(clockObject["variant_id"] as? String, "standard")
+        XCTAssertEqual(clockObject["color"] as? String, "random")
+        let clockControl = try XCTUnwrap(clockObject["time_control"] as? [String: Any])
+        XCTAssertEqual(clockControl["type"] as? String, "clock")
+        XCTAssertEqual(clockControl["initial_seconds"] as? Int, 600)
+        XCTAssertEqual(clockControl["increment_seconds"] as? Int, 5)
+        XCTAssertNil(clockObject["initial_fen"])
+        XCTAssertNotNil(clockObject["request_id"])
+
+        let correspondenceControl = try XCTUnwrap(
+            correspondenceObject["time_control"] as? [String: Any]
+        )
+        XCTAssertEqual(correspondenceControl["type"] as? String, "correspondence")
+        XCTAssertEqual(correspondenceControl["days_per_move"] as? Int, 7)
+        XCTAssertNil(correspondenceControl["initial_seconds"])
+
+        let unlimitedControl = try XCTUnwrap(
+            unlimitedObject["time_control"] as? [String: Any]
+        )
+        XCTAssertEqual(unlimitedControl["type"] as? String, "unlimited")
+        XCTAssertEqual(unlimitedObject["variant_id"] as? String, "from-position")
+        XCTAssertEqual(
+            unlimitedObject["initial_fen"] as? String,
+            "8/8/8/8/8/8/4K3/6k1 w - - 0 1"
+        )
     }
 
     private func jsonObject<Value: Encodable>(_ value: Value) throws -> [String: Any] {

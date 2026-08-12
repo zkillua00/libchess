@@ -51,23 +51,28 @@ frontends continue to use the same command/event protocol.
 ## Game creation
 
 Bot games are the first creation flow. A provider that advertises the
-`bot_games` capability also advertises a catalog of opaque bot identifiers and
-display names. Frontends render that catalog and return the selected identifier
-unchanged; only the provider adapter interprets it. Lichess currently maps
-`level-1` through `level-8` to its AI challenge levels. A future Chess.com
-adapter can advertise named personalities without changing the common models
-or native frontends.
+`bot_games` capability also advertises opaque bot identifiers and a complete
+bot-game option descriptor. The descriptor contains variants, player colors,
+the exact accepted clock values and any speed floor, correspondence intervals, unlimited-play
+support, and per-variant custom-position support. Frontends render these values
+and return their identifiers unchanged; only the provider adapter interprets
+them. Lichess currently maps `level-1` through `level-8` to AI levels and maps
+the common kebab-case variant identifiers to Lichess's API keys. A future
+Chess.com adapter can advertise named personalities and its own supported
+settings without changing the common models or native frontends.
 
 Provider descriptors also carry their trusted web origin. The current slice
 uses it to validate the returned game URL before a native frontend opens it,
 without hard-coding `lichess.org` into the shared UI.
 
-The shared request contains only normalized game choices: opponent identifier,
-clock, and requested player color. The Lichess adapter currently fixes the
-remaining choices to standard, casual chess and rejects clocks faster than
-Blitz for Board API compliance. It posts the provider-specific form, validates
-the returned game identifier, variant, color, and rating mode, then emits a
-normalized bot-game result:
+The shared request contains only normalized game choices: opponent and variant
+identifiers, one tagged time control (`clock`, `correspondence`, or
+`unlimited`), requested player color, and an optional initial FEN. The Lichess
+adapter checks every value against its advertised descriptor, enforces custom
+position compatibility, and rejects clocks faster than Blitz for Board API
+compliance. It then maps the request to the provider-specific form, omitting
+mutually exclusive fields, and validates the returned game identifier,
+variant, color, and casual rating mode before emitting a normalized result:
 
 ```text
 create_bot_game command
@@ -83,8 +88,9 @@ bot_game_created event ---> native board (future)
                        `--> provider game URL (current slice)
 ```
 
-Human challenges, matchmaking, correspondence clocks, variants, and local
-engine games are intentionally outside this first creation contract.
+Human challenges, matchmaking, and local engine games are intentionally
+outside this first creation contract. Lichess AI games are intrinsically
+casual; there is no rated option on that provider endpoint.
 
 ## Live-play safety invariant
 

@@ -36,12 +36,55 @@ public struct BotOpponent: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+public struct GameVariant: Codable, Hashable, Identifiable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let supportsCustomPosition: Bool
+    public let requiresCustomPosition: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case supportsCustomPosition = "supports_custom_position"
+        case requiresCustomPosition = "requires_custom_position"
+    }
+}
+
+public struct ClockTimeControlOptions: Codable, Hashable, Sendable {
+    public let initialSeconds: [UInt32]
+    public let incrementSeconds: [UInt32]
+    public let minimumEstimatedDurationSeconds: UInt32?
+
+    private enum CodingKeys: String, CodingKey {
+        case initialSeconds = "initial_seconds"
+        case incrementSeconds = "increment_seconds"
+        case minimumEstimatedDurationSeconds = "minimum_estimated_duration_seconds"
+    }
+}
+
+public struct BotGameOptions: Codable, Hashable, Sendable {
+    public let variants: [GameVariant]
+    public let colors: Set<GameColorPreference>
+    public let clock: ClockTimeControlOptions?
+    public let correspondenceDays: [UInt8]
+    public let unlimited: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case variants
+        case colors
+        case clock
+        case correspondenceDays = "correspondence_days"
+        case unlimited
+    }
+}
+
 public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
     public let id: String
     public let displayName: String
     public let webURL: String?
     public let capabilities: Set<PlatformCapability>
     public let botOpponents: [BotOpponent]
+    public let botGameOptions: BotGameOptions?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -49,6 +92,7 @@ public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
         case webURL = "web_url"
         case capabilities
         case botOpponents = "bot_opponents"
+        case botGameOptions = "bot_game_options"
     }
 
     public init(from decoder: Decoder) throws {
@@ -58,6 +102,7 @@ public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
         webURL = try container.decodeIfPresent(String.self, forKey: .webURL)
         capabilities = try container.decode(Set<PlatformCapability>.self, forKey: .capabilities)
         botOpponents = try container.decodeIfPresent([BotOpponent].self, forKey: .botOpponents) ?? []
+        botGameOptions = try container.decodeIfPresent(BotGameOptions.self, forKey: .botGameOptions)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -67,6 +112,7 @@ public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
         try container.encodeIfPresent(webURL, forKey: .webURL)
         try container.encode(capabilities, forKey: .capabilities)
         try container.encode(botOpponents, forKey: .botOpponents)
+        try container.encodeIfPresent(botGameOptions, forKey: .botGameOptions)
     }
 }
 
@@ -84,7 +130,7 @@ public struct ChessAccount: Codable, Equatable, Sendable {
     }
 }
 
-public enum GameColorPreference: String, Codable, CaseIterable, Identifiable, Sendable {
+public enum GameColorPreference: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case white
     case black
     case random
@@ -97,13 +143,54 @@ public enum PlayerColor: String, Codable, Sendable {
     case black
 }
 
-public struct ClockTimeControl: Codable, Equatable, Sendable {
-    public let initialSeconds: UInt32
-    public let incrementSeconds: UInt32
+public enum BotGameTimeControl: Codable, Equatable, Sendable {
+    case clock(initialSeconds: UInt32, incrementSeconds: UInt32)
+    case correspondence(daysPerMove: UInt8)
+    case unlimited
+
+    private enum Kind: String, Codable {
+        case clock
+        case correspondence
+        case unlimited
+    }
 
     private enum CodingKeys: String, CodingKey {
+        case type
         case initialSeconds = "initial_seconds"
         case incrementSeconds = "increment_seconds"
+        case daysPerMove = "days_per_move"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .type) {
+        case .clock:
+            self = try .clock(
+                initialSeconds: container.decode(UInt32.self, forKey: .initialSeconds),
+                incrementSeconds: container.decode(UInt32.self, forKey: .incrementSeconds)
+            )
+        case .correspondence:
+            self = try .correspondence(
+                daysPerMove: container.decode(UInt8.self, forKey: .daysPerMove)
+            )
+        case .unlimited:
+            self = .unlimited
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .clock(initialSeconds, incrementSeconds):
+            try container.encode(Kind.clock, forKey: .type)
+            try container.encode(initialSeconds, forKey: .initialSeconds)
+            try container.encode(incrementSeconds, forKey: .incrementSeconds)
+        case let .correspondence(daysPerMove):
+            try container.encode(Kind.correspondence, forKey: .type)
+            try container.encode(daysPerMove, forKey: .daysPerMove)
+        case .unlimited:
+            try container.encode(Kind.unlimited, forKey: .type)
+        }
     }
 }
 
@@ -113,7 +200,9 @@ public struct BotGame: Codable, Equatable, Identifiable, Sendable {
     public let url: String
     public let playerColor: PlayerColor
     public let opponent: BotOpponent
-    public let clock: ClockTimeControl
+    public let variant: GameVariant
+    public let timeControl: BotGameTimeControl
+    public let initialFEN: String?
 
     private enum CodingKeys: String, CodingKey {
         case provider
@@ -121,7 +210,9 @@ public struct BotGame: Codable, Equatable, Identifiable, Sendable {
         case url
         case playerColor = "player_color"
         case opponent
-        case clock
+        case variant
+        case timeControl = "time_control"
+        case initialFEN = "initial_fen"
     }
 }
 

@@ -273,13 +273,19 @@ private struct ConnectedView: View {
 private struct BotGameCreatorView: View {
     @EnvironmentObject private var store: LibChessStore
     @State private var opponentID = ""
-    @State private var timeControl = BotTimeControlPreset.rapid
+    @State private var variantID = ""
+    @State private var timeControlMode = BotTimeControlMode.clock
+    @State private var initialSeconds: UInt32 = 600
+    @State private var incrementSeconds: UInt32 = 0
+    @State private var correspondenceDays: UInt8 = 3
     @State private var color = GameColorPreference.random
+    @State private var useCustomPosition = false
+    @State private var initialFEN = ""
 
     var body: some View {
         GroupBox("Play a bot") {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Create a casual standard game against a bot from \(store.connectedProvider?.displayName ?? "the connected provider"). The opponent catalog comes from LibChess, so this frontend does not encode provider-specific bot levels.")
+                Text("Create a casual game against a bot from \(store.connectedProvider?.displayName ?? "the connected provider"). Every choice below is advertised by LibChess for the active provider.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -296,10 +302,10 @@ private struct BotGameCreatorView: View {
                     }
 
                     GridRow {
-                        Text("Time control")
-                        Picker("Time control", selection: $timeControl) {
-                            ForEach(BotTimeControlPreset.options) { option in
-                                Text(option.label).tag(option)
+                        Text("Variant")
+                        Picker("Variant", selection: variantSelection) {
+                            ForEach(store.botVariants) { variant in
+                                Text(variant.displayName).tag(variant.id)
                             }
                         }
                         .labelsHidden()
@@ -307,33 +313,114 @@ private struct BotGameCreatorView: View {
                     }
 
                     GridRow {
+                        Text("Time control")
+                        Picker("Time control", selection: timeControlModeSelection) {
+                            ForEach(availableTimeControlModes) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if selectedTimeControlMode == .clock, let clockOptions {
+                        GridRow {
+                            Text("Initial time")
+                            Picker("Initial time", selection: initialSecondsSelection) {
+                                ForEach(clockOptions.initialSeconds, id: \.self) { seconds in
+                                    Text(seconds.initialTimeLabel).tag(seconds)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        GridRow {
+                            Text("Increment")
+                            Picker("Increment", selection: incrementSecondsSelection) {
+                                ForEach(clockOptions.incrementSeconds, id: \.self) { seconds in
+                                    Text(seconds.incrementLabel).tag(seconds)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
+                    if selectedTimeControlMode == .correspondence {
+                        GridRow {
+                            Text("Per move")
+                            Picker("Days per move", selection: correspondenceDaysSelection) {
+                                ForEach(correspondenceDayOptions, id: \.self) { days in
+                                    Text(days == 1 ? "1 day" : "\(days) days").tag(days)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
+                    GridRow {
                         Text("Play as")
-                        Picker("Play as", selection: $color) {
-                            Label("White", systemImage: "circle.fill")
-                                .tag(GameColorPreference.white)
-                            Label("Random", systemImage: "shuffle")
-                                .tag(GameColorPreference.random)
-                            Label("Black", systemImage: "circle")
-                                .tag(GameColorPreference.black)
+                        Picker("Play as", selection: colorSelection) {
+                            ForEach(advertisedColors) { option in
+                                Label(option.label, systemImage: option.systemImage)
+                                    .tag(option)
+                            }
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
                     }
                 }
 
+                if let variant = selectedVariant, variant.supportsCustomPosition {
+                    Divider()
+
+                    if variant.requiresCustomPosition {
+                        Label("This variant requires a custom initial position.", systemImage: "square.grid.3x3")
+                            .font(.callout)
+                    } else {
+                        Toggle("Use a custom initial position", isOn: $useCustomPosition)
+                    }
+
+                    if customPositionEnabled {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Initial position (X-FEN)")
+                                .font(.callout.weight(.medium))
+                            TextField("X-FEN", text: $initialFEN)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                            Text("A single printable ASCII line, up to 1,024 bytes. The provider validates the chess position.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 HStack {
-                    Label("Standard chess · Casual · Blitz or slower", systemImage: "checkmark.shield")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    if let validationMessage {
+                        Label(validationMessage, systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                    } else {
+                        Label(summaryLabel, systemImage: "checkmark.shield")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
 
                     Spacer()
 
                     Button {
+                        guard let requestedTimeControl else {
+                            return
+                        }
                         store.createBotGame(
                             opponentID: selectedOpponentID,
-                            initialSeconds: timeControl.initialSeconds,
-                            incrementSeconds: timeControl.incrementSeconds,
-                            color: color
+                            variantID: selectedVariantID,
+                            timeControl: requestedTimeControl,
+                            color: selectedColor,
+                            initialFEN: customPositionEnabled ? initialFEN : nil
                         )
                     } label: {
                         HStack(spacing: 7) {
@@ -345,7 +432,7 @@ private struct BotGameCreatorView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.isCreatingBotGame || selectedOpponentID.isEmpty)
+                    .disabled(store.isCreatingBotGame || validationMessage != nil)
                 }
             }
             .padding(10)
@@ -368,6 +455,203 @@ private struct BotGameCreatorView: View {
             set: { opponentID = $0 }
         )
     }
+
+    private var selectedVariantID: String {
+        if store.botVariants.contains(where: { $0.id == variantID }) {
+            return variantID
+        }
+        return store.botVariants.first(where: { $0.id == "standard" })?.id
+            ?? store.botVariants.first?.id
+            ?? ""
+    }
+
+    private var selectedVariant: GameVariant? {
+        store.botVariants.first(where: { $0.id == selectedVariantID })
+    }
+
+    private var variantSelection: Binding<String> {
+        Binding(
+            get: { selectedVariantID },
+            set: { variantID = $0 }
+        )
+    }
+
+    private var availableTimeControlModes: [BotTimeControlMode] {
+        guard let options = store.botGameOptions else {
+            return []
+        }
+        var modes: [BotTimeControlMode] = []
+        if options.clock != nil {
+            modes.append(.clock)
+        }
+        if !options.correspondenceDays.isEmpty {
+            modes.append(.correspondence)
+        }
+        if options.unlimited {
+            modes.append(.unlimited)
+        }
+        return modes
+    }
+
+    private var selectedTimeControlMode: BotTimeControlMode {
+        availableTimeControlModes.contains(timeControlMode)
+            ? timeControlMode
+            : availableTimeControlModes.first ?? .clock
+    }
+
+    private var timeControlModeSelection: Binding<BotTimeControlMode> {
+        Binding(
+            get: { selectedTimeControlMode },
+            set: { timeControlMode = $0 }
+        )
+    }
+
+    private var clockOptions: ClockTimeControlOptions? {
+        store.botGameOptions?.clock
+    }
+
+    private var selectedInitialSeconds: UInt32 {
+        guard let choices = clockOptions?.initialSeconds else {
+            return initialSeconds
+        }
+        return choices.contains(initialSeconds) ? initialSeconds : choices.first ?? 0
+    }
+
+    private var initialSecondsSelection: Binding<UInt32> {
+        Binding(
+            get: { selectedInitialSeconds },
+            set: { initialSeconds = $0 }
+        )
+    }
+
+    private var selectedIncrementSeconds: UInt32 {
+        guard let choices = clockOptions?.incrementSeconds else {
+            return incrementSeconds
+        }
+        return choices.contains(incrementSeconds) ? incrementSeconds : choices.first ?? 0
+    }
+
+    private var incrementSecondsSelection: Binding<UInt32> {
+        Binding(
+            get: { selectedIncrementSeconds },
+            set: { incrementSeconds = $0 }
+        )
+    }
+
+    private var correspondenceDayOptions: [UInt8] {
+        store.botGameOptions?.correspondenceDays ?? []
+    }
+
+    private var selectedCorrespondenceDays: UInt8 {
+        correspondenceDayOptions.contains(correspondenceDays)
+            ? correspondenceDays
+            : correspondenceDayOptions.first ?? 1
+    }
+
+    private var correspondenceDaysSelection: Binding<UInt8> {
+        Binding(
+            get: { selectedCorrespondenceDays },
+            set: { correspondenceDays = $0 }
+        )
+    }
+
+    private var advertisedColors: [GameColorPreference] {
+        let colors = store.botGameOptions?.colors ?? []
+        return [GameColorPreference.white, .random, .black].filter(colors.contains)
+    }
+
+    private var selectedColor: GameColorPreference {
+        if advertisedColors.contains(color) {
+            return color
+        }
+        return advertisedColors.first ?? .random
+    }
+
+    private var colorSelection: Binding<GameColorPreference> {
+        Binding(
+            get: { selectedColor },
+            set: { color = $0 }
+        )
+    }
+
+    private var customPositionEnabled: Bool {
+        guard let variant = selectedVariant else {
+            return false
+        }
+        return variant.requiresCustomPosition || (variant.supportsCustomPosition && useCustomPosition)
+    }
+
+    private var requestedTimeControl: BotGameTimeControl? {
+        switch selectedTimeControlMode {
+        case .clock:
+            guard let clockOptions,
+                  clockOptions.initialSeconds.contains(selectedInitialSeconds),
+                  clockOptions.incrementSeconds.contains(selectedIncrementSeconds)
+            else {
+                return nil
+            }
+            return .clock(
+                initialSeconds: selectedInitialSeconds,
+                incrementSeconds: selectedIncrementSeconds
+            )
+        case .correspondence:
+            guard correspondenceDayOptions.contains(selectedCorrespondenceDays) else {
+                return nil
+            }
+            return .correspondence(daysPerMove: selectedCorrespondenceDays)
+        case .unlimited:
+            return store.botGameOptions?.unlimited == true ? .unlimited : nil
+        }
+    }
+
+    private var validationMessage: String? {
+        guard !selectedOpponentID.isEmpty,
+              let variant = selectedVariant,
+              !advertisedColors.isEmpty,
+              let timeControl = requestedTimeControl
+        else {
+            return "The provider did not advertise complete bot-game options."
+        }
+
+        if case let .clock(initial, increment) = timeControl, let clockOptions {
+            guard clockOptions.initialSeconds.contains(initial)
+            else {
+                return "Choose an advertised initial time."
+            }
+            guard clockOptions.incrementSeconds.contains(increment)
+            else {
+                return "Choose an advertised increment."
+            }
+            let estimated = UInt64(initial) + UInt64(increment) * 40
+            if let minimum = clockOptions.minimumEstimatedDurationSeconds,
+               estimated < UInt64(minimum)
+            {
+                return "Choose a Blitz-or-slower clock."
+            }
+        }
+
+        if variant.requiresCustomPosition && !customPositionEnabled {
+            return "This variant requires an initial position."
+        }
+        if customPositionEnabled {
+            let fen = initialFEN.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !fen.isEmpty else {
+                return "Enter an initial X-FEN position."
+            }
+            guard fen.utf8.count <= 1_024,
+                  fen.unicodeScalars.allSatisfy({ (32 ... 126).contains($0.value) })
+            else {
+                return "X-FEN must be one printable ASCII line up to 1,024 bytes."
+            }
+        }
+        return nil
+    }
+
+    private var summaryLabel: String {
+        let variant = selectedVariant?.displayName ?? "Chess"
+        return "\(variant) · Casual · \(requestedTimeControl?.label ?? "Time control")"
+    }
+
 }
 
 private struct CreatedBotGameView: View {
@@ -383,7 +667,7 @@ private struct CreatedBotGameView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(game.opponent.displayName)
                         .font(.headline)
-                    Text("\(game.playerColor.label) · \(game.clock.label)")
+                    Text("\(game.variant.displayName) · \(game.playerColor.label) · \(game.timeControl.label)")
                         .foregroundStyle(.secondary)
                 }
 
@@ -398,23 +682,20 @@ private struct CreatedBotGameView: View {
     }
 }
 
-private struct BotTimeControlPreset: Hashable, Identifiable {
-    let initialSeconds: Int
-    let incrementSeconds: Int
+private enum BotTimeControlMode: String, Hashable, Identifiable {
+    case clock
+    case correspondence
+    case unlimited
 
-    var id: String { "\(initialSeconds)-\(incrementSeconds)" }
-    var label: String { "\(initialSeconds / 60) + \(incrementSeconds)" }
+    var id: Self { self }
 
-    static let rapid = Self(initialSeconds: 600, incrementSeconds: 0)
-    static let options = [
-        Self(initialSeconds: 180, incrementSeconds: 0),
-        Self(initialSeconds: 180, incrementSeconds: 2),
-        Self(initialSeconds: 300, incrementSeconds: 0),
-        Self(initialSeconds: 300, incrementSeconds: 3),
-        rapid,
-        Self(initialSeconds: 900, incrementSeconds: 10),
-        Self(initialSeconds: 1_800, incrementSeconds: 0),
-    ]
+    var label: String {
+        switch self {
+        case .clock: "Clock"
+        case .correspondence: "Correspondence"
+        case .unlimited: "Unlimited"
+        }
+    }
 }
 
 private extension PlayerColor {
@@ -426,8 +707,62 @@ private extension PlayerColor {
     }
 }
 
-private extension ClockTimeControl {
+private extension BotGameTimeControl {
     var label: String {
-        "\(initialSeconds / 60) + \(incrementSeconds)"
+        switch self {
+        case let .clock(initialSeconds, incrementSeconds):
+            let minutes = Double(initialSeconds) / 60
+            let initial = initialSeconds.isMultiple(of: 60)
+                ? "\(initialSeconds / 60)"
+                : minutes.formatted(.number.precision(.fractionLength(2)))
+            return "\(initial) + \(incrementSeconds)"
+        case let .correspondence(daysPerMove):
+            return daysPerMove == 1 ? "1 day per move" : "\(daysPerMove) days per move"
+        case .unlimited:
+            return "Unlimited"
+        }
+    }
+}
+
+private extension GameColorPreference {
+    var label: String {
+        switch self {
+        case .white: "White"
+        case .random: "Random"
+        case .black: "Black"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .white: "circle.fill"
+        case .random: "shuffle"
+        case .black: "circle"
+        }
+    }
+}
+
+private extension UInt32 {
+    var initialTimeLabel: String {
+        switch self {
+        case 0:
+            "0 seconds"
+        case 1 ..< 60:
+            "\(self) seconds"
+        case 60:
+            "1 minute"
+        case 90:
+            "1 minute 30 seconds"
+        default:
+            "\(self / 60) minutes"
+        }
+    }
+
+    var incrementLabel: String {
+        switch self {
+        case 0: "No increment"
+        case 1: "1 second"
+        default: "\(self) seconds"
+        }
     }
 }
