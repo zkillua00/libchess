@@ -1,0 +1,394 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use std::{
+    ffi::c_void,
+    panic::{AssertUnwindSafe, catch_unwind},
+    ptr, slice,
+    thread::{self, JoinHandle},
+};
+
+use libchess::{Account, Client, LibChessError, ProviderDescriptor};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+const API_VERSION: u32 = 1;
+
+const SEND_OK: i32 = 0;
+const SEND_NULL_CLIENT: i32 = 1;
+const SEND_NULL_BYTES: i32 = 2;
+const SEND_INVALID_JSON: i32 = 3;
+const SEND_UNSUPPORTED_VERSION: i32 = 4;
+const SEND_WORKER_CLOSED: i32 = 5;
+const SEND_PANIC: i32 = 6;
+
+pub type LibChessEventCallback =
+    extern "C" fn(context: *mut c_void, event_json: *const u8, event_json_length: usize);
+
+#[repr(C)]
+pub struct LibChessClient {
+    sender: mpsc::UnboundedSender<WorkerMessage>,
+    worker: Option<JoinHandle<()>>,
+}
+
+struct EventSink {
+    callback: LibChessEventCallback,
+    // Raw pointers are not Send. Treating the opaque address as an integer
+    // keeps the cross-thread contract explicit; native code owns its lifetime.
+    context_address: usize,
+}
+
+impl EventSink {
+    fn emit(&self, request_id: Option<&str>, event: Event) {
+        let envelope = EventEnvelope {
+            version: API_VERSION,
+            request_id,
+            event,
+        };
+
+        let Ok(bytes) = serde_json::to_vec(&envelope) else {
+            return;
+        };
+
+        (self.callback)(
+            self.context_address as *mut c_void,
+            bytes.as_ptr(),
+            bytes.len(),
+        );
+    }
+}
+
+enum WorkerMessage {
+    Command(CommandEnvelope),
+    Shutdown,
+}
+
+#[derive(Deserialize)]
+struct CommandEnvelope {
+    version: u32,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(flatten)]
+    command: Command,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Command {
+    Connect {
+        provider: String,
+        access_token: String,
+    },
+    Disconnect,
+    ListProviders,
+    RefreshAccount,
+}
+
+#[derive(Serialize)]
+struct EventEnvelope<'a> {
+    version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<&'a str>,
+    #[serde(flatten)]
+    event: Event,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Event {
+    AccountUpdated {
+        account: Account,
+    },
+    ConnectionStateChanged {
+        state: ConnectionState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+    },
+    Error {
+        error: LibChessError,
+    },
+    Providers {
+        providers: Vec<ProviderDescriptor>,
+    },
+    Ready {
+        providers: Vec<ProviderDescriptor>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConnectionState {
+    Connected,
+    Connecting,
+    Disconnected,
+}
+
+async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: EventSink) {
+    let mut client = Client::new();
+    sink.emit(
+        None,
+        Event::Ready {
+            providers: client.providers(),
+        },
+    );
+
+    while let Some(message) = receiver.recv().await {
+        match message {
+            WorkerMessage::Shutdown => break,
+            WorkerMessage::Command(envelope) => {
+                let request_id = envelope.request_id.as_deref();
+                match envelope.command {
+                    Command::ListProviders => sink.emit(
+                        request_id,
+                        Event::Providers {
+                            providers: client.providers(),
+                        },
+                    ),
+                    Command::Connect {
+                        provider,
+                        access_token,
+                    } => {
+                        sink.emit(
+                            request_id,
+                            Event::ConnectionStateChanged {
+                                state: ConnectionState::Connecting,
+                                provider: Some(provider.clone()),
+                            },
+                        );
+
+                        match client.connect(&provider, access_token).await {
+                            Ok(account) => {
+                                sink.emit(
+                                    request_id,
+                                    Event::AccountUpdated {
+                                        account: account.clone(),
+                                    },
+                                );
+                                sink.emit(
+                                    request_id,
+                                    Event::ConnectionStateChanged {
+                                        state: ConnectionState::Connected,
+                                        provider: Some(account.provider.to_string()),
+                                    },
+                                );
+                            }
+                            Err(error) => {
+                                sink.emit(request_id, Event::Error { error });
+                                sink.emit(
+                                    request_id,
+                                    Event::ConnectionStateChanged {
+                                        state: ConnectionState::Disconnected,
+                                        provider: None,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    Command::RefreshAccount => match client.refresh_account().await {
+                        Ok(account) => {
+                            sink.emit(request_id, Event::AccountUpdated { account });
+                        }
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
+                    Command::Disconnect => {
+                        client.disconnect();
+                        sink.emit(
+                            request_id,
+                            Event::ConnectionStateChanged {
+                                state: ConnectionState::Disconnected,
+                                provider: None,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn libchess_api_version() -> u32 {
+    API_VERSION
+}
+
+#[unsafe(no_mangle)]
+/// Creates a client whose callback receives events on a dedicated worker.
+///
+/// # Safety
+///
+/// `context` must remain valid for every callback until
+/// [`libchess_client_destroy`] returns. The callback must not unwind across the
+/// C ABI boundary.
+pub unsafe extern "C" fn libchess_client_create(
+    callback: Option<LibChessEventCallback>,
+    context: *mut c_void,
+) -> *mut LibChessClient {
+    let Some(callback) = callback else {
+        return ptr::null_mut();
+    };
+
+    catch_unwind(AssertUnwindSafe(|| {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let sink = EventSink {
+            callback,
+            context_address: context as usize,
+        };
+        let worker = thread::Builder::new()
+            .name("libchess-worker".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                if let Ok(runtime) = runtime {
+                    runtime.block_on(run_worker(receiver, sink));
+                }
+            });
+
+        match worker {
+            Ok(worker) => Box::into_raw(Box::new(LibChessClient {
+                sender,
+                worker: Some(worker),
+            })),
+            Err(_) => ptr::null_mut(),
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+/// Queues one versioned JSON command for the client worker.
+///
+/// # Safety
+///
+/// `client` must be a live handle returned by [`libchess_client_create`].
+/// `command_json` must point to `command_json_length` readable bytes for this
+/// call. Destruction must not happen concurrently.
+pub unsafe extern "C" fn libchess_client_send(
+    client: *mut LibChessClient,
+    command_json: *const u8,
+    command_json_length: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if client.is_null() {
+            return SEND_NULL_CLIENT;
+        }
+        if command_json.is_null() {
+            return SEND_NULL_BYTES;
+        }
+
+        // SAFETY: The caller promises that `command_json` points to
+        // `command_json_length` readable bytes for the duration of this call.
+        let bytes = unsafe { slice::from_raw_parts(command_json, command_json_length) };
+        let command: CommandEnvelope = match serde_json::from_slice(bytes) {
+            Ok(command) => command,
+            Err(_) => return SEND_INVALID_JSON,
+        };
+        if command.version != API_VERSION {
+            return SEND_UNSUPPORTED_VERSION;
+        }
+
+        // SAFETY: The non-null handle was returned by `libchess_client_create`.
+        // The ABI contract forbids concurrent destruction of this handle.
+        let client = unsafe { &*client };
+        match client.sender.send(WorkerMessage::Command(command)) {
+            Ok(()) => SEND_OK,
+            Err(_) => SEND_WORKER_CLOSED,
+        }
+    }))
+    .unwrap_or(SEND_PANIC)
+}
+
+#[unsafe(no_mangle)]
+/// Stops the worker and destroys a client handle.
+///
+/// # Safety
+///
+/// `client` must be null or a live handle returned by
+/// [`libchess_client_create`], and it must be destroyed exactly once. This
+/// function must not run from the event callback or concurrently with send.
+pub unsafe extern "C" fn libchess_client_destroy(client: *mut LibChessClient) {
+    if client.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The handle came from `libchess_client_create`, and the ABI
+        // requires exactly one destroy call with no concurrent send calls.
+        let mut client = unsafe { Box::from_raw(client) };
+        let _ = client.sender.send(WorkerMessage::Shutdown);
+        if let Some(worker) = client.worker.take() {
+            let _ = worker.join();
+        }
+    }));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::mpsc as std_mpsc, time::Duration};
+
+    use super::*;
+
+    extern "C" fn collect_event(context: *mut c_void, bytes: *const u8, length: usize) {
+        // SAFETY: The test owns this sender until after the client is destroyed,
+        // and the callback bytes are valid for the duration of the callback.
+        let sender = unsafe { &*(context as *const std_mpsc::Sender<String>) };
+        let bytes = unsafe { slice::from_raw_parts(bytes, length) };
+        sender
+            .send(String::from_utf8(bytes.to_vec()).expect("UTF-8 event"))
+            .expect("collect event");
+    }
+
+    #[test]
+    fn exposes_a_versioned_command_event_protocol() {
+        let (sender, receiver) = std_mpsc::channel::<String>();
+        let sender = Box::new(sender);
+        let context = (&*sender as *const std_mpsc::Sender<String>)
+            .cast_mut()
+            .cast();
+        // SAFETY: The boxed sender outlives the client and callback.
+        let client = unsafe { libchess_client_create(Some(collect_event), context) };
+        assert!(!client.is_null());
+
+        let ready = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ready event");
+        assert!(ready.contains(r#""type":"ready""#));
+        assert!(ready.contains(r#""id":"lichess""#));
+
+        let command = br#"{"version":1,"request_id":"providers-1","type":"list_providers"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, command.as_ptr(), command.len()) },
+            SEND_OK
+        );
+
+        let providers = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("providers event");
+        assert!(providers.contains(r#""request_id":"providers-1""#));
+        assert!(providers.contains(r#""type":"providers""#));
+
+        // SAFETY: This is the only destroy and no sends run concurrently.
+        unsafe { libchess_client_destroy(client) };
+        drop(sender);
+    }
+
+    #[test]
+    fn rejects_malformed_commands_without_starting_work() {
+        let (sender, _receiver) = std_mpsc::channel::<String>();
+        let sender = Box::new(sender);
+        let context = (&*sender as *const std_mpsc::Sender<String>)
+            .cast_mut()
+            .cast();
+        // SAFETY: The boxed sender outlives the client and callback.
+        let client = unsafe { libchess_client_create(Some(collect_event), context) };
+        let malformed = b"not-json";
+
+        assert_eq!(
+            unsafe { libchess_client_send(client, malformed.as_ptr(), malformed.len()) },
+            SEND_INVALID_JSON
+        );
+
+        // SAFETY: This is the only destroy and no sends run concurrently.
+        unsafe { libchess_client_destroy(client) };
+        drop(sender);
+    }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "libchess"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+libchess-core.workspace = true
+libchess-lichess.workspace = true
+

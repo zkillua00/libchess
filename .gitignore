@@ -1,0 +1,7 @@
+/target/
+/.build/
+/frontends/macos/.build/
+/frontends/macos/.swiftpm/
+*.xcuserstate
+.DS_Store
+
