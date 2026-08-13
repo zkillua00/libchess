@@ -11,9 +11,10 @@ use std::{
 
 use libchess::{
     AccessToken, Account, BoardState, BotGame, BotGameRequest, BotGameTimeControl, Client,
-    ColorPreference, ErrorKind, GameId, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
-    LiveGameCatalogEvent, LiveGameEvent, LiveGameRequest, LiveGameSummary, MoveSubmission,
-    OAuthConnection, PlayerColor, ProviderDescriptor,
+    ColorPreference, ErrorKind, GameExport, GameHistoryPage, GameId, LibChessError,
+    LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameEvent,
+    LiveGameRequest, LiveGameSummary, MoveSubmission, OAuthConnection, PlayerColor,
+    ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -106,6 +107,9 @@ enum Command {
         initial_fen: Option<String>,
     },
     Disconnect,
+    ExportGame {
+        game_id: String,
+    },
     ListProviders,
     PerformGameAction {
         game_id: String,
@@ -118,6 +122,11 @@ enum Command {
         offer_draw: bool,
     },
     RefreshAccount,
+    RefreshGameHistory {
+        #[serde(default)]
+        before_millis: Option<u64>,
+        limit: u16,
+    },
     RefreshLiveGames,
     StartLiveGame {
         game_id: String,
@@ -158,6 +167,13 @@ enum Event {
     GameActionCompleted {
         game_id: String,
         action: LiveGameAction,
+    },
+    GameExported {
+        game_export: GameExport,
+    },
+    GameHistoryUpdated {
+        page: GameHistoryPage,
+        append: bool,
     },
     LiveGameChat {
         chat: LiveChatMessage,
@@ -339,6 +355,15 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             providers: client.providers(),
                         },
                     ),
+                    Command::ExportGame { game_id } => match GameId::new(game_id) {
+                        Ok(game_id) => match client.export_game(game_id).await {
+                            Ok(game_export) => {
+                                sink.emit(request_id, Event::GameExported { game_export });
+                            }
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        },
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
                     Command::Connect {
                         provider,
                         access_token,
@@ -501,6 +526,18 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         }
                         Err(error) => sink.emit(request_id, Event::Error { error }),
                     },
+                    Command::RefreshGameHistory {
+                        before_millis,
+                        limit,
+                    } => {
+                        let append = before_millis.is_some();
+                        match client.game_history(limit, before_millis).await {
+                            Ok(page) => {
+                                sink.emit(request_id, Event::GameHistoryUpdated { page, append })
+                            }
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
                     Command::RefreshLiveGames => match client.connected_backend() {
                         Ok(backend) => match backend.live_games().await {
                             Ok(games) => sink.emit(request_id, Event::LiveGamesUpdated { games }),
@@ -871,6 +908,30 @@ mod tests {
             .expect("move validation error");
         assert!(error.contains(r#""request_id":"move-1""#));
         assert!(error.contains("compact ASCII move notation"));
+
+        let history =
+            br#"{"version":1,"request_id":"history-1","type":"refresh_game_history","limit":20}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, history.as_ptr(), history.len()) },
+            SEND_OK
+        );
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("history connection error");
+        assert!(error.contains(r#""request_id":"history-1""#));
+        assert!(error.contains("no provider is connected"));
+
+        let invalid_export =
+            br#"{"version":1,"request_id":"export-1","type":"export_game","game_id":"../game"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, invalid_export.as_ptr(), invalid_export.len()) },
+            SEND_OK
+        );
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("export validation error");
+        assert!(error.contains(r#""request_id":"export-1""#));
+        assert!(error.contains("game identifiers"));
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

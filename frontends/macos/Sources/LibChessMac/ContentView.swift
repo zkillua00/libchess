@@ -2,11 +2,15 @@ import Combine
 import Foundation
 import LibChessKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var store: LibChessStore
     @Environment(\.openURL) private var openURL
     @State private var selection: SidebarDestination? = .newGame
+    @State private var exportDocument: PGNDocument?
+    @State private var exportFilename = "game.pgn"
+    @State private var showsFileExporter = false
 
     var body: some View {
         NavigationSplitView {
@@ -44,7 +48,18 @@ struct ContentView: View {
         .onChange(of: selection) { _, destination in
             if case let .some(.game(gameID)) = destination {
                 store.openLiveGame(gameID)
+            } else if destination == .history, store.recentGames.isEmpty {
+                store.refreshGameHistory()
             }
+        }
+        .onChange(of: store.exportedGame) { _, gameExport in
+            guard let gameExport else {
+                return
+            }
+            exportDocument = PGNDocument(text: gameExport.pgn)
+            exportFilename = gameExport.suggestedFilename
+            showsFileExporter = true
+            store.consumeExportedGame()
         }
         .onChange(of: store.authorizationURL) { _, authorizationURL in
             if let authorizationURL {
@@ -56,6 +71,17 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .showNewGame)) { _ in
             selection = .newGame
+        }
+        .fileExporter(
+            isPresented: $showsFileExporter,
+            document: exportDocument,
+            contentType: .portableGameNotation,
+            defaultFilename: exportFilename
+        ) { result in
+            if case let .failure(error) = result {
+                store.message = "The PGN could not be saved: \(error.localizedDescription)"
+            }
+            exportDocument = nil
         }
     }
 
@@ -70,8 +96,14 @@ struct ContentView: View {
                         .tag(SidebarDestination.game(game.id))
                 }
             }
+
+            Section("Library") {
+                Label("Recent Games", systemImage: "clock.arrow.circlepath")
+                    .tag(SidebarDestination.history)
+            }
         }
         .listStyle(.sidebar)
+        .animation(.snappy(duration: 0.22), value: store.activeGames.map(\.id))
         .scrollContentBackground(.hidden)
         .background(.clear)
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -137,6 +169,8 @@ struct ContentView: View {
             } else {
                 NewGameView()
             }
+        case .history:
+            RecentGamesView()
         case .account:
             AccountOverviewView()
         }
@@ -146,6 +180,7 @@ struct ContentView: View {
 private enum SidebarDestination: Hashable {
     case newGame
     case game(String)
+    case history
     case account
 }
 
@@ -260,6 +295,229 @@ private struct SidebarAccountButton: View {
             "Connecting…"
         case .disconnected:
             "Lichess"
+        }
+    }
+}
+
+private struct RecentGamesView: View {
+    @EnvironmentObject private var store: LibChessStore
+
+    var body: some View {
+        Group {
+            if !store.supportsGameHistory {
+                ContentUnavailableView {
+                    Label("Game History Unavailable", systemImage: "clock.badge.questionmark")
+                } description: {
+                    Text("The connected chess service does not expose finished games.")
+                }
+            } else if store.recentGames.isEmpty, store.isLoadingGameHistory {
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("Loading recent games…")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.recentGames.isEmpty {
+                ContentUnavailableView {
+                    Label("No Recent Games", systemImage: "clock.arrow.circlepath")
+                } description: {
+                    Text("Finished games from the connected account will appear here.")
+                } actions: {
+                    Button("Refresh") {
+                        store.refreshGameHistory()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else {
+                List {
+                    Section {
+                        ForEach(store.recentGames) { game in
+                            HistoryGameRow(game: game)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+
+                    if store.nextGameHistoryCursor != nil {
+                        Section {
+                            HStack {
+                                Spacer()
+                                Button {
+                                    store.loadMoreGameHistory()
+                                } label: {
+                                    if store.isLoadingGameHistory {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .frame(width: 90)
+                                    } else {
+                                        Text("Load More")
+                                            .frame(width: 90)
+                                    }
+                                }
+                                .disabled(store.isLoadingGameHistory)
+                                Spacer()
+                            }
+                            .padding(.vertical, 6)
+                        }
+                    }
+                }
+                .listStyle(.inset)
+                .animation(.snappy(duration: 0.24), value: store.recentGames.map(\.id))
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("Recent Games")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    store.refreshGameHistory()
+                } label: {
+                    Label("Refresh Games", systemImage: "arrow.clockwise")
+                }
+                .disabled(store.isLoadingGameHistory)
+                .help("Refresh Recent Games")
+            }
+        }
+    }
+}
+
+private struct HistoryGameRow: View {
+    @EnvironmentObject private var store: LibChessStore
+    @Environment(\.openURL) private var openURL
+
+    let game: GameHistoryEntry
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: resultSymbol)
+                .font(.title3)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(resultColor)
+                .frame(width: 24)
+                .accessibilityLabel(resultText)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(game.opponentDisplayName)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let rating = game.opponentRating {
+                        Text("\(rating)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    if let level = game.opponentAILevel {
+                        Text("Level \(level)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Text(resultText)
+                    Text("·")
+                    Text(game.variantName)
+                    Text("·")
+                    Text(game.speed.displayName)
+                    Text("·")
+                    Text(game.rated ? "Rated" : "Casual")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            Text(gameDate, style: .relative)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .help(gameDate.formatted(date: .complete, time: .shortened))
+
+            if store.isExportingGame(game.id) {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24)
+            }
+
+            Menu {
+                Button {
+                    openAnalysis()
+                } label: {
+                    Label("Analyze on Lichess", systemImage: "chart.xyaxis.line")
+                }
+                if store.supportsPGNExport {
+                    Button {
+                        store.exportGame(game.id)
+                    } label: {
+                        Label("Export PGN…", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(store.isExportingGame(game.id))
+                }
+                Divider()
+                Button {
+                    openGame()
+                } label: {
+                    Label("View on Lichess", systemImage: "safari")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: openAnalysis)
+        .contextMenu {
+            Button("Analyze on Lichess", action: openAnalysis)
+            if store.supportsPGNExport {
+                Button("Export PGN…") {
+                    store.exportGame(game.id)
+                }
+                .disabled(store.isExportingGame(game.id))
+            }
+            Divider()
+            Button("View on Lichess", action: openGame)
+        }
+    }
+
+    private var gameDate: Date {
+        Date(timeIntervalSince1970: Double(game.lastMoveAtMillis) / 1_000)
+    }
+
+    private var resultText: String {
+        guard let winner = game.winner else {
+            return game.status == "aborted" ? "Aborted" : "Draw"
+        }
+        return winner == game.playerColor ? "Won" : "Lost"
+    }
+
+    private var resultSymbol: String {
+        guard let winner = game.winner else {
+            return game.status == "aborted" ? "minus.circle.fill" : "equal.circle.fill"
+        }
+        return winner == game.playerColor ? "checkmark.circle.fill" : "xmark.circle.fill"
+    }
+
+    private var resultColor: Color {
+        guard let winner = game.winner else {
+            return .secondary
+        }
+        return winner == game.playerColor ? .green : .red
+    }
+
+    private func openAnalysis() {
+        if let url = URL(string: game.analysisURL) {
+            openURL(url)
+        }
+    }
+
+    private func openGame() {
+        if let url = URL(string: game.url) {
+            openURL(url)
         }
     }
 }
@@ -485,6 +743,48 @@ private struct InlineMessageBanner: View {
         .background(.bar)
         .overlay(alignment: .bottom) {
             Divider()
+        }
+    }
+}
+
+private struct PGNDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.portableGameNotation] }
+
+    let text: String
+
+    init(text: String = "") {
+        self.text = text
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        text = String(decoding: data, as: UTF8.self)
+    }
+
+    func fileWrapper(configuration _: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+
+private extension UTType {
+    static let portableGameNotation = UTType(
+        exportedAs: "org.libchess.portable-game-notation",
+        conformingTo: .plainText
+    )
+}
+
+private extension String {
+    var displayName: String {
+        switch self {
+        case "ultraBullet": "UltraBullet"
+        case "bullet": "Bullet"
+        case "blitz": "Blitz"
+        case "rapid": "Rapid"
+        case "classical": "Classical"
+        case "correspondence": "Correspondence"
+        default: replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 }

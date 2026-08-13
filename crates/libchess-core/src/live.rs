@@ -37,6 +37,88 @@ impl fmt::Display for GameId {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameHistoryRequest {
+    pub account_id: String,
+    pub account_username: String,
+    pub limit: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_millis: Option<u64>,
+}
+
+impl GameHistoryRequest {
+    pub fn new(
+        account_id: impl Into<String>,
+        account_username: impl Into<String>,
+        limit: u16,
+        before_millis: Option<u64>,
+    ) -> Result<Self, LibChessError> {
+        let account_id = account_id.into();
+        let account_username = account_username.into();
+        if !valid_account_field(&account_id) || !valid_account_field(&account_username) {
+            return Err(LibChessError::invalid_input(
+                "account identifiers must contain between 1 and 128 non-control characters",
+            ));
+        }
+        if !(1..=50).contains(&limit) {
+            return Err(LibChessError::invalid_input(
+                "game history pages must contain between 1 and 50 games",
+            ));
+        }
+
+        Ok(Self {
+            account_id,
+            account_username,
+            limit,
+            before_millis,
+        })
+    }
+}
+
+fn valid_account_field(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameHistoryEntry {
+    pub provider: ProviderId,
+    pub id: GameId,
+    pub url: String,
+    pub analysis_url: String,
+    pub player_color: PlayerColor,
+    pub opponent_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opponent_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opponent_rating: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opponent_ai_level: Option<u8>,
+    pub variant_id: GameVariantId,
+    pub variant_name: String,
+    pub rated: bool,
+    pub speed: String,
+    pub status: GameStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner: Option<PlayerColor>,
+    pub created_at_millis: u64,
+    pub last_move_at_millis: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameHistoryPage {
+    pub games: Vec<GameHistoryEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before_millis: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameExport {
+    pub provider: ProviderId,
+    pub game_id: GameId,
+    pub suggested_filename: String,
+    pub pgn: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LiveGameRequest {
     pub game_id: GameId,
     pub player_color: PlayerColor,
@@ -298,6 +380,9 @@ mod tests {
         assert!(LiveGameRequest::new("../game", PlayerColor::Black).is_err());
         assert!(MoveSubmission::new("v8BRXYtM", "e2e4", false).is_ok());
         assert!(MoveSubmission::new("v8BRXYtM", "P@e4", false).is_ok());
+        assert!(GameHistoryRequest::new("user-id", "User_Name", 20, None).is_ok());
+        assert!(GameHistoryRequest::new("user-id", "User_Name", 0, None).is_err());
+        assert!(GameHistoryRequest::new("user-id", "User\nName", 20, None).is_err());
         assert!(MoveSubmission::new("v8BRXYtM", "e2/e4", false).is_err());
     }
 

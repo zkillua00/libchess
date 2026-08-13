@@ -51,6 +51,7 @@ pub enum PlatformCapability {
     Account,
     BotGames,
     Challenges,
+    GameHistory,
     LiveGames,
     Matchmaking,
     #[serde(rename = "oauth_pkce")]
@@ -527,6 +528,23 @@ pub trait PlatformBackend: Send + Sync {
     async fn live_games(&self) -> Result<Vec<LiveGameSummary>, LibChessError> {
         Err(LibChessError::unsupported(format!(
             "provider '{}' does not expose ongoing games",
+            self.descriptor().id
+        )))
+    }
+
+    async fn game_history(
+        &self,
+        _request: GameHistoryRequest,
+    ) -> Result<GameHistoryPage, LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not expose game history",
+            self.descriptor().id
+        )))
+    }
+
+    async fn export_game(&self, _game_id: GameId) -> Result<GameExport, LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not support PGN export",
             self.descriptor().id
         )))
     }

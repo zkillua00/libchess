@@ -13,6 +13,10 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var isCreatingBotGame = false
     @Published public private(set) var activeGames: [LiveGameSummary] = []
     @Published public private(set) var liveGames: [String: LiveGame] = [:]
+    @Published public private(set) var recentGames: [GameHistoryEntry] = []
+    @Published public private(set) var isLoadingGameHistory = false
+    @Published public private(set) var nextGameHistoryCursor: UInt64?
+    @Published public private(set) var exportedGame: GameExport?
     @Published public private(set) var focusedGameID: String?
     @Published public private(set) var predictedBoards: [String: BoardState] = [:]
     @Published private var liveGameReceivedDates: [String: Date] = [:]
@@ -33,6 +37,8 @@ public final class LibChessStore: ObservableObject {
     private var pendingGameActionRequests: [String: String] = [:]
     private var pendingGameActionRequestByGame: [String: String] = [:]
     private var predictions: [String: MovePrediction] = [:]
+    private var pendingGameHistoryRequest: PendingGameHistoryRequest?
+    private var pendingGameExportRequests: [String: String] = [:]
     private var catalogWatchStarted = false
     private var catalogWatchRequestID: String?
     private var liveGamesRefreshTask: Task<Void, Never>?
@@ -130,6 +136,14 @@ public final class LibChessStore: ObservableObject {
             && descriptor.botGameOptions != nil
     }
 
+    public var supportsGameHistory: Bool {
+        connectedProvider?.capabilities.contains(.gameHistory) == true
+    }
+
+    public var supportsPGNExport: Bool {
+        connectedProvider?.capabilities.contains(.pgnExport) == true
+    }
+
     public var botOpponents: [BotOpponent] {
         connectedProvider?.botOpponents ?? []
     }
@@ -190,6 +204,42 @@ public final class LibChessStore: ObservableObject {
             return
         }
         send(BasicCommand(type: "refresh_live_games"))
+    }
+
+    public func refreshGameHistory() {
+        requestGameHistory(beforeMillis: nil)
+    }
+
+    public func loadMoreGameHistory() {
+        guard let nextGameHistoryCursor else {
+            return
+        }
+        requestGameHistory(beforeMillis: nextGameHistoryCursor)
+    }
+
+    public func exportGame(_ gameID: String) {
+        guard connectionState == .connected,
+              supportsPGNExport,
+              pendingGameExportRequests.values.contains(gameID) == false,
+              recentGames.contains(where: { $0.id == gameID })
+                  || activeGames.contains(where: { $0.id == gameID })
+        else {
+            return
+        }
+        let command = ExportGameCommand(gameID: gameID)
+        pendingGameExportRequests[command.requestID] = gameID
+        message = nil
+        if !send(command) {
+            pendingGameExportRequests.removeValue(forKey: command.requestID)
+        }
+    }
+
+    public func isExportingGame(_ gameID: String) -> Bool {
+        pendingGameExportRequests.values.contains(gameID)
+    }
+
+    public func consumeExportedGame() {
+        exportedGame = nil
     }
 
     public func createBotGame(
@@ -317,6 +367,10 @@ public final class LibChessStore: ObservableObject {
         createdBotGames = [:]
         activeGames = []
         liveGames = [:]
+        recentGames = []
+        isLoadingGameHistory = false
+        nextGameHistoryCursor = nil
+        exportedGame = nil
         focusedGameID = nil
         predictedBoards = [:]
         liveGameReceivedDates = [:]
@@ -333,6 +387,8 @@ public final class LibChessStore: ObservableObject {
         pendingGameActionRequests = [:]
         pendingGameActionRequestByGame = [:]
         predictions = [:]
+        pendingGameHistoryRequest = nil
+        pendingGameExportRequests = [:]
         catalogWatchStarted = false
         catalogWatchRequestID = nil
         liveGamesRefreshTask?.cancel()
@@ -402,6 +458,10 @@ public final class LibChessStore: ObservableObject {
                 receiveLiveGame(event.liveGame)
             case "live_games_updated":
                 receiveLiveGames(event.games)
+            case "game_history_updated":
+                receiveGameHistory(event)
+            case "game_exported":
+                receiveGameExport(event)
             case "live_games_changed":
                 scheduleLiveGamesRefresh()
             case "live_game_chat":
@@ -449,6 +509,13 @@ public final class LibChessStore: ObservableObject {
                    pendingGameActionRequests[requestID] != nil
                 {
                     clearPendingGameAction(requestID: requestID)
+                }
+                if event.requestID == pendingGameHistoryRequest?.requestID {
+                    pendingGameHistoryRequest = nil
+                    isLoadingGameHistory = false
+                }
+                if let requestID = event.requestID {
+                    pendingGameExportRequests.removeValue(forKey: requestID)
                 }
                 if event.requestID == catalogWatchRequestID {
                     catalogWatchStarted = false
@@ -681,6 +748,79 @@ public final class LibChessStore: ObservableObject {
         activeGames = merged
     }
 
+    private func requestGameHistory(beforeMillis: UInt64?) {
+        guard connectionState == .connected,
+              connectedProvider?.capabilities.contains(.gameHistory) == true,
+              pendingGameHistoryRequest == nil
+        else {
+            return
+        }
+        let command = RefreshGameHistoryCommand(beforeMillis: beforeMillis, limit: 20)
+        pendingGameHistoryRequest = PendingGameHistoryRequest(
+            requestID: command.requestID,
+            beforeMillis: beforeMillis
+        )
+        isLoadingGameHistory = true
+        message = nil
+        if !send(command) {
+            pendingGameHistoryRequest = nil
+            isLoadingGameHistory = false
+        }
+    }
+
+    private func receiveGameHistory(_ event: WireEvent) {
+        guard let pending = pendingGameHistoryRequest,
+              event.requestID == pending.requestID
+        else {
+            return
+        }
+        pendingGameHistoryRequest = nil
+        isLoadingGameHistory = false
+
+        guard event.append == (pending.beforeMillis != nil),
+              let page = event.page,
+              page.games.count <= 20,
+              page.games.allSatisfy(gameHistoryEntryIsValid),
+              Set(page.games.map(\.id)).count == page.games.count,
+              zip(page.games, page.games.dropFirst()).allSatisfy({ pair in
+                  pair.0.createdAtMillis >= pair.1.createdAtMillis
+              }),
+              page.nextBeforeMillis.map({ cursor in
+                  page.games.last.map { cursor < $0.createdAtMillis } ?? false
+              }) ?? true
+        else {
+            message = "LibChess returned an invalid game-history page."
+            return
+        }
+        nextGameHistoryCursor = page.nextBeforeMillis
+        if pending.beforeMillis == nil {
+            recentGames = page.games
+            return
+        }
+        let existingIDs = Set(recentGames.map(\.id))
+        recentGames.append(contentsOf: page.games.filter { !existingIDs.contains($0.id) })
+    }
+
+    private func receiveGameExport(_ event: WireEvent) {
+        guard let requestID = event.requestID,
+              let expectedGameID = pendingGameExportRequests.removeValue(forKey: requestID),
+              let export = event.gameExport,
+              export.gameID == expectedGameID,
+              export.provider == connectedProvider?.id,
+              export.suggestedFilename.utf8.count <= 128,
+              export.suggestedFilename.hasSuffix(".pgn"),
+              !export.suggestedFilename.contains("/"),
+              !export.suggestedFilename.contains("\\"),
+              !export.pgn.isEmpty,
+              export.pgn.utf8.count <= 8 * 1_024 * 1_024,
+              !export.pgn.contains("\0")
+        else {
+            message = "LibChess returned an invalid game export."
+            return
+        }
+        exportedGame = export
+    }
+
     private func receiveMovePrediction(_ event: WireEvent) {
         guard let requestID = event.requestID,
               let pending = pendingMoveRequests[requestID],
@@ -815,6 +955,26 @@ public final class LibChessStore: ObservableObject {
             && Self.providerURL(game.url, belongsTo: providerWebURL)
     }
 
+    private func gameHistoryEntryIsValid(_ game: GameHistoryEntry) -> Bool {
+        guard let provider = connectedProvider, let providerWebURL = provider.webURL else {
+            return false
+        }
+        return game.provider == provider.id
+            && game.id.utf8.count == 8
+            && game.id.utf8.allSatisfy {
+                (48 ... 57).contains($0)
+                    || (65 ... 90).contains($0)
+                    || (97 ... 122).contains($0)
+            }
+            && !game.opponentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && game.opponentName.utf8.count <= 128
+            && !game.variantName.isEmpty
+            && game.variantName.utf8.count <= 128
+            && game.lastMoveAtMillis >= game.createdAtMillis
+            && Self.providerURL(game.url, belongsTo: providerWebURL)
+            && Self.providerURL(game.analysisURL, belongsTo: providerWebURL)
+    }
+
     private static func providerURL(_ value: String, belongsTo providerValue: String) -> Bool {
         guard let url = URL(string: value),
               let providerURL = URL(string: providerValue),
@@ -876,6 +1036,11 @@ private struct PendingMove {
     let gameID: String
     let moveID: String
     let baseMoves: [String]
+}
+
+private struct PendingGameHistoryRequest {
+    let requestID: String
+    let beforeMillis: UInt64?
 }
 
 private struct MovePrediction {
@@ -1014,6 +1179,36 @@ struct StopLiveGameCommand: Encodable {
     let version = LIBCHESS_API_VERSION
     let requestID = UUID().uuidString
     let type = "stop_live_game"
+    let gameID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
+    }
+}
+
+struct RefreshGameHistoryCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "refresh_game_history"
+    let beforeMillis: UInt64?
+    let limit: UInt16
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case beforeMillis = "before_millis"
+        case limit
+    }
+}
+
+struct ExportGameCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "export_game"
     let gameID: String
 
     private enum CodingKeys: String, CodingKey {

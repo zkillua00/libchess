@@ -48,6 +48,27 @@ prevent an older frontend from starting.
 New platform adapters register a factory with `ClientBuilder`; existing native
 frontends continue to use the same command/event protocol.
 
+## History, exports, and post-game analysis
+
+Finished-game history is a provider capability, not a frontend-specific API.
+The shared request carries the authenticated account identity, a bounded page
+size, and an opaque time cursor. A provider returns normalized opponent,
+variant, result, timestamp, game URL, and analysis URL fields plus the next
+cursor. Frontends can therefore render and paginate a native game library
+without knowing a provider route or response schema.
+
+PGN export is a separate capability. The provider adapter fetches and bounds
+the payload, validates that it is textual PGN, and returns a safe suggested
+filename. The native wrapper validates the provider origin and export size
+again before opening the operating system save panel. For Lichess, recent
+games use the newest-first NDJSON user-game stream, and export requests ask for
+clocks, opening metadata, existing evaluations, and literate annotations.
+
+Opening a provider-owned analysis surface is distinct from running an engine.
+The history model carries a provider-generated analysis URL. Full local engine
+analysis will use an engine provider and `PostGameReview` context when that
+port is implemented; it is never inferred from a cloud-evaluation cache.
+
 ## Game creation
 
 Bot games are the first creation flow. A provider that advertises the

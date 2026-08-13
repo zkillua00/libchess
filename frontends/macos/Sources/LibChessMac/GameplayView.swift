@@ -2,10 +2,50 @@ import LibChessKit
 import Foundation
 import SwiftUI
 
+private enum BoardZoomLevel: String, CaseIterable, Identifiable {
+    case small
+    case medium
+    case large
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .small: "Small"
+        case .medium: "Medium"
+        case .large: "Large"
+        }
+    }
+
+    var scale: CGFloat {
+        switch self {
+        case .small: 0.70
+        case .medium: 0.85
+        case .large: 1
+        }
+    }
+
+    var larger: Self {
+        switch self {
+        case .small: .medium
+        case .medium, .large: .large
+        }
+    }
+
+    var smaller: Self {
+        switch self {
+        case .small, .medium: .small
+        case .large: .medium
+        }
+    }
+}
+
 struct LiveGameplayView: View {
     @EnvironmentObject private var store: LibChessStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
 
+    @AppStorage("org.libchess.macos.boardZoom") private var boardZoomRaw = BoardZoomLevel.medium.rawValue
     @State private var actionToConfirm: LiveGameAction?
     @State private var showsInspector = true
 
@@ -13,12 +53,21 @@ struct LiveGameplayView: View {
         GeometryReader { geometry in
             let availableWidth = max(160, geometry.size.width - 56)
             let availableHeight = max(160, geometry.size.height - 140)
-            let boardSize = min(760, availableWidth, availableHeight)
+            let fittedBoardSize = min(900, availableWidth, availableHeight)
+            let boardSize = min(
+                fittedBoardSize,
+                max(240, fittedBoardSize * boardZoomLevel.scale)
+            )
 
             ChessBoardView(game: game)
+                .id(game.id)
                 .frame(width: boardSize)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .padding(28)
+                .animation(
+                    reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0),
+                    value: boardZoomRaw
+                )
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .inspector(isPresented: $showsInspector) {
@@ -26,6 +75,33 @@ struct LiveGameplayView: View {
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
         }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Zoom In") {
+                        setBoardZoom(boardZoomLevel.larger)
+                    }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(boardZoomLevel.larger == boardZoomLevel)
+
+                    Button("Zoom Out") {
+                        setBoardZoom(boardZoomLevel.smaller)
+                    }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(boardZoomLevel.smaller == boardZoomLevel)
+
+                    Divider()
+
+                    Picker("Board Size", selection: $boardZoomRaw) {
+                        ForEach(BoardZoomLevel.allCases) { level in
+                            Text(level.label).tag(level.rawValue)
+                        }
+                    }
+                } label: {
+                    Label("Board Size", systemImage: "magnifyingglass")
+                }
+                .help("Board Size: \(boardZoomLevel.label)")
+            }
+
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showsInspector.toggle()
@@ -60,6 +136,16 @@ struct LiveGameplayView: View {
         actionToConfirm = action
     }
 
+    private var boardZoomLevel: BoardZoomLevel {
+        BoardZoomLevel(rawValue: boardZoomRaw) ?? .medium
+    }
+
+    private func setBoardZoom(_ level: BoardZoomLevel) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0)) {
+            boardZoomRaw = level.rawValue
+        }
+    }
+
     private var confirmationTitle: String {
         actionToConfirm == .abort ? "Abort this game?" : "Resign this game?"
     }
@@ -74,11 +160,23 @@ struct LiveGameplayView: View {
 
 private struct ChessBoardView: View {
     @EnvironmentObject private var store: LibChessStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
 
     @State private var selectedSquare: String?
     @State private var selectedDrop: PieceRole?
     @State private var promotionMoves: [LegalMove] = []
+    @State private var renderedPieces: [RenderedBoardPiece]
+    @State private var renderedPly: UInt32
+    @Namespace private var pieceAnimation
+
+    init(game: LiveGame) {
+        self.game = game
+        _renderedPieces = State(
+            initialValue: game.state.board.pieces.map(RenderedBoardPiece.initial)
+        )
+        _renderedPly = State(initialValue: game.state.board.ply)
+    }
 
     var body: some View {
         VStack(spacing: 9) {
@@ -107,6 +205,9 @@ private struct ChessBoardView: View {
         }
         .onChange(of: boardState.ply) { _, _ in
             clearSelection()
+        }
+        .onChange(of: boardState.pieces) { _, pieces in
+            updateRenderedPieces(pieces)
         }
         .onChange(of: game.state.status) { _, _ in
             if !game.state.isPlayable {
@@ -138,6 +239,9 @@ private struct ChessBoardView: View {
         let boardPieces = Dictionary(
             uniqueKeysWithValues: boardState.pieces.map { ($0.square, $0) }
         )
+        let animatedPieces = Dictionary(
+            uniqueKeysWithValues: renderedPieces.map { ($0.piece.square, $0) }
+        )
         let destinations = legalDestinations
 
         return LazyVGrid(columns: columns, spacing: 0) {
@@ -160,11 +264,24 @@ private struct ChessBoardView: View {
                         showsFile: index >= 56
                     )
                     .aspectRatio(1, contentMode: .fit)
+                    .overlay {
+                        if let renderedPiece = animatedPieces[square] {
+                            AnimatedPieceView(piece: renderedPiece.piece)
+                                .matchedGeometryEffect(
+                                    id: renderedPiece.id,
+                                    in: pieceAnimation
+                                )
+                                .transition(.scale(scale: 0.55).combined(with: .opacity))
+                                .allowsHitTesting(false)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(accessibilityLabel(for: square, piece: piece))
             }
         }
+        .animation(.easeOut(duration: 0.12), value: selectedSquare)
+        .animation(.easeOut(duration: 0.12), value: selectedDrop)
     }
 
     private var canMove: Bool {
@@ -278,6 +395,20 @@ private struct ChessBoardView: View {
         promotionMoves = []
     }
 
+    private func updateRenderedPieces(_ pieces: [BoardPiece]) {
+        let next = RenderedBoardPiece.reconcile(
+            previous: renderedPieces,
+            current: pieces,
+            lastMove: boardState.lastMove
+        )
+        let shouldAnimate = !reduceMotion
+            && abs(Int(boardState.ply) - Int(renderedPly)) <= 1
+        withAnimation(shouldAnimate ? .snappy(duration: 0.18, extraBounce: 0) : nil) {
+            renderedPieces = next
+            renderedPly = boardState.ply
+        }
+    }
+
     private func isLightSquare(_ square: String) -> Bool {
         let bytes = Array(square.utf8)
         guard bytes.count == 2 else {
@@ -291,6 +422,30 @@ private struct ChessBoardView: View {
             return "Empty square \(square)"
         }
         return "\(piece.color.displayName) \(piece.role.displayName) on \(square)"
+    }
+}
+
+private struct AnimatedPieceView: View {
+    let piece: BoardPiece
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size = min(geometry.size.width, geometry.size.height)
+            PieceGlyph(
+                role: piece.role,
+                color: piece.color,
+                size: size * 0.72
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if piece.promoted {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: size * 0.13))
+                        .foregroundStyle(.yellow)
+                        .padding(3)
+                }
+            }
+        }
     }
 }
 
@@ -324,25 +479,6 @@ private struct BoardSquareView: View {
                 )
             }
 
-            if let piece {
-                GeometryReader { geometry in
-                    PieceGlyph(
-                        role: piece.role,
-                        color: piece.color,
-                        size: min(geometry.size.width, geometry.size.height) * 0.72
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(alignment: .topTrailing) {
-                        if piece.promoted {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: geometry.size.width * 0.13))
-                                .foregroundStyle(.yellow)
-                                .padding(3)
-                        }
-                    }
-                }
-            }
-
             if isDestination {
                 if piece == nil {
                     Circle()
@@ -370,6 +506,77 @@ private struct BoardSquareView: View {
                     .padding(3)
             }
         }
+    }
+}
+
+private struct RenderedBoardPiece: Identifiable, Equatable {
+    let id: String
+    let piece: BoardPiece
+
+    static func initial(_ piece: BoardPiece) -> Self {
+        Self(
+            id: "initial-\(piece.color.rawValue)-\(piece.role.rawValue)-\(piece.square)",
+            piece: piece
+        )
+    }
+
+    static func reconcile(
+        previous: [Self],
+        current: [BoardPiece],
+        lastMove: LegalMove?
+    ) -> [Self] {
+        var unused = previous
+        var identities: [String: String] = [:]
+
+        if let from = lastMove?.from,
+           let to = lastMove?.to,
+           let oldIndex = unused.firstIndex(where: { $0.piece.square == from }),
+           let currentPiece = current.first(where: { $0.square == to }),
+           unused[oldIndex].piece.color == currentPiece.color
+        {
+            identities[to] = unused.remove(at: oldIndex).id
+        }
+
+        for piece in current where identities[piece.square] == nil {
+            guard let oldIndex = unused.firstIndex(where: {
+                $0.piece.square == piece.square
+                    && $0.piece.color == piece.color
+                    && $0.piece.role == piece.role
+            }) else {
+                continue
+            }
+            identities[piece.square] = unused.remove(at: oldIndex).id
+        }
+
+        for piece in current where identities[piece.square] == nil {
+            let candidates = unused.indices.filter {
+                unused[$0].piece.color == piece.color
+                    && unused[$0].piece.role == piece.role
+            }
+            guard let oldIndex = candidates.min(by: {
+                squareDistance(unused[$0].piece.square, piece.square)
+                    < squareDistance(unused[$1].piece.square, piece.square)
+            }) else {
+                continue
+            }
+            identities[piece.square] = unused.remove(at: oldIndex).id
+        }
+
+        return current.map { piece in
+            Self(
+                id: identities[piece.square] ?? UUID().uuidString,
+                piece: piece
+            )
+        }
+    }
+
+    private static func squareDistance(_ lhs: String, _ rhs: String) -> Int {
+        let left = Array(lhs.utf8)
+        let right = Array(rhs.utf8)
+        guard left.count == 2, right.count == 2 else {
+            return .max
+        }
+        return abs(Int(left[0]) - Int(right[0])) + abs(Int(left[1]) - Int(right[1]))
     }
 }
 

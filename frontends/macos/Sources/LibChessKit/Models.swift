@@ -19,6 +19,7 @@ public struct PlatformCapability: RawRepresentable, Codable, Hashable, Sendable 
     public static let account = Self(rawValue: "account")
     public static let botGames = Self(rawValue: "bot_games")
     public static let challenges = Self(rawValue: "challenges")
+    public static let gameHistory = Self(rawValue: "game_history")
     public static let liveGames = Self(rawValue: "live_games")
     public static let matchmaking = Self(rawValue: "matchmaking")
     public static let oauthPkce = Self(rawValue: "oauth_pkce")
@@ -141,6 +142,77 @@ public enum GameColorPreference: String, Codable, CaseIterable, Hashable, Identi
 public enum PlayerColor: String, Codable, CaseIterable, Hashable, Sendable {
     case white
     case black
+}
+
+public struct GameHistoryEntry: Codable, Equatable, Identifiable, Sendable {
+    public let provider: String
+    public let id: String
+    public let url: String
+    public let analysisURL: String
+    public let playerColor: PlayerColor
+    public let opponentName: String
+    public let opponentTitle: String?
+    public let opponentRating: UInt32?
+    public let opponentAILevel: UInt8?
+    public let variantID: String
+    public let variantName: String
+    public let rated: Bool
+    public let speed: String
+    public let status: String
+    public let winner: PlayerColor?
+    public let createdAtMillis: UInt64
+    public let lastMoveAtMillis: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case id
+        case url
+        case analysisURL = "analysis_url"
+        case playerColor = "player_color"
+        case opponentName = "opponent_name"
+        case opponentTitle = "opponent_title"
+        case opponentRating = "opponent_rating"
+        case opponentAILevel = "opponent_ai_level"
+        case variantID = "variant_id"
+        case variantName = "variant_name"
+        case rated
+        case speed
+        case status
+        case winner
+        case createdAtMillis = "created_at_millis"
+        case lastMoveAtMillis = "last_move_at_millis"
+    }
+
+    public var opponentDisplayName: String {
+        if let opponentTitle {
+            return "\(opponentTitle) \(opponentName)"
+        }
+        return opponentName
+    }
+}
+
+public struct GameHistoryPage: Codable, Equatable, Sendable {
+    public let games: [GameHistoryEntry]
+    public let nextBeforeMillis: UInt64?
+
+    private enum CodingKeys: String, CodingKey {
+        case games
+        case nextBeforeMillis = "next_before_millis"
+    }
+}
+
+public struct GameExport: Codable, Equatable, Sendable {
+    public let provider: String
+    public let gameID: String
+    public let suggestedFilename: String
+    public let pgn: String
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case gameID = "game_id"
+        case suggestedFilename = "suggested_filename"
+        case pgn
+    }
 }
 
 public enum BoardPerspective {
@@ -518,6 +590,9 @@ struct WireEvent: Decodable, Sendable {
     let accessToken: String?
     let expiresInSeconds: UInt64?
     let game: BotGame?
+    let gameExport: GameExport?
+    let page: GameHistoryPage?
+    let append: Bool?
     let liveGame: LiveGame?
     let games: [LiveGameSummary]?
     let board: BoardState?
@@ -540,6 +615,9 @@ struct WireEvent: Decodable, Sendable {
         case accessToken = "access_token"
         case expiresInSeconds = "expires_in_seconds"
         case game
+        case gameExport = "game_export"
+        case page
+        case append
         case liveGame = "live_game"
         case games
         case board

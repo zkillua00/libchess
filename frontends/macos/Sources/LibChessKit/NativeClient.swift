@@ -18,8 +18,10 @@ private final class EventRelay: @unchecked Sendable {
     }
 
     func receive(_ data: Data) {
-        Task { @MainActor [handler] in
-            handler(data)
+        DispatchQueue.main.async { [handler] in
+            MainActor.assumeIsolated {
+                handler(data)
+            }
         }
     }
 }

@@ -5,13 +5,14 @@ use std::{collections::BTreeMap, sync::Arc};
 pub use libchess_core::{
     AccessToken, Account, BoardPiece, BoardState, BotGame, BotGameOptions, BotGameRequest,
     BotGameTimeControl, BotOpponent, BotOpponentId, ChessContext, ClockTimeControl,
-    ClockTimeControlOptions, ColorPreference, ErrorKind, GameId, GameStatus, GameVariant,
-    GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
-    LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
-    LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
-    MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceRole,
-    PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
-    PocketPiece, ProviderDescriptor, ProviderId, ensure_engine_allowed,
+    ClockTimeControlOptions, ColorPreference, ErrorKind, GameExport, GameHistoryEntry,
+    GameHistoryPage, GameHistoryRequest, GameId, GameStatus, GameVariant, GameVariantId, LegalMove,
+    LibChessError, LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent,
+    LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent, LiveGameEventSink, LiveGamePlayer,
+    LiveGameRequest, LiveGameState, LiveGameSummary, MoveSubmission, OAuthAuthorization,
+    OAuthClientConfiguration, OAuthToken, PieceRole, PlatformBackend, PlatformBackendFactory,
+    PlatformCapability, PlatformOAuthSession, PlayerColor, PocketPiece, ProviderDescriptor,
+    ProviderId, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
 
@@ -166,6 +167,28 @@ impl Client {
         backend.create_bot_game(request).await
     }
 
+    pub async fn game_history(
+        &self,
+        limit: u16,
+        before_millis: Option<u64>,
+    ) -> Result<GameHistoryPage, LibChessError> {
+        let account = self
+            .account
+            .as_ref()
+            .ok_or_else(|| LibChessError::invalid_input("no provider is connected"))?;
+        let request = GameHistoryRequest::new(
+            account.id.clone(),
+            account.username.clone(),
+            limit,
+            before_millis,
+        )?;
+        self.connected_backend()?.game_history(request).await
+    }
+
+    pub async fn export_game(&self, game_id: GameId) -> Result<GameExport, LibChessError> {
+        self.connected_backend()?.export_game(game_id).await
+    }
+
     pub fn connected_backend(&self) -> Result<Arc<dyn PlatformBackend>, LibChessError> {
         self.backend
             .clone()
@@ -248,6 +271,16 @@ mod tests {
             providers[0]
                 .capabilities
                 .contains(&PlatformCapability::RealtimeEvents)
+        );
+        assert!(
+            providers[0]
+                .capabilities
+                .contains(&PlatformCapability::GameHistory)
+        );
+        assert!(
+            providers[0]
+                .capabilities
+                .contains(&PlatformCapability::PgnExport)
         );
     }
 

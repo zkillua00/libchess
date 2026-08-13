@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod history;
 mod live;
 
 const DEFAULT_BASE_URL: &str = "https://lichess.org/";
@@ -67,8 +68,10 @@ impl LichessFactory {
         let capabilities = BTreeSet::from([
             PlatformCapability::Account,
             PlatformCapability::BotGames,
+            PlatformCapability::GameHistory,
             PlatformCapability::LiveGames,
             PlatformCapability::OAuthPkce,
+            PlatformCapability::PgnExport,
             PlatformCapability::RealtimeEvents,
         ]);
         let bot_opponents = (1_u8..=8)
@@ -589,6 +592,20 @@ impl PlatformBackend for LichessBackend {
 
     async fn live_games(&self) -> Result<Vec<libchess_core::LiveGameSummary>, LibChessError> {
         live::list_games(self).await
+    }
+
+    async fn game_history(
+        &self,
+        request: libchess_core::GameHistoryRequest,
+    ) -> Result<libchess_core::GameHistoryPage, LibChessError> {
+        history::list(self, request).await
+    }
+
+    async fn export_game(
+        &self,
+        game_id: libchess_core::GameId,
+    ) -> Result<libchess_core::GameExport, LibChessError> {
+        history::export(self, game_id).await
     }
 
     async fn watch_live_game_catalog(

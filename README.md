@@ -81,6 +81,24 @@ casual, so rated play is not a missing frontend option. The app enters its
 native board as soon as the game is created. It supports legal click-to-move,
 promotions, Chess960 castling, Crazyhouse pockets and drops, clocks, move
 history, draw and takeback offers, abort, resign, and disconnect recovery.
+Piece movement, captures, promotions, castling, rollbacks, board resizing, and
+game-list changes use native SwiftUI transitions that respect Reduce Motion.
+The board-size menu offers persistent Small, Medium, and Large zoom levels.
+
+## Recent games and analysis
+
+The **Recent Games** sidebar destination pages through the connected provider's
+finished games newest-first. Each row can open the provider's post-game
+analysis, open the original game, or request an annotated PGN export. On
+Lichess, exports include clocks, opening data, existing evaluations, and
+literate annotations when the provider has them; the native save panel writes
+the result as a `.pgn` file.
+
+Analysis links and export payloads are returned by the active provider through
+the shared Rust contract. The SwiftUI frontend neither constructs Lichess
+routes nor treats cached cloud evaluations as a local engine run. A future
+engine adapter can implement offline full-game analysis as a separate
+post-game context.
 
 Lichess live play is an authenticated streaming HTTP connection carrying
 newline-delimited JSON, not a WebSocket. The provider adapter consumes that

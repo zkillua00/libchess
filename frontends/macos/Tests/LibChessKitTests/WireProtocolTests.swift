@@ -203,6 +203,43 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(games.first?.isMyTurn, true)
     }
 
+    func testDecodesPaginatedGameHistoryAndAnnotatedPGNExport() throws {
+        let historyData = Data(
+            #"{"version":1,"request_id":"history-1","type":"game_history_updated","page":{"games":[{"provider":"lichess","id":"AbCd1234","url":"https://lichess.org/AbCd1234","analysis_url":"https://lichess.org/AbCd1234/black/analysis","player_color":"black","opponent_name":"Opponent","opponent_title":"GM","opponent_rating":2100,"variant_id":"three-check","variant_name":"Three-check","rated":true,"speed":"blitz","status":"resign","winner":"white","created_at_millis":2000,"last_move_at_millis":2900}],"next_before_millis":1999},"append":false}"#.utf8
+        )
+        let exportData = Data(
+            #"{"version":1,"request_id":"export-1","type":"game_exported","game_export":{"provider":"lichess","game_id":"AbCd1234","suggested_filename":"lichess-AbCd1234.pgn","pgn":"[Event \"Rated blitz game\"]\n\n1. e4 e5 *\n"}}"#.utf8
+        )
+
+        let history = try JSONDecoder().decode(WireEvent.self, from: historyData)
+        let game = try XCTUnwrap(history.page?.games.first)
+        let export = try JSONDecoder().decode(WireEvent.self, from: exportData).gameExport
+
+        XCTAssertEqual(history.append, false)
+        XCTAssertEqual(history.page?.nextBeforeMillis, 1_999)
+        XCTAssertEqual(game.playerColor, .black)
+        XCTAssertEqual(game.opponentDisplayName, "GM Opponent")
+        XCTAssertEqual(game.variantID, "three-check")
+        XCTAssertEqual(game.analysisURL, "https://lichess.org/AbCd1234/black/analysis")
+        XCTAssertEqual(export?.suggestedFilename, "lichess-AbCd1234.pgn")
+        XCTAssertTrue(export?.pgn.contains("1. e4 e5") == true)
+    }
+
+    func testEncodesHistoryAndExportCommandsWithExplicitWireKeys() throws {
+        let history = RefreshGameHistoryCommand(beforeMillis: 1_999, limit: 20)
+        let export = ExportGameCommand(gameID: "AbCd1234")
+
+        let historyObject = try jsonObject(history)
+        let exportObject = try jsonObject(export)
+
+        XCTAssertEqual(historyObject["type"] as? String, "refresh_game_history")
+        XCTAssertEqual(historyObject["before_millis"] as? Int, 1_999)
+        XCTAssertEqual(historyObject["limit"] as? Int, 20)
+        XCTAssertNotNil(historyObject["request_id"])
+        XCTAssertEqual(exportObject["type"] as? String, "export_game")
+        XCTAssertEqual(exportObject["game_id"] as? String, "AbCd1234")
+    }
+
     func testDecodesAClientPredictedBoardBeforeServerConfirmation() throws {
         let data = Data(
             #"{"version":1,"request_id":"move-1","type":"move_predicted","game_id":"v8BRXYtM","move_id":"e2e4","board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e4","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"black","ply":1,"moves":["e2e4"],"last_move":{"id":"e2e4","from":"e2","to":"e4"},"legal_moves":[{"id":"e7e5","from":"e7","to":"e5"}],"in_check":false}}"#.utf8
