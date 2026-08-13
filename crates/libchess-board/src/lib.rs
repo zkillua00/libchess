@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
 
 use libchess_core::{
-    BoardAnimationCurve, BoardAnimationRule, BoardAsset, BoardMetrics, BoardMotion, BoardPalette,
-    BoardPresentation, BoardProvider, BoardProviderDescriptor, BoardProviderId, BoardStyle,
-    BoardThemeDescriptor, BoardThemeId, BoardZoomPreset, BoardZoomPresetId, BoardZoomRules,
-    LibChessError, PieceAssets, PieceMetrics, PiecePalette, PieceRole, PieceStyle,
-    PieceThemeDescriptor, PieceThemeId, PlayerColor, RgbaColor,
+    BoardAnimationCurve, BoardAnimationRule, BoardAsset, BoardColorOverrides, BoardMetrics,
+    BoardMotion, BoardPalette, BoardPresentation, BoardProvider, BoardProviderDescriptor,
+    BoardProviderId, BoardStyle, BoardThemeDescriptor, BoardThemeId, BoardZoomPreset,
+    BoardZoomPresetId, BoardZoomRules, CustomBoardTheme, CustomPieceTheme, LibChessError,
+    PieceAssets, PieceColorOverrides, PieceMetrics, PiecePalette, PieceRole, PieceStyle,
+    PieceThemeDescriptor, PieceThemeId, PlayerColor, RgbaColor, ThemeColorAdjustment,
 };
 
 const ROLES: [PieceRole; 6] = [
@@ -115,6 +116,190 @@ impl BoardProvider for BuiltinBoardProvider {
         presentation.validate()?;
         Ok(presentation)
     }
+}
+
+pub fn apply_custom_board_theme(
+    style: &mut BoardStyle,
+    theme: &CustomBoardTheme,
+) -> Result<(), LibChessError> {
+    theme.validate()?;
+    style.display_name.clone_from(&theme.display_name);
+    apply_board_color_overrides(&mut style.palette, &theme.colors);
+    adjust_board_palette(&mut style.palette, theme.adjustment);
+    Ok(())
+}
+
+pub fn apply_custom_piece_theme(
+    style: &mut PieceStyle,
+    theme: &CustomPieceTheme,
+) -> Result<(), LibChessError> {
+    theme.validate()?;
+    style.display_name.clone_from(&theme.display_name);
+    apply_piece_color_overrides(&mut style.palette, &theme.colors);
+    adjust_piece_palette(&mut style.palette, theme.adjustment);
+
+    if let Some(assets) = &theme.assets {
+        for piece in &mut style.assets.pieces {
+            let replacement = assets
+                .pieces
+                .iter()
+                .find(|candidate| candidate.role == piece.role)
+                .expect("validated custom piece assets contain every role");
+            piece.asset = replacement.asset.clone();
+        }
+        if let Some(marker) = &assets.promoted_marker {
+            style.assets.promoted_marker = marker.clone();
+        }
+    }
+    Ok(())
+}
+
+fn adjust_board_palette(palette: &mut BoardPalette, adjustment: ThemeColorAdjustment) {
+    palette.light_square = adjust_color(palette.light_square, adjustment);
+    palette.dark_square = adjust_color(palette.dark_square, adjustment);
+    palette.coordinate_on_light = adjust_color(palette.coordinate_on_light, adjustment);
+    palette.coordinate_on_dark = adjust_color(palette.coordinate_on_dark, adjustment);
+    palette.last_move = adjust_color(palette.last_move, adjustment);
+    palette.selection = adjust_color(palette.selection, adjustment);
+    palette.legal_move = adjust_color(palette.legal_move, adjustment);
+    palette.check_center = adjust_color(palette.check_center, adjustment);
+    palette.check_edge = adjust_color(palette.check_edge, adjustment);
+    palette.border = adjust_color(palette.border, adjustment);
+    palette.shadow = adjust_color(palette.shadow, adjustment);
+}
+
+fn adjust_piece_palette(palette: &mut PiecePalette, adjustment: ThemeColorAdjustment) {
+    palette.white_piece = adjust_color(palette.white_piece, adjustment);
+    palette.black_piece = adjust_color(palette.black_piece, adjustment);
+    palette.white_piece_shadow = adjust_color(palette.white_piece_shadow, adjustment);
+    palette.black_piece_shadow = adjust_color(palette.black_piece_shadow, adjustment);
+    palette.promoted_marker = adjust_color(palette.promoted_marker, adjustment);
+}
+
+fn apply_board_color_overrides(palette: &mut BoardPalette, colors: &BoardColorOverrides) {
+    if let Some(color) = colors.light_square {
+        palette.light_square = color;
+        if colors.coordinate_on_dark.is_none() {
+            palette.coordinate_on_dark = color;
+        }
+    }
+    if let Some(color) = colors.dark_square {
+        palette.dark_square = color;
+        if colors.coordinate_on_light.is_none() {
+            palette.coordinate_on_light = color;
+        }
+    }
+    if let Some(color) = colors.coordinate_on_light {
+        palette.coordinate_on_light = color;
+    }
+    if let Some(color) = colors.coordinate_on_dark {
+        palette.coordinate_on_dark = color;
+    }
+    if let Some(color) = colors.last_move {
+        palette.last_move = color;
+    }
+    if let Some(color) = colors.selection {
+        palette.selection = color;
+    }
+    if let Some(color) = colors.legal_move {
+        palette.legal_move = color;
+    }
+    if let Some(color) = colors.check_center {
+        palette.check_center = color;
+    }
+    if let Some(color) = colors.check_edge {
+        palette.check_edge = color;
+    }
+    if let Some(color) = colors.border {
+        palette.border = color;
+    }
+    if let Some(color) = colors.shadow {
+        palette.shadow = color;
+    }
+}
+
+fn apply_piece_color_overrides(palette: &mut PiecePalette, colors: &PieceColorOverrides) {
+    if let Some(color) = colors.white_piece {
+        palette.white_piece = color;
+    }
+    if let Some(color) = colors.black_piece {
+        palette.black_piece = color;
+    }
+    if let Some(color) = colors.white_piece_shadow {
+        palette.white_piece_shadow = color;
+    }
+    if let Some(color) = colors.black_piece_shadow {
+        palette.black_piece_shadow = color;
+    }
+    if let Some(color) = colors.promoted_marker {
+        palette.promoted_marker = color;
+    }
+}
+
+fn adjust_color(color: RgbaColor, adjustment: ThemeColorAdjustment) -> RgbaColor {
+    if adjustment == ThemeColorAdjustment::default() {
+        return color;
+    }
+
+    let red = f64::from(color.red) / 255.0;
+    let green = f64::from(color.green) / 255.0;
+    let blue = f64::from(color.blue) / 255.0;
+    let maximum = red.max(green).max(blue);
+    let minimum = red.min(green).min(blue);
+    let delta = maximum - minimum;
+    let mut hue = if delta == 0.0 {
+        0.0
+    } else if maximum == red {
+        ((green - blue) / delta).rem_euclid(6.0)
+    } else if maximum == green {
+        ((blue - red) / delta) + 2.0
+    } else {
+        ((red - green) / delta) + 4.0
+    } / 6.0;
+    let mut lightness = (maximum + minimum) / 2.0;
+    let mut saturation = if delta == 0.0 {
+        0.0
+    } else {
+        delta / (1.0 - (2.0 * lightness - 1.0).abs())
+    };
+
+    hue = (hue + f64::from(adjustment.hue_degrees) / 360.0).rem_euclid(1.0);
+    saturation = shift_unit(saturation, adjustment.saturation_percent);
+    lightness = shift_unit(lightness, adjustment.brightness_percent);
+
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let hue_sector = hue * 6.0;
+    let intermediate = chroma * (1.0 - (hue_sector.rem_euclid(2.0) - 1.0).abs());
+    let (red, green, blue) = match hue_sector as u8 {
+        0 => (chroma, intermediate, 0.0),
+        1 => (intermediate, chroma, 0.0),
+        2 => (0.0, chroma, intermediate),
+        3 => (0.0, intermediate, chroma),
+        4 => (intermediate, 0.0, chroma),
+        _ => (chroma, 0.0, intermediate),
+    };
+    let match_value = lightness - chroma / 2.0;
+
+    RgbaColor::new(
+        unit_to_byte(red + match_value),
+        unit_to_byte(green + match_value),
+        unit_to_byte(blue + match_value),
+        color.alpha,
+    )
+}
+
+fn shift_unit(value: f64, percent: i8) -> f64 {
+    let amount = f64::from(percent) / 100.0;
+    if amount >= 0.0 {
+        value + (1.0 - value) * amount
+    } else {
+        value * (1.0 + amount)
+    }
+    .clamp(0.0, 1.0)
+}
+
+fn unit_to_byte(value: f64) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn board_theme(id: &str, display_name: &str) -> Result<BoardThemeDescriptor, LibChessError> {
@@ -481,5 +666,25 @@ mod tests {
 
         assert_eq!(missing_board.kind, libchess_core::ErrorKind::Unsupported);
         assert_eq!(missing_pieces.kind, libchess_core::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn hue_adjustment_preserves_alpha_and_changes_color() {
+        let original = RgbaColor::new(212, 196, 166, 107);
+        let adjusted = adjust_color(
+            original,
+            ThemeColorAdjustment {
+                hue_degrees: 90,
+                saturation_percent: 20,
+                brightness_percent: -10,
+            },
+        );
+
+        assert_ne!(adjusted, original);
+        assert_eq!(adjusted.alpha, original.alpha);
+        assert_eq!(
+            adjust_color(original, ThemeColorAdjustment::default()),
+            original
+        );
     }
 }

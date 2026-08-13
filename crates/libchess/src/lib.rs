@@ -2,23 +2,26 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use libchess_board::BuiltinBoardProvider;
+use libchess_board::{BuiltinBoardProvider, apply_custom_board_theme, apply_custom_piece_theme};
 pub use libchess_core::{
-    AccessToken, Account, BoardAnimationCurve, BoardAnimationRule, BoardAsset, BoardAssetKind,
+    AccessToken, Account, BOARD_CUSTOMIZATION_STATE_VERSION, BoardAnimationCurve,
+    BoardAnimationRule, BoardAsset, BoardAssetKind, BoardColorOverrides, BoardCustomizationState,
     BoardMetrics, BoardMotion, BoardPalette, BoardPiece, BoardPieceAsset, BoardPresentation,
     BoardProvider, BoardProviderDescriptor, BoardProviderId, BoardState, BoardStyle,
     BoardThemeDescriptor, BoardThemeId, BoardZoomPreset, BoardZoomPresetId, BoardZoomRules,
     BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId,
-    ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference, ErrorKind,
-    GameExport, GameHistoryEntry, GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation,
-    GameMoveJudgment, GameMoveJudgmentKind, GameOpening, GameReview, GameReviewMove, GameStatus,
-    GameVariant, GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame,
-    LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
+    ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference, CustomBoardTheme,
+    CustomPieceAsset, CustomPieceAssets, CustomPieceTheme, ErrorKind, GameExport, GameHistoryEntry,
+    GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation, GameMoveJudgment,
+    GameMoveJudgmentKind, GameOpening, GameReview, GameReviewMove, GameStatus, GameVariant,
+    GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
+    LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
     LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
     MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceAssets,
-    PieceMetrics, PiecePalette, PieceRole, PieceStyle, PieceThemeDescriptor, PieceThemeId,
-    PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
-    PocketPiece, ProviderDescriptor, ProviderId, RgbaColor, ensure_engine_allowed,
+    PieceColorOverrides, PieceMetrics, PiecePalette, PieceRole, PieceStyle, PieceThemeDescriptor,
+    PieceThemeId, PlatformBackend, PlatformBackendFactory, PlatformCapability,
+    PlatformOAuthSession, PlayerColor, PocketPiece, ProviderDescriptor, ProviderId, RgbaColor,
+    ThemeColorAdjustment, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
 
@@ -63,6 +66,8 @@ impl ClientBuilder {
             factories: self.factories,
             board_providers: self.board_providers,
             default_board_provider: self.default_board_provider,
+            custom_board_themes: BTreeMap::new(),
+            custom_piece_themes: BTreeMap::new(),
             backend: None,
             account: None,
             oauth_session: None,
@@ -80,6 +85,8 @@ pub struct Client {
     factories: BTreeMap<ProviderId, Arc<dyn PlatformBackendFactory>>,
     board_providers: BTreeMap<BoardProviderId, Arc<dyn BoardProvider>>,
     default_board_provider: Option<BoardProviderId>,
+    custom_board_themes: BTreeMap<(BoardProviderId, BoardThemeId), CustomBoardTheme>,
+    custom_piece_themes: BTreeMap<(BoardProviderId, PieceThemeId), CustomPieceTheme>,
     backend: Option<Arc<dyn PlatformBackend>>,
     account: Option<Account>,
     oauth_session: Option<Box<dyn PlatformOAuthSession>>,
@@ -106,8 +113,130 @@ impl Client {
     pub fn board_providers(&self) -> Vec<BoardProviderDescriptor> {
         self.board_providers
             .values()
-            .map(|provider| provider.descriptor().clone())
+            .map(|provider| {
+                let mut descriptor = provider.descriptor().clone();
+                descriptor.board_themes.extend(
+                    self.custom_board_themes
+                        .values()
+                        .filter(|theme| theme.provider == descriptor.id)
+                        .map(|theme| BoardThemeDescriptor {
+                            id: theme.id.clone(),
+                            display_name: theme.display_name.clone(),
+                        }),
+                );
+                descriptor.piece_themes.extend(
+                    self.custom_piece_themes
+                        .values()
+                        .filter(|theme| theme.provider == descriptor.id)
+                        .map(|theme| PieceThemeDescriptor {
+                            id: theme.id.clone(),
+                            display_name: theme.display_name.clone(),
+                        }),
+                );
+                descriptor
+            })
             .collect()
+    }
+
+    pub fn board_customization_state(&self) -> BoardCustomizationState {
+        BoardCustomizationState {
+            version: BOARD_CUSTOMIZATION_STATE_VERSION,
+            board_themes: self.custom_board_themes.values().cloned().collect(),
+            piece_themes: self.custom_piece_themes.values().cloned().collect(),
+        }
+    }
+
+    pub fn replace_board_customization_state(
+        &mut self,
+        state: BoardCustomizationState,
+    ) -> Result<(), LibChessError> {
+        state.validate()?;
+        let mut board_themes = BTreeMap::new();
+        let mut piece_themes = BTreeMap::new();
+
+        for theme in state.board_themes {
+            self.validate_custom_board_theme(&theme)?;
+            board_themes.insert((theme.provider.clone(), theme.id.clone()), theme);
+        }
+        for theme in state.piece_themes {
+            self.validate_custom_piece_theme(&theme)?;
+            piece_themes.insert((theme.provider.clone(), theme.id.clone()), theme);
+        }
+        self.validate_custom_theme_capacity(&board_themes, &piece_themes)?;
+
+        self.custom_board_themes = board_themes;
+        self.custom_piece_themes = piece_themes;
+        Ok(())
+    }
+
+    pub fn register_custom_board_theme(
+        &mut self,
+        theme: CustomBoardTheme,
+    ) -> Result<(), LibChessError> {
+        self.validate_custom_board_theme(&theme)?;
+        let key = (theme.provider.clone(), theme.id.clone());
+        if !self.custom_board_themes.contains_key(&key) {
+            let provider = self
+                .board_providers
+                .get(&theme.provider)
+                .expect("custom board theme provider was validated");
+            let custom_count = self
+                .custom_board_themes
+                .keys()
+                .filter(|(provider_id, _)| provider_id == &theme.provider)
+                .count();
+            if provider.descriptor().board_themes.len() + custom_count >= 64 {
+                return Err(LibChessError::invalid_input(
+                    "a board provider cannot advertise more than 64 board themes",
+                ));
+            }
+        }
+        self.custom_board_themes.insert(key, theme);
+        Ok(())
+    }
+
+    pub fn register_custom_piece_theme(
+        &mut self,
+        theme: CustomPieceTheme,
+    ) -> Result<(), LibChessError> {
+        self.validate_custom_piece_theme(&theme)?;
+        let key = (theme.provider.clone(), theme.id.clone());
+        if !self.custom_piece_themes.contains_key(&key) {
+            let provider = self
+                .board_providers
+                .get(&theme.provider)
+                .expect("custom piece theme provider was validated");
+            let custom_count = self
+                .custom_piece_themes
+                .keys()
+                .filter(|(provider_id, _)| provider_id == &theme.provider)
+                .count();
+            if provider.descriptor().piece_themes.len() + custom_count >= 64 {
+                return Err(LibChessError::invalid_input(
+                    "a board provider cannot advertise more than 64 piece themes",
+                ));
+            }
+        }
+        self.custom_piece_themes.insert(key, theme);
+        Ok(())
+    }
+
+    pub fn remove_custom_board_theme(
+        &mut self,
+        provider: &str,
+        theme: &str,
+    ) -> Result<bool, LibChessError> {
+        let key = (BoardProviderId::new(provider)?, BoardThemeId::new(theme)?);
+        Ok(self.custom_board_themes.remove(&key).is_some())
+    }
+
+    pub fn remove_custom_piece_theme(
+        &mut self,
+        provider: &str,
+        theme: &str,
+    ) -> Result<bool, LibChessError> {
+        let key = (BoardProviderId::new(provider)?, PieceThemeId::new(theme)?);
+        Ok(self.custom_piece_themes.remove(&key).is_some())
     }
 
     pub fn default_board_presentation(&self) -> Result<BoardPresentation, LibChessError> {
@@ -141,10 +270,23 @@ impl Client {
         })?;
         let descriptor = board_provider.descriptor();
         descriptor.validate()?;
+        let custom_board = self
+            .custom_board_themes
+            .get(&(provider_id.clone(), board_theme_id.clone()));
+        let custom_piece = self
+            .custom_piece_themes
+            .get(&(provider_id.clone(), piece_theme_id.clone()));
+        let resolved_board_theme = custom_board
+            .map(|theme| &theme.base_theme)
+            .unwrap_or(&board_theme_id);
+        let resolved_piece_theme = custom_piece
+            .map(|theme| &theme.base_theme)
+            .unwrap_or(&piece_theme_id);
+
         if !descriptor
             .board_themes
             .iter()
-            .any(|item| item.id == board_theme_id)
+            .any(|item| item.id == *resolved_board_theme)
         {
             return Err(LibChessError::unsupported(format!(
                 "board theme '{board_theme}' is not installed for provider '{provider}'"
@@ -153,14 +295,23 @@ impl Client {
         if !descriptor
             .piece_themes
             .iter()
-            .any(|item| item.id == piece_theme_id)
+            .any(|item| item.id == *resolved_piece_theme)
         {
             return Err(LibChessError::unsupported(format!(
                 "piece theme '{piece_theme}' is not installed for provider '{provider}'"
             )));
         }
 
-        let presentation = board_provider.presentation(&board_theme_id, &piece_theme_id)?;
+        let mut presentation =
+            board_provider.presentation(resolved_board_theme, resolved_piece_theme)?;
+        if let Some(theme) = custom_board {
+            apply_custom_board_theme(&mut presentation.board, theme)?;
+            presentation.board_theme = board_theme_id.clone();
+        }
+        if let Some(theme) = custom_piece {
+            apply_custom_piece_theme(&mut presentation.pieces, theme)?;
+            presentation.piece_theme = piece_theme_id.clone();
+        }
         if presentation.provider != provider_id
             || presentation.board_theme != board_theme_id
             || presentation.piece_theme != piece_theme_id
@@ -171,6 +322,92 @@ impl Client {
         }
         presentation.validate()?;
         Ok(presentation)
+    }
+
+    fn validate_custom_board_theme(&self, theme: &CustomBoardTheme) -> Result<(), LibChessError> {
+        theme.validate()?;
+        let provider = self.board_providers.get(&theme.provider).ok_or_else(|| {
+            LibChessError::unsupported(format!(
+                "board presentation provider '{}' is not installed",
+                theme.provider
+            ))
+        })?;
+        let descriptor = provider.descriptor();
+        if descriptor
+            .board_themes
+            .iter()
+            .any(|item| item.id == theme.id)
+        {
+            return Err(LibChessError::invalid_input(
+                "custom board themes cannot replace a built-in theme identifier",
+            ));
+        }
+        if !descriptor
+            .board_themes
+            .iter()
+            .any(|item| item.id == theme.base_theme)
+        {
+            return Err(LibChessError::invalid_input(
+                "custom board themes must derive from a built-in theme",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_custom_piece_theme(&self, theme: &CustomPieceTheme) -> Result<(), LibChessError> {
+        theme.validate()?;
+        let provider = self.board_providers.get(&theme.provider).ok_or_else(|| {
+            LibChessError::unsupported(format!(
+                "board presentation provider '{}' is not installed",
+                theme.provider
+            ))
+        })?;
+        let descriptor = provider.descriptor();
+        if descriptor
+            .piece_themes
+            .iter()
+            .any(|item| item.id == theme.id)
+        {
+            return Err(LibChessError::invalid_input(
+                "custom piece themes cannot replace a built-in theme identifier",
+            ));
+        }
+        if !descriptor
+            .piece_themes
+            .iter()
+            .any(|item| item.id == theme.base_theme)
+        {
+            return Err(LibChessError::invalid_input(
+                "custom piece themes must derive from a built-in theme",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_custom_theme_capacity(
+        &self,
+        board_themes: &BTreeMap<(BoardProviderId, BoardThemeId), CustomBoardTheme>,
+        piece_themes: &BTreeMap<(BoardProviderId, PieceThemeId), CustomPieceTheme>,
+    ) -> Result<(), LibChessError> {
+        for provider in self.board_providers.values() {
+            let descriptor = provider.descriptor();
+            let board_count = board_themes
+                .keys()
+                .filter(|(provider_id, _)| provider_id == &descriptor.id)
+                .count();
+            let piece_count = piece_themes
+                .keys()
+                .filter(|(provider_id, _)| provider_id == &descriptor.id)
+                .count();
+            if descriptor.board_themes.len() + board_count > 64
+                || descriptor.piece_themes.len() + piece_count > 64
+            {
+                return Err(LibChessError::invalid_input(
+                    "a board provider cannot advertise more than 64 themes of either kind",
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub async fn connect(
@@ -416,5 +653,97 @@ mod tests {
         );
         assert!(client.cancel_oauth());
         assert!(!client.cancel_oauth());
+    }
+
+    #[test]
+    fn registers_independent_custom_board_and_piece_themes() {
+        let mut client = Client::new();
+        client
+            .register_custom_board_theme(CustomBoardTheme {
+                provider: BoardProviderId::new("libchess").expect("provider id"),
+                id: BoardThemeId::new("my-board").expect("board id"),
+                display_name: "My Board".to_owned(),
+                base_theme: BoardThemeId::new("classic").expect("base id"),
+                adjustment: ThemeColorAdjustment {
+                    hue_degrees: 30,
+                    saturation_percent: 10,
+                    brightness_percent: -5,
+                },
+                colors: BoardColorOverrides {
+                    light_square: Some(RgbaColor::new(240, 220, 190, 255)),
+                    dark_square: Some(RgbaColor::new(80, 100, 120, 255)),
+                    ..BoardColorOverrides::default()
+                },
+            })
+            .expect("register board theme");
+        client
+            .register_custom_piece_theme(CustomPieceTheme {
+                provider: BoardProviderId::new("libchess").expect("provider id"),
+                id: PieceThemeId::new("blue-pieces").expect("piece id"),
+                display_name: "Blue Pieces".to_owned(),
+                base_theme: PieceThemeId::new("system-solid").expect("base id"),
+                adjustment: ThemeColorAdjustment::default(),
+                colors: PieceColorOverrides {
+                    black_piece: Some(RgbaColor::new(20, 45, 120, 255)),
+                    ..PieceColorOverrides::default()
+                },
+                assets: None,
+            })
+            .expect("register piece theme");
+
+        let catalog = client.board_providers();
+        assert!(
+            catalog[0]
+                .board_themes
+                .iter()
+                .any(|theme| theme.id.as_str() == "my-board")
+        );
+        assert!(
+            catalog[0]
+                .piece_themes
+                .iter()
+                .any(|theme| theme.id.as_str() == "blue-pieces")
+        );
+
+        let presentation = client
+            .board_presentation("libchess", "my-board", "blue-pieces")
+            .expect("custom presentation");
+        assert_eq!(presentation.board.display_name, "My Board");
+        assert_eq!(presentation.pieces.display_name, "Blue Pieces");
+        assert_ne!(
+            presentation.board.palette.light_square,
+            RgbaColor::new(212, 196, 166, 255)
+        );
+        assert_eq!(presentation.board.palette.light_square.alpha, 255);
+        assert_eq!(
+            presentation.pieces.palette.black_piece,
+            RgbaColor::new(20, 45, 120, 255)
+        );
+
+        let snapshot = client.board_customization_state();
+        let mut restored = Client::new();
+        restored
+            .replace_board_customization_state(snapshot)
+            .expect("restore customization");
+        assert!(
+            restored
+                .board_presentation("libchess", "my-board", "blue-pieces")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_custom_themes_that_shadow_builtins() {
+        let mut client = Client::new();
+        let result = client.register_custom_board_theme(CustomBoardTheme {
+            provider: BoardProviderId::new("libchess").expect("provider id"),
+            id: BoardThemeId::new("classic").expect("board id"),
+            display_name: "Replacement".to_owned(),
+            base_theme: BoardThemeId::new("classic").expect("base id"),
+            adjustment: ThemeColorAdjustment::default(),
+            colors: BoardColorOverrides::default(),
+        });
+
+        assert!(result.is_err());
     }
 }

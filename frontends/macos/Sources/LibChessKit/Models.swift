@@ -653,6 +653,7 @@ struct WireEvent: Decodable, Sendable {
     let providers: [ProviderDescriptor]?
     let boardProviders: [BoardProviderDescriptor]?
     let boardPresentation: BoardPresentation?
+    let boardCustomization: BoardCustomizationState?
     let account: ChessAccount?
     let state: ConnectionState?
     let provider: String?
@@ -681,6 +682,7 @@ struct WireEvent: Decodable, Sendable {
         case providers
         case boardProviders = "board_providers"
         case boardPresentation = "board_presentation"
+        case boardCustomization = "board_customization"
         case account
         case state
         case provider

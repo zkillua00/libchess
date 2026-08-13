@@ -10,11 +10,12 @@ use std::{
 };
 
 use libchess::{
-    AccessToken, Account, BoardPresentation, BoardProviderDescriptor, BoardState, BotGame,
-    BotGameRequest, BotGameTimeControl, Client, ColorPreference, ErrorKind, GameExport,
-    GameHistoryPage, GameId, GameReview, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
-    LiveGameCatalogEvent, LiveGameEvent, LiveGameRequest, LiveGameSummary, MoveSubmission,
-    OAuthConnection, PlayerColor, ProviderDescriptor,
+    AccessToken, Account, BoardCustomizationState, BoardPresentation, BoardProviderDescriptor,
+    BoardState, BotGame, BotGameRequest, BotGameTimeControl, Client, ColorPreference,
+    CustomBoardTheme, CustomPieceTheme, ErrorKind, GameExport, GameHistoryPage, GameId, GameReview,
+    LibChessError, LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameEvent,
+    LiveGameRequest, LiveGameSummary, MoveSubmission, OAuthConnection, PlayerColor,
+    ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -69,7 +70,7 @@ impl EventSink {
 }
 
 enum WorkerMessage {
-    Command(CommandEnvelope),
+    Command(Box<CommandEnvelope>),
     Shutdown,
 }
 
@@ -118,6 +119,9 @@ enum Command {
         board_theme: String,
         piece_theme: String,
     },
+    LoadBoardCustomizationState {
+        state: BoardCustomizationState,
+    },
     ListBoardProviders,
     ListProviders,
     PerformGameAction {
@@ -137,6 +141,20 @@ enum Command {
         limit: u16,
     },
     RefreshLiveGames,
+    RegisterCustomBoardTheme {
+        theme: CustomBoardTheme,
+    },
+    RegisterCustomPieceTheme {
+        theme: CustomPieceTheme,
+    },
+    RemoveCustomBoardTheme {
+        provider: String,
+        theme: String,
+    },
+    RemoveCustomPieceTheme {
+        provider: String,
+        theme: String,
+    },
     ShowGameReviewPosition {
         game_id: String,
         ply: u32,
@@ -179,6 +197,10 @@ enum Event {
     },
     BoardProviders {
         board_providers: Vec<BoardProviderDescriptor>,
+    },
+    BoardCustomizationChanged {
+        board_providers: Vec<BoardProviderDescriptor>,
+        board_customization: BoardCustomizationState,
     },
     Error {
         error: LibChessError,
@@ -241,6 +263,7 @@ enum Event {
     Ready {
         providers: Vec<ProviderDescriptor>,
         board_providers: Vec<BoardProviderDescriptor>,
+        board_customization: BoardCustomizationState,
         #[serde(skip_serializing_if = "Option::is_none")]
         board_presentation: Option<BoardPresentation>,
     },
@@ -278,6 +301,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
         Event::Ready {
             providers: client.providers(),
             board_providers: client.board_providers(),
+            board_customization: client.board_customization_state(),
             board_presentation: default_board_presentation.as_ref().ok().cloned(),
         },
     );
@@ -399,6 +423,82 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             board_providers: client.board_providers(),
                         },
                     ),
+                    Command::LoadBoardCustomizationState { state } => {
+                        match client.replace_board_customization_state(state) {
+                            Ok(()) => sink.emit(
+                                request_id,
+                                Event::BoardCustomizationChanged {
+                                    board_providers: client.board_providers(),
+                                    board_customization: client.board_customization_state(),
+                                },
+                            ),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
+                    Command::RegisterCustomBoardTheme { theme } => {
+                        match client.register_custom_board_theme(theme) {
+                            Ok(()) => sink.emit(
+                                request_id,
+                                Event::BoardCustomizationChanged {
+                                    board_providers: client.board_providers(),
+                                    board_customization: client.board_customization_state(),
+                                },
+                            ),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
+                    Command::RegisterCustomPieceTheme { theme } => {
+                        match client.register_custom_piece_theme(theme) {
+                            Ok(()) => sink.emit(
+                                request_id,
+                                Event::BoardCustomizationChanged {
+                                    board_providers: client.board_providers(),
+                                    board_customization: client.board_customization_state(),
+                                },
+                            ),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
+                    Command::RemoveCustomBoardTheme { provider, theme } => {
+                        match client.remove_custom_board_theme(&provider, &theme) {
+                            Ok(true) => sink.emit(
+                                request_id,
+                                Event::BoardCustomizationChanged {
+                                    board_providers: client.board_providers(),
+                                    board_customization: client.board_customization_state(),
+                                },
+                            ),
+                            Ok(false) => sink.emit(
+                                request_id,
+                                Event::Error {
+                                    error: LibChessError::invalid_input(
+                                        "the custom board theme does not exist",
+                                    ),
+                                },
+                            ),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
+                    Command::RemoveCustomPieceTheme { provider, theme } => {
+                        match client.remove_custom_piece_theme(&provider, &theme) {
+                            Ok(true) => sink.emit(
+                                request_id,
+                                Event::BoardCustomizationChanged {
+                                    board_providers: client.board_providers(),
+                                    board_customization: client.board_customization_state(),
+                                },
+                            ),
+                            Ok(false) => sink.emit(
+                                request_id,
+                                Event::Error {
+                                    error: LibChessError::invalid_input(
+                                        "the custom piece theme does not exist",
+                                    ),
+                                },
+                            ),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
                     Command::LoadBoardPresentation {
                         provider,
                         board_theme,
@@ -865,7 +965,10 @@ pub unsafe extern "C" fn libchess_client_send(
         // SAFETY: The non-null handle was returned by `libchess_client_create`.
         // The ABI contract forbids concurrent destruction of this handle.
         let client = unsafe { &*client };
-        match client.sender.send(WorkerMessage::Command(command)) {
+        match client
+            .sender
+            .send(WorkerMessage::Command(Box::new(command)))
+        {
             Ok(()) => SEND_OK,
             Err(_) => SEND_WORKER_CLOSED,
         }
@@ -933,6 +1036,7 @@ mod tests {
         assert!(ready.contains(r#""id":"level-1""#));
         assert!(ready.contains(r#""game_review""#));
         assert!(ready.contains(r#""board_providers""#));
+        assert!(ready.contains(r#""board_customization":{"version":1"#));
         assert!(ready.contains(r#""default_board_theme":"classic""#));
         assert!(ready.contains(r#""default_piece_theme":"system-solid""#));
         assert!(ready.contains(r#""board_presentation""#));
@@ -964,6 +1068,46 @@ mod tests {
         assert!(board_presentation.contains(r#""piece_theme":"cc0-silhouette""#));
         assert!(board_presentation.contains(r#""kind":"svg""#));
         assert!(board_presentation.contains(r#""duration_millis":260"#));
+
+        let custom_board = br#"{"version":1,"request_id":"custom-board-1","type":"register_custom_board_theme","theme":{"provider":"libchess","id":"night-board","display_name":"Night Board","base_theme":"slate","adjustment":{"hue_degrees":18,"saturation_percent":12,"brightness_percent":-20},"colors":{"light_square":{"red":160,"green":170,"blue":180,"alpha":255},"dark_square":{"red":35,"green":45,"blue":60,"alpha":255}}}}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, custom_board.as_ptr(), custom_board.len()) },
+            SEND_OK
+        );
+        let custom_board_event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("custom board event");
+        assert!(custom_board_event.contains(r#""type":"board_customization_changed""#));
+        assert!(custom_board_event.contains(r#""id":"night-board""#));
+
+        let custom_pieces = br#"{"version":1,"request_id":"custom-pieces-1","type":"register_custom_piece_theme","theme":{"provider":"libchess","id":"blue-pieces","display_name":"Blue Pieces","base_theme":"system-solid","adjustment":{"hue_degrees":0,"saturation_percent":0,"brightness_percent":0},"colors":{"black_piece":{"red":20,"green":60,"blue":180,"alpha":255}},"assets":null}}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, custom_pieces.as_ptr(), custom_pieces.len()) },
+            SEND_OK
+        );
+        let custom_piece_event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("custom piece event");
+        assert!(custom_piece_event.contains(r#""id":"blue-pieces""#));
+
+        let custom_presentation = br#"{"version":1,"request_id":"custom-presentation-1","type":"load_board_presentation","provider":"libchess","board_theme":"night-board","piece_theme":"blue-pieces"}"#;
+        assert_eq!(
+            unsafe {
+                libchess_client_send(
+                    client,
+                    custom_presentation.as_ptr(),
+                    custom_presentation.len(),
+                )
+            },
+            SEND_OK
+        );
+        let custom_presentation_event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("custom presentation event");
+        assert!(custom_presentation_event.contains(r#""board_theme":"night-board""#));
+        assert!(custom_presentation_event.contains(r#""piece_theme":"blue-pieces""#));
+        assert!(custom_presentation_event.contains(r#""display_name":"Night Board""#));
+        assert!(custom_presentation_event.contains(r#""display_name":"Blue Pieces""#));
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

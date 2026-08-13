@@ -105,6 +105,14 @@ The vector Silhouette pieces come from a
 [CC0 release by femrek](https://opengameart.org/content/chess-pieces-in-svg-format),
 with provenance and checksums retained beside the embedded SVG files.
 
+LibChess Settings (`Command-,`) manages user themes without moving theme policy
+into Swift. A custom board theme stores only a palette, base board, and portable
+hue/saturation/brightness adjustment, so it never owns piece assets. A custom
+piece theme can inherit an installed set or register a folder containing six
+self-contained SVG files. LibChess validates, combines, and serializes these
+definitions; the native frontend persists the versioned snapshot and restores
+it from an atomically written Application Support file at startup.
+
 ## Recent games and analysis
 
 The **Recent Games** sidebar destination pages through the connected provider's

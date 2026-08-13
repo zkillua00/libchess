@@ -311,6 +311,64 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertNotNil(object["request_id"])
     }
 
+    func testEncodesPortableCustomizationCommands() throws {
+        let board = CustomBoardTheme(
+            provider: "libchess",
+            id: "night-board",
+            displayName: "Night Board",
+            baseTheme: "slate",
+            adjustment: ThemeColorAdjustment(
+                hueDegrees: 18,
+                saturationPercent: 12,
+                brightnessPercent: -20
+            ),
+            colors: BoardColorOverrides(
+                lightSquare: RgbaColor(red: 160, green: 170, blue: 180),
+                darkSquare: RgbaColor(red: 35, green: 45, blue: 60)
+            )
+        )
+        let pieces = CustomPieceTheme(
+            provider: "libchess",
+            id: "blue-pieces",
+            displayName: "Blue Pieces",
+            baseTheme: "system-solid",
+            adjustment: .identity,
+            colors: PieceColorOverrides(
+                blackPiece: RgbaColor(red: 20, green: 60, blue: 180)
+            ),
+            assets: nil
+        )
+
+        let boardObject = try jsonObject(RegisterCustomBoardThemeCommand(theme: board))
+        let pieceObject = try jsonObject(RegisterCustomPieceThemeCommand(theme: pieces))
+        let removeObject = try jsonObject(
+            RemoveCustomBoardThemeCommand(provider: "libchess", theme: "night-board")
+        )
+
+        XCTAssertEqual(boardObject["type"] as? String, "register_custom_board_theme")
+        let encodedBoard = try XCTUnwrap(boardObject["theme"] as? [String: Any])
+        XCTAssertEqual(encodedBoard["base_theme"] as? String, "slate")
+        let adjustment = try XCTUnwrap(encodedBoard["adjustment"] as? [String: Any])
+        XCTAssertEqual(adjustment["hue_degrees"] as? Int, 18)
+        XCTAssertEqual(pieceObject["type"] as? String, "register_custom_piece_theme")
+        XCTAssertEqual(removeObject["type"] as? String, "remove_custom_board_theme")
+        XCTAssertEqual(removeObject["theme"] as? String, "night-board")
+    }
+
+    func testDecodesPortableCustomizationSnapshot() throws {
+        let data = Data(
+            #"{"version":1,"request_id":"custom-1","type":"board_customization_changed","board_providers":[],"board_customization":{"version":1,"board_themes":[{"provider":"libchess","id":"night-board","display_name":"Night Board","base_theme":"slate","adjustment":{"hue_degrees":18,"saturation_percent":12,"brightness_percent":-20},"colors":{"light_square":{"red":160,"green":170,"blue":180,"alpha":255},"dark_square":{"red":35,"green":45,"blue":60,"alpha":255}}}],"piece_themes":[]}}"#.utf8
+        )
+
+        let event = try JSONDecoder().decode(WireEvent.self, from: data)
+        let snapshot = try XCTUnwrap(event.boardCustomization)
+
+        XCTAssertEqual(snapshot.version, BOARD_CUSTOMIZATION_STATE_VERSION)
+        XCTAssertEqual(snapshot.boardThemes.first?.displayName, "Night Board")
+        XCTAssertEqual(snapshot.boardThemes.first?.adjustment.brightnessPercent, -20)
+        XCTAssertEqual(snapshot.boardThemes.first?.colors.darkSquare?.blue, 60)
+    }
+
     func testDecodesAClientPredictedBoardBeforeServerConfirmation() throws {
         let data = Data(
             #"{"version":1,"request_id":"move-1","type":"move_predicted","game_id":"v8BRXYtM","move_id":"e2e4","board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e4","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"black","ply":1,"moves":["e2e4"],"last_move":{"id":"e2e4","from":"e2","to":"e4"},"legal_moves":[{"id":"e7e5","from":"e7","to":"e5"}],"in_check":false}}"#.utf8

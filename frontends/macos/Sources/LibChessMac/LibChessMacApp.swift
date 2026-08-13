@@ -24,6 +24,7 @@ enum LibChessMacApp {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = LibChessStore()
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let application = notification.object as? NSApplication ?? NSApplication.shared
@@ -81,6 +82,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             item(
                 "About LibChess",
                 action: #selector(NSApplication.orderFrontStandardAboutPanel(_:))
+            )
+        )
+        applicationMenu.addItem(
+            item(
+                "Settings…",
+                action: #selector(showSettings(_:)),
+                key: ",",
+                target: self
             )
         )
         applicationMenu.addItem(.separator())
@@ -208,6 +217,30 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showNewGame(_ sender: Any?) {
         NotificationCenter.default.post(name: .showNewGame, object: nil)
         window?.makeKeyAndOrderFront(sender)
+    }
+
+    @objc private func showSettings(_ sender: Any?) {
+        if settingsWindow == nil {
+            let settingsWindow = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 660),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            settingsWindow.title = "LibChess Settings"
+            settingsWindow.toolbarStyle = .preference
+            settingsWindow.contentMinSize = NSSize(width: 640, height: 500)
+            settingsWindow.isReleasedWhenClosed = false
+            settingsWindow.contentView = NSHostingView(
+                rootView: SettingsView()
+                    .environmentObject(store)
+                    .frame(minWidth: 640, minHeight: 500)
+            )
+            settingsWindow.center()
+            self.settingsWindow = settingsWindow
+        }
+        settingsWindow?.makeKeyAndOrderFront(sender)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func increaseBoardSize(_ sender: Any?) {

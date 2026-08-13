@@ -28,6 +28,231 @@ public struct PieceThemeDescriptor: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public let BOARD_CUSTOMIZATION_STATE_VERSION: UInt32 = 1
+
+public struct BoardCustomizationState: Codable, Equatable, Sendable {
+    public let version: UInt32
+    public let boardThemes: [CustomBoardTheme]
+    public let pieceThemes: [CustomPieceTheme]
+
+    public static let empty = BoardCustomizationState(
+        version: BOARD_CUSTOMIZATION_STATE_VERSION,
+        boardThemes: [],
+        pieceThemes: []
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case boardThemes = "board_themes"
+        case pieceThemes = "piece_themes"
+    }
+}
+
+public struct CustomBoardTheme: Codable, Equatable, Identifiable, Sendable {
+    public let provider: String
+    public let id: String
+    public let displayName: String
+    public let baseTheme: String
+    public let adjustment: ThemeColorAdjustment
+    public let colors: BoardColorOverrides
+
+    public init(
+        provider: String,
+        id: String,
+        displayName: String,
+        baseTheme: String,
+        adjustment: ThemeColorAdjustment,
+        colors: BoardColorOverrides
+    ) {
+        self.provider = provider
+        self.id = id
+        self.displayName = displayName
+        self.baseTheme = baseTheme
+        self.adjustment = adjustment
+        self.colors = colors
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case id
+        case displayName = "display_name"
+        case baseTheme = "base_theme"
+        case adjustment
+        case colors
+    }
+}
+
+public struct CustomPieceTheme: Codable, Equatable, Identifiable, Sendable {
+    public let provider: String
+    public let id: String
+    public let displayName: String
+    public let baseTheme: String
+    public let adjustment: ThemeColorAdjustment
+    public let colors: PieceColorOverrides
+    public let assets: CustomPieceAssets?
+
+    public init(
+        provider: String,
+        id: String,
+        displayName: String,
+        baseTheme: String,
+        adjustment: ThemeColorAdjustment,
+        colors: PieceColorOverrides,
+        assets: CustomPieceAssets?
+    ) {
+        self.provider = provider
+        self.id = id
+        self.displayName = displayName
+        self.baseTheme = baseTheme
+        self.adjustment = adjustment
+        self.colors = colors
+        self.assets = assets
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case id
+        case displayName = "display_name"
+        case baseTheme = "base_theme"
+        case adjustment
+        case colors
+        case assets
+    }
+}
+
+public struct ThemeColorAdjustment: Codable, Equatable, Sendable {
+    public let hueDegrees: Int16
+    public let saturationPercent: Int8
+    public let brightnessPercent: Int8
+
+    public init(hueDegrees: Int16, saturationPercent: Int8, brightnessPercent: Int8) {
+        self.hueDegrees = hueDegrees
+        self.saturationPercent = saturationPercent
+        self.brightnessPercent = brightnessPercent
+    }
+
+    public static let identity = ThemeColorAdjustment(
+        hueDegrees: 0,
+        saturationPercent: 0,
+        brightnessPercent: 0
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case hueDegrees = "hue_degrees"
+        case saturationPercent = "saturation_percent"
+        case brightnessPercent = "brightness_percent"
+    }
+}
+
+public struct BoardColorOverrides: Codable, Equatable, Sendable {
+    public let lightSquare: RgbaColor?
+    public let darkSquare: RgbaColor?
+    public let coordinateOnLight: RgbaColor?
+    public let coordinateOnDark: RgbaColor?
+    public let lastMove: RgbaColor?
+    public let selection: RgbaColor?
+    public let legalMove: RgbaColor?
+    public let checkCenter: RgbaColor?
+    public let checkEdge: RgbaColor?
+    public let border: RgbaColor?
+    public let shadow: RgbaColor?
+
+    public init(
+        lightSquare: RgbaColor? = nil,
+        darkSquare: RgbaColor? = nil,
+        coordinateOnLight: RgbaColor? = nil,
+        coordinateOnDark: RgbaColor? = nil,
+        lastMove: RgbaColor? = nil,
+        selection: RgbaColor? = nil,
+        legalMove: RgbaColor? = nil,
+        checkCenter: RgbaColor? = nil,
+        checkEdge: RgbaColor? = nil,
+        border: RgbaColor? = nil,
+        shadow: RgbaColor? = nil
+    ) {
+        self.lightSquare = lightSquare
+        self.darkSquare = darkSquare
+        self.coordinateOnLight = coordinateOnLight
+        self.coordinateOnDark = coordinateOnDark
+        self.lastMove = lastMove
+        self.selection = selection
+        self.legalMove = legalMove
+        self.checkCenter = checkCenter
+        self.checkEdge = checkEdge
+        self.border = border
+        self.shadow = shadow
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case lightSquare = "light_square"
+        case darkSquare = "dark_square"
+        case coordinateOnLight = "coordinate_on_light"
+        case coordinateOnDark = "coordinate_on_dark"
+        case lastMove = "last_move"
+        case selection
+        case legalMove = "legal_move"
+        case checkCenter = "check_center"
+        case checkEdge = "check_edge"
+        case border
+        case shadow
+    }
+}
+
+public struct PieceColorOverrides: Codable, Equatable, Sendable {
+    public let whitePiece: RgbaColor?
+    public let blackPiece: RgbaColor?
+    public let whitePieceShadow: RgbaColor?
+    public let blackPieceShadow: RgbaColor?
+    public let promotedMarker: RgbaColor?
+
+    public init(
+        whitePiece: RgbaColor? = nil,
+        blackPiece: RgbaColor? = nil,
+        whitePieceShadow: RgbaColor? = nil,
+        blackPieceShadow: RgbaColor? = nil,
+        promotedMarker: RgbaColor? = nil
+    ) {
+        self.whitePiece = whitePiece
+        self.blackPiece = blackPiece
+        self.whitePieceShadow = whitePieceShadow
+        self.blackPieceShadow = blackPieceShadow
+        self.promotedMarker = promotedMarker
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case whitePiece = "white_piece"
+        case blackPiece = "black_piece"
+        case whitePieceShadow = "white_piece_shadow"
+        case blackPieceShadow = "black_piece_shadow"
+        case promotedMarker = "promoted_marker"
+    }
+}
+
+public struct CustomPieceAssets: Codable, Equatable, Sendable {
+    public let pieces: [CustomPieceAsset]
+    public let promotedMarker: BoardAsset?
+
+    public init(pieces: [CustomPieceAsset], promotedMarker: BoardAsset? = nil) {
+        self.pieces = pieces
+        self.promotedMarker = promotedMarker
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pieces
+        case promotedMarker = "promoted_marker"
+    }
+}
+
+public struct CustomPieceAsset: Codable, Equatable, Sendable {
+    public let role: PieceRole
+    public let asset: BoardAsset
+
+    public init(role: PieceRole, asset: BoardAsset) {
+        self.role = role
+        self.asset = asset
+    }
+}
+
 public struct BoardThemeDescriptor: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let displayName: String
@@ -110,6 +335,12 @@ public struct BoardAsset: Codable, Equatable, Sendable {
     public let kind: BoardAssetKind
     public let value: String
     public let tintable: Bool
+
+    public init(kind: BoardAssetKind, value: String, tintable: Bool) {
+        self.kind = kind
+        self.value = value
+        self.tintable = tintable
+    }
 }
 
 public enum BoardAssetKind: String, Codable, Equatable, Sendable {
@@ -122,6 +353,13 @@ public struct RgbaColor: Codable, Equatable, Sendable {
     public let green: UInt8
     public let blue: UInt8
     public let alpha: UInt8
+
+    public init(red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8 = 255) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
 }
 
 public struct BoardPalette: Codable, Equatable, Sendable {

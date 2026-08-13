@@ -49,6 +49,8 @@ stable_id!(BoardThemeId, "board theme identifiers");
 stable_id!(PieceThemeId, "piece theme identifiers");
 stable_id!(BoardZoomPresetId, "board zoom preset identifiers");
 
+pub const BOARD_CUSTOMIZATION_STATE_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BoardProviderDescriptor {
     pub id: BoardProviderId,
@@ -116,6 +118,215 @@ pub struct BoardThemeDescriptor {
 pub struct PieceThemeDescriptor {
     pub id: PieceThemeId,
     pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BoardCustomizationState {
+    pub version: u32,
+    pub board_themes: Vec<CustomBoardTheme>,
+    pub piece_themes: Vec<CustomPieceTheme>,
+}
+
+impl BoardCustomizationState {
+    pub fn empty() -> Self {
+        Self {
+            version: BOARD_CUSTOMIZATION_STATE_VERSION,
+            board_themes: Vec::new(),
+            piece_themes: Vec::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), LibChessError> {
+        if self.version != BOARD_CUSTOMIZATION_STATE_VERSION {
+            return Err(LibChessError::unsupported(format!(
+                "board customization state version {} is not supported",
+                self.version
+            )));
+        }
+        if self.board_themes.len() > 64 || self.piece_themes.len() > 64 {
+            return Err(LibChessError::invalid_input(
+                "board customization state cannot contain more than 64 themes of either kind",
+            ));
+        }
+
+        let mut board_ids = HashSet::new();
+        for theme in &self.board_themes {
+            theme.validate()?;
+            if !board_ids.insert((theme.provider.clone(), theme.id.clone())) {
+                return Err(LibChessError::invalid_input(
+                    "board customization state contains duplicate board-theme identifiers",
+                ));
+            }
+        }
+
+        let mut piece_ids = HashSet::new();
+        for theme in &self.piece_themes {
+            theme.validate()?;
+            if !piece_ids.insert((theme.provider.clone(), theme.id.clone())) {
+                return Err(LibChessError::invalid_input(
+                    "board customization state contains duplicate piece-theme identifiers",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for BoardCustomizationState {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomBoardTheme {
+    pub provider: BoardProviderId,
+    pub id: BoardThemeId,
+    pub display_name: String,
+    pub base_theme: BoardThemeId,
+    pub adjustment: ThemeColorAdjustment,
+    pub colors: BoardColorOverrides,
+}
+
+impl CustomBoardTheme {
+    pub fn validate(&self) -> Result<(), LibChessError> {
+        validate_display_name(&self.display_name, "custom board theme")?;
+        self.adjustment.validate()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomPieceTheme {
+    pub provider: BoardProviderId,
+    pub id: PieceThemeId,
+    pub display_name: String,
+    pub base_theme: PieceThemeId,
+    pub adjustment: ThemeColorAdjustment,
+    pub colors: PieceColorOverrides,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<CustomPieceAssets>,
+}
+
+impl CustomPieceTheme {
+    pub fn validate(&self) -> Result<(), LibChessError> {
+        validate_display_name(&self.display_name, "custom piece theme")?;
+        self.adjustment.validate()?;
+        if let Some(assets) = &self.assets {
+            assets.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ThemeColorAdjustment {
+    pub hue_degrees: i16,
+    pub saturation_percent: i8,
+    pub brightness_percent: i8,
+}
+
+impl ThemeColorAdjustment {
+    pub fn validate(self) -> Result<(), LibChessError> {
+        if !(-180..=180).contains(&self.hue_degrees)
+            || !(-100..=100).contains(&self.saturation_percent)
+            || !(-100..=100).contains(&self.brightness_percent)
+        {
+            return Err(LibChessError::invalid_input(
+                "theme hue must be between -180 and 180 degrees and saturation or brightness between -100 and 100 percent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BoardColorOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light_square: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_square: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_on_light: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_on_dark: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_move: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legal_move: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_center: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_edge: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<RgbaColor>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PieceColorOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub white_piece: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_piece: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub white_piece_shadow: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_piece_shadow: Option<RgbaColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_marker: Option<RgbaColor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomPieceAssets {
+    pub pieces: Vec<CustomPieceAsset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_marker: Option<BoardAsset>,
+}
+
+impl CustomPieceAssets {
+    fn validate(&self) -> Result<(), LibChessError> {
+        let expected = [
+            PieceRole::Pawn,
+            PieceRole::Knight,
+            PieceRole::Bishop,
+            PieceRole::Rook,
+            PieceRole::Queen,
+            PieceRole::King,
+        ];
+        if self.pieces.len() != expected.len() {
+            return Err(LibChessError::invalid_input(
+                "custom piece assets must provide exactly one asset for every piece role",
+            ));
+        }
+
+        let mut roles = HashSet::new();
+        for piece in &self.pieces {
+            piece.asset.validate()?;
+            if !roles.insert(piece.role) {
+                return Err(LibChessError::invalid_input(
+                    "custom piece assets cannot contain duplicate piece roles",
+                ));
+            }
+        }
+        if expected.iter().any(|role| !roles.contains(role)) {
+            return Err(LibChessError::invalid_input(
+                "custom piece assets must provide every piece role",
+            ));
+        }
+        if let Some(marker) = &self.promoted_marker {
+            marker.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomPieceAsset {
+    pub role: PieceRole,
+    pub asset: BoardAsset,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

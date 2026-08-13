@@ -84,6 +84,23 @@ The CC0 Silhouette vectors are embedded at compile time from femrek's
 The original bytes, retrieval date, license link, and SHA-256 checksums live
 beside the assets under `crates/libchess-board/assets/cc0-silhouette`.
 
+User customization uses the same contract. `libchess-core` owns a versioned
+customization state containing named board and piece definitions. Board
+definitions contain no assets: they derive from an installed board, optionally
+override palette entries, and apply bounded hue, saturation, and brightness
+transforms. Piece definitions independently derive from an installed set,
+override piece colors, and may replace its shapes with six tintable SVG roles.
+The registry rejects built-in identifier shadowing, missing roles, unsafe SVG,
+unknown bases, duplicate state entries, and oversized catalogs before updating
+its active state.
+
+The C ABI can atomically load a saved state or register, replace, and remove one
+definition. Each successful mutation returns the complete validated state and
+updated provider catalog. macOS persists that snapshot as an atomic Application
+Support JSON file off the main thread and supplies a native Settings window,
+but it does not implement theme composition or color math; future WinUI 3 and
+Qt settings surfaces can edit the same wire objects.
+
 ## History, exports, and post-game analysis
 
 Finished-game history is a provider capability, not a frontend-specific API.

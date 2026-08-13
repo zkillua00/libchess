@@ -7,7 +7,9 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var providers: [ProviderDescriptor] = []
     @Published public private(set) var boardProviders: [BoardProviderDescriptor] = []
     @Published public private(set) var boardPresentation: BoardPresentation?
+    @Published public private(set) var boardCustomization = BoardCustomizationState.empty
     @Published public private(set) var isLoadingBoardPresentation = false
+    @Published public private(set) var isSavingBoardCustomization = false
     @Published public private(set) var account: ChessAccount?
     @Published public private(set) var connectionState = ConnectionState.disconnected
     @Published public private(set) var savedCredentialAvailable = false
@@ -40,6 +42,8 @@ public final class LibChessStore: ObservableObject {
     private var nativeClient: NativeClient?
     private var pendingBotGameRequestID: String?
     private var pendingBoardPresentationRequestID: String?
+    private var pendingBoardCustomizationRequestID: String?
+    private var pendingBoardCustomizationAction: PendingBoardCustomizationAction?
     private var pendingLiveGameRequests: [String: String] = [:]
     private var pendingMoveRequests: [String: PendingMove] = [:]
     private var pendingMoveRequestByGame: [String: String] = [:]
@@ -55,6 +59,7 @@ public final class LibChessStore: ObservableObject {
     private var catalogWatchRequestID: String?
     private var liveGamesRefreshTask: Task<Void, Never>?
     private var catalogReconnectTask: Task<Void, Never>?
+    private var boardCustomizationSaveTask: Task<Void, Never>?
 
     public init() {
         decoder = JSONDecoder()
@@ -219,6 +224,38 @@ public final class LibChessStore: ObservableObject {
             pendingBoardPresentationRequestID = nil
             isLoadingBoardPresentation = false
         }
+    }
+
+    public func registerCustomBoardTheme(_ theme: CustomBoardTheme) {
+        let command = RegisterCustomBoardThemeCommand(theme: theme)
+        beginBoardCustomizationRequest(
+            command,
+            action: .selectBoard(provider: theme.provider, theme: theme.id)
+        )
+    }
+
+    public func registerCustomPieceTheme(_ theme: CustomPieceTheme) {
+        let command = RegisterCustomPieceThemeCommand(theme: theme)
+        beginBoardCustomizationRequest(
+            command,
+            action: .selectPieces(provider: theme.provider, theme: theme.id)
+        )
+    }
+
+    public func removeCustomBoardTheme(provider: String, theme: String) {
+        let command = RemoveCustomBoardThemeCommand(provider: provider, theme: theme)
+        beginBoardCustomizationRequest(
+            command,
+            action: .removeBoard(provider: provider, theme: theme)
+        )
+    }
+
+    public func removeCustomPieceTheme(provider: String, theme: String) {
+        let command = RemoveCustomPieceThemeCommand(provider: provider, theme: theme)
+        beginBoardCustomizationRequest(
+            command,
+            action: .removePieces(provider: provider, theme: theme)
+        )
     }
 
     public var botVariants: [GameVariant] {
@@ -554,6 +591,24 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
+    private func beginBoardCustomizationRequest<Command: BoardCustomizationCommand>(
+        _ command: Command,
+        action: PendingBoardCustomizationAction
+    ) {
+        guard !isSavingBoardCustomization else {
+            return
+        }
+        message = nil
+        pendingBoardCustomizationRequestID = command.requestID
+        pendingBoardCustomizationAction = action
+        isSavingBoardCustomization = true
+        if !send(command) {
+            pendingBoardCustomizationRequestID = nil
+            pendingBoardCustomizationAction = nil
+            isSavingBoardCustomization = false
+        }
+    }
+
     private func receive(_ data: Data) {
         do {
             let event = try decoder.decode(WireEvent.self, from: data)
@@ -567,13 +622,17 @@ public final class LibChessStore: ObservableObject {
             switch event.type {
             case "ready":
                 providers = event.providers ?? []
-                receiveBoardCatalog(event, restorePreference: true)
+                receiveBoardCatalog(event)
+                boardCustomization = event.boardCustomization ?? .empty
+                beginSavedBoardCustomizationRestore()
             case "providers":
                 providers = event.providers ?? []
             case "board_providers":
-                receiveBoardCatalog(event, restorePreference: false)
+                receiveBoardCatalog(event)
             case "board_presentation_loaded":
                 receiveBoardPresentation(event)
+            case "board_customization_changed":
+                receiveBoardCustomization(event)
             case "connection_state_changed":
                 if let state = event.state {
                     connectionState = state
@@ -642,6 +701,11 @@ public final class LibChessStore: ObservableObject {
                     pendingBoardPresentationRequestID = nil
                     isLoadingBoardPresentation = false
                 }
+                if event.requestID == pendingBoardCustomizationRequestID {
+                    pendingBoardCustomizationRequestID = nil
+                    pendingBoardCustomizationAction = nil
+                    isSavingBoardCustomization = false
+                }
                 if let requestID = event.requestID,
                    let gameID = pendingLiveGameRequests.removeValue(forKey: requestID)
                 {
@@ -701,7 +765,7 @@ public final class LibChessStore: ObservableObject {
         authorizationURL = url
     }
 
-    private func receiveBoardCatalog(_ event: WireEvent, restorePreference: Bool) {
+    private func receiveBoardCatalog(_ event: WireEvent) {
         if let catalog = event.boardProviders {
             boardProviders = catalog
         }
@@ -709,7 +773,10 @@ public final class LibChessStore: ObservableObject {
             boardPresentation = presentation
             reconcileBoardZoomPreference(with: presentation)
         }
-        guard restorePreference, let boardPresentation else {
+    }
+
+    private func restoreBoardPresentationPreference() {
+        guard let boardPresentation else {
             return
         }
 
@@ -741,6 +808,142 @@ public final class LibChessStore: ObservableObject {
                 boardTheme: boardPresentation.boardTheme,
                 pieceTheme: boardPresentation.pieceTheme
             )
+        }
+    }
+
+    private func beginSavedBoardCustomizationRestore() {
+        isSavingBoardCustomization = true
+        Task { [weak self] in
+            do {
+                let state = try await Task.detached(priority: .utility) {
+                    let data = try BoardCustomizationFileStore().load()
+                    guard let data else {
+                        return Optional<BoardCustomizationState>.none
+                    }
+                    let state = try JSONDecoder().decode(BoardCustomizationState.self, from: data)
+                    guard state.version == BOARD_CUSTOMIZATION_STATE_VERSION else {
+                        throw CocoaError(.coderReadCorrupt)
+                    }
+                    return state
+                }.value
+                guard let self else {
+                    return
+                }
+                guard let state else {
+                    isSavingBoardCustomization = false
+                    restoreBoardPresentationPreference()
+                    return
+                }
+
+                let command = LoadBoardCustomizationStateCommand(state: state)
+                pendingBoardCustomizationRequestID = command.requestID
+                pendingBoardCustomizationAction = .restore
+                if !send(command) {
+                    pendingBoardCustomizationRequestID = nil
+                    pendingBoardCustomizationAction = nil
+                    isSavingBoardCustomization = false
+                    restoreBoardPresentationPreference()
+                }
+            } catch {
+                self?.isSavingBoardCustomization = false
+                self?.message = "Saved board customization could not be restored."
+                self?.restoreBoardPresentationPreference()
+            }
+        }
+    }
+
+    private func receiveBoardCustomization(_ event: WireEvent) {
+        guard let requestID = event.requestID,
+              requestID == pendingBoardCustomizationRequestID,
+              let customization = event.boardCustomization,
+              let catalog = event.boardProviders
+        else {
+            return
+        }
+
+        let action = pendingBoardCustomizationAction
+        pendingBoardCustomizationRequestID = nil
+        pendingBoardCustomizationAction = nil
+        isSavingBoardCustomization = false
+        boardCustomization = customization
+        boardProviders = catalog
+        persistBoardCustomization(customization)
+
+        switch action {
+        case let .selectBoard(provider, theme):
+            guard let descriptor = catalog.first(where: { $0.id == provider }) else {
+                return
+            }
+            let pieceTheme = boardPresentation?.provider == provider
+                && descriptor.pieceThemes.contains(where: {
+                    $0.id == boardPresentation?.pieceTheme
+                })
+                ? boardPresentation?.pieceTheme ?? descriptor.defaultPieceTheme
+                : descriptor.defaultPieceTheme
+            selectBoardPresentation(
+                provider: provider,
+                boardTheme: theme,
+                pieceTheme: pieceTheme
+            )
+        case let .selectPieces(provider, theme):
+            guard let descriptor = catalog.first(where: { $0.id == provider }) else {
+                return
+            }
+            let boardTheme = boardPresentation?.provider == provider
+                && descriptor.boardThemes.contains(where: {
+                    $0.id == boardPresentation?.boardTheme
+                })
+                ? boardPresentation?.boardTheme ?? descriptor.defaultBoardTheme
+                : descriptor.defaultBoardTheme
+            selectBoardPresentation(
+                provider: provider,
+                boardTheme: boardTheme,
+                pieceTheme: theme
+            )
+        case let .removeBoard(provider, theme):
+            if boardPresentation?.provider == provider,
+               boardPresentation?.boardTheme == theme,
+               let descriptor = catalog.first(where: { $0.id == provider })
+            {
+                selectBoardPresentation(
+                    provider: provider,
+                    boardTheme: descriptor.defaultBoardTheme,
+                    pieceTheme: boardPresentation?.pieceTheme ?? descriptor.defaultPieceTheme
+                )
+            }
+        case let .removePieces(provider, theme):
+            if boardPresentation?.provider == provider,
+               boardPresentation?.pieceTheme == theme,
+               let descriptor = catalog.first(where: { $0.id == provider })
+            {
+                selectBoardPresentation(
+                    provider: provider,
+                    boardTheme: boardPresentation?.boardTheme ?? descriptor.defaultBoardTheme,
+                    pieceTheme: descriptor.defaultPieceTheme
+                )
+            }
+        case .restore:
+            restoreBoardPresentationPreference()
+        case nil:
+            break
+        }
+    }
+
+    private func persistBoardCustomization(_ customization: BoardCustomizationState) {
+        let previousSave = boardCustomizationSaveTask
+        boardCustomizationSaveTask = Task { [weak self] in
+            await previousSave?.value
+            do {
+                try await Task.detached(priority: .utility) {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    let data = try encoder.encode(customization)
+                    try BoardCustomizationFileStore().save(data)
+                }.value
+            } catch {
+                self?.message =
+                    "Board customization could not be saved: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -1391,6 +1594,14 @@ private struct MovePrediction {
     let baseMoves: [String]
 }
 
+private enum PendingBoardCustomizationAction {
+    case selectBoard(provider: String, theme: String)
+    case selectPieces(provider: String, theme: String)
+    case removeBoard(provider: String, theme: String)
+    case removePieces(provider: String, theme: String)
+    case restore
+}
+
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
@@ -1590,6 +1801,84 @@ struct LoadBoardPresentationCommand: Encodable {
         case provider
         case boardTheme = "board_theme"
         case pieceTheme = "piece_theme"
+    }
+}
+
+protocol BoardCustomizationCommand: Encodable {
+    var requestID: String { get }
+}
+
+struct LoadBoardCustomizationStateCommand: BoardCustomizationCommand {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "load_board_customization_state"
+    let state: BoardCustomizationState
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case state
+    }
+}
+
+struct RegisterCustomBoardThemeCommand: BoardCustomizationCommand {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "register_custom_board_theme"
+    let theme: CustomBoardTheme
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case theme
+    }
+}
+
+struct RegisterCustomPieceThemeCommand: BoardCustomizationCommand {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "register_custom_piece_theme"
+    let theme: CustomPieceTheme
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case theme
+    }
+}
+
+struct RemoveCustomBoardThemeCommand: BoardCustomizationCommand {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "remove_custom_board_theme"
+    let provider: String
+    let theme: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case provider
+        case theme
+    }
+}
+
+struct RemoveCustomPieceThemeCommand: BoardCustomizationCommand {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "remove_custom_piece_theme"
+    let provider: String
+    let theme: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case provider
+        case theme
     }
 }
 
