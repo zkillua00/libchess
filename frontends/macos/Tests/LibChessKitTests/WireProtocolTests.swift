@@ -240,6 +240,39 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(exportObject["game_id"] as? String, "AbCd1234")
     }
 
+    func testDecodesNativeGameReviewAndPosition() throws {
+        let data = Data(
+            #"{"version":1,"request_id":"review-1","type":"game_review_loaded","review":{"provider":"lichess","game_id":"AbCd1234","variant_id":"standard","initial_fen":"startpos","opening":{"eco":"C20","name":"King's Pawn Game","ply":2},"moves":[{"ply":1,"san":"e4","move_id":"e2e4","clock_millis":600000,"evaluation":{"centipawns":18}},{"ply":2,"san":"e5","move_id":"e7e5","evaluation":{"centipawns":72,"best_move":"e7e6","variation":"e6 d4","judgment":{"kind":"inaccuracy","comment":"Inaccuracy. e6 was best."}}}]},"board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e4","color":"white","role":"pawn","promoted":false},{"square":"e5","color":"black","role":"pawn","promoted":false}],"pockets":[],"turn":"white","ply":2,"moves":["e2e4","e7e5"],"last_move":{"id":"e7e5","from":"e7","to":"e5"},"legal_moves":[],"in_check":false}}"#.utf8
+        )
+
+        let event = try JSONDecoder().decode(WireEvent.self, from: data)
+        let review = try XCTUnwrap(event.review)
+        let board = try XCTUnwrap(event.board)
+
+        XCTAssertEqual(review.gameID, "AbCd1234")
+        XCTAssertEqual(review.opening?.name, "King's Pawn Game")
+        XCTAssertEqual(review.moves.map(\.san), ["e4", "e5"])
+        XCTAssertEqual(review.moves.last?.evaluation?.bestMove, "e7e6")
+        XCTAssertEqual(review.moves.last?.evaluation?.judgment?.kind, .inaccuracy)
+        XCTAssertEqual(board.ply, 2)
+        XCTAssertEqual(board.lastMove?.id, "e7e5")
+    }
+
+    func testEncodesNativeReviewCommandsWithExplicitWireKeys() throws {
+        let load = LoadGameReviewCommand(gameID: "AbCd1234")
+        let position = ShowGameReviewPositionCommand(gameID: "AbCd1234", ply: 17)
+
+        let loadObject = try jsonObject(load)
+        let positionObject = try jsonObject(position)
+
+        XCTAssertEqual(loadObject["type"] as? String, "load_game_review")
+        XCTAssertEqual(loadObject["game_id"] as? String, "AbCd1234")
+        XCTAssertNotNil(loadObject["request_id"])
+        XCTAssertEqual(positionObject["type"] as? String, "show_game_review_position")
+        XCTAssertEqual(positionObject["game_id"] as? String, "AbCd1234")
+        XCTAssertEqual(positionObject["ply"] as? Int, 17)
+    }
+
     func testDecodesAClientPredictedBoardBeforeServerConfirmation() throws {
         let data = Data(
             #"{"version":1,"request_id":"move-1","type":"move_predicted","game_id":"v8BRXYtM","move_id":"e2e4","board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e4","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"black","ply":1,"moves":["e2e4"],"last_move":{"id":"e2e4","from":"e2","to":"e4"},"legal_moves":[{"id":"e7e5","from":"e7","to":"e5"}],"in_check":false}}"#.utf8

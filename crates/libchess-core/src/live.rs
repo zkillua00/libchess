@@ -119,6 +119,63 @@ pub struct GameExport {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameReview {
+    pub provider: ProviderId,
+    pub game_id: GameId,
+    pub variant_id: GameVariantId,
+    pub initial_fen: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening: Option<GameOpening>,
+    pub moves: Vec<GameReviewMove>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameOpening {
+    pub eco: String,
+    pub name: String,
+    pub ply: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameReviewMove {
+    pub ply: u32,
+    pub san: String,
+    pub move_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<GameMoveEvaluation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameMoveEvaluation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub centipawns: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mate: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_move: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judgment: Option<GameMoveJudgment>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameMoveJudgment {
+    pub kind: GameMoveJudgmentKind,
+    pub comment: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GameMoveJudgmentKind {
+    Inaccuracy,
+    Mistake,
+    Blunder,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LiveGameRequest {
     pub game_id: GameId,
     pub player_color: PlayerColor,

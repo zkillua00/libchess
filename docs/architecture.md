@@ -64,10 +64,15 @@ again before opening the operating system save panel. For Lichess, recent
 games use the newest-first NDJSON user-game stream, and export requests ask for
 clocks, opening metadata, existing evaluations, and literate annotations.
 
-Opening a provider-owned analysis surface is distinct from running an engine.
-The history model carries a provider-generated analysis URL. Full local engine
-analysis will use an engine provider and `PostGameReview` context when that
-port is implemented; it is never inferred from a cloud-evaluation cache.
+Game review is another separate capability. A provider returns a normalized
+initial position, SAN display text, provider-neutral move identifiers, clock
+values, opening metadata, evaluations, best lines, and move judgments. The FFI
+worker retains the review and uses `libchess-rules` to reconstruct any requested
+ply. Frontends therefore render a native replay and analysis workspace without
+parsing PGN, provider JSON, or provider URLs. Missing provider evaluations are
+represented as missing data rather than invented analysis. A future engine
+adapter can fill those positions in the same post-game context without changing
+the native review surface.
 
 ## Game creation
 
@@ -144,7 +149,13 @@ Chess.com adapter can reuse the rules crate and the same live-game contract.
 
 Provider adapters receive credentials in memory but never persist or log them.
 Each native wrapper owns secure persistence using its platform facility. The
-macOS wrapper uses Keychain. OAuth is split cleanly:
+macOS wrapper uses Keychain. It prefers the data-protection Keychain with an
+after-first-unlock, device-only accessibility class and migrates a readable
+legacy item opportunistically. Every lookup supplies a noninteractive
+`LAContext`, so a locked or obsolete item returns an error instead of presenting
+authentication UI. Keychain work also runs away from the main actor.
+
+OAuth is split cleanly:
 
 1. The frontend asks `libchess` to begin OAuth for an advertised provider.
 2. The provider adapter creates the state, verifier, S256 challenge, and

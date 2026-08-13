@@ -4,6 +4,7 @@ use libchess_core::{BoardPiece, BoardState, LegalMove, PieceRole, PlayerColor, P
 use shakmaty::{
     CastlingMode, Color, Move, Position, Role, Square,
     fen::Fen,
+    san::San,
     uci::UciMove,
     variant::{Variant, VariantPosition},
 };
@@ -17,6 +18,8 @@ pub enum RulesError {
     InvalidInitialPosition(String),
     #[error("invalid move at ply {ply}: {move_id}")]
     InvalidMove { ply: usize, move_id: String },
+    #[error("invalid SAN at ply {ply}: {san}")]
+    InvalidSan { ply: usize, san: String },
 }
 
 pub fn reconstruct(
@@ -104,6 +107,36 @@ pub fn reconstruct(
         legal_moves,
         in_check: position.is_check(),
     })
+}
+
+pub fn normalize_san_moves(
+    variant_id: &str,
+    initial_fen: &str,
+    sans: &[String],
+) -> Result<Vec<String>, RulesError> {
+    let (variant, castling_mode) = variant_and_castling_mode(variant_id)?;
+    let mut position = if initial_fen == "startpos" {
+        VariantPosition::new(variant)
+    } else {
+        let fen = Fen::from_ascii(initial_fen.as_bytes())
+            .map_err(|error| RulesError::InvalidInitialPosition(error.to_string()))?;
+        VariantPosition::from_setup(variant, fen.into_setup(), castling_mode)
+            .map_err(|error| RulesError::InvalidInitialPosition(error.to_string()))?
+    };
+    let mut move_ids = Vec::with_capacity(sans.len());
+    for (ply, san_text) in sans.iter().enumerate() {
+        let san = San::from_ascii(san_text.as_bytes()).map_err(|_| RulesError::InvalidSan {
+            ply,
+            san: san_text.clone(),
+        })?;
+        let chess_move = san.to_move(&position).map_err(|_| RulesError::InvalidSan {
+            ply,
+            san: san_text.clone(),
+        })?;
+        move_ids.push(chess_move.to_uci(position.castles().mode()).to_string());
+        position.play_unchecked(chess_move);
+    }
+    Ok(move_ids)
 }
 
 fn variant_and_castling_mode(variant_id: &str) -> Result<(Variant, CastlingMode), RulesError> {
@@ -236,6 +269,19 @@ mod tests {
         let error =
             reconstruct("standard", "startpos", &["e2e5".to_owned()]).expect_err("illegal move");
         assert!(matches!(error, RulesError::InvalidMove { ply: 0, .. }));
+    }
+
+    #[test]
+    fn normalizes_san_for_provider_neutral_review() {
+        let sans = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let moves = normalize_san_moves("standard", "startpos", &sans).expect("valid SAN");
+        assert_eq!(
+            moves,
+            ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1"]
+        );
     }
 
     #[test]

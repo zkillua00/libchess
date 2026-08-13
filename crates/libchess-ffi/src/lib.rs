@@ -11,7 +11,7 @@ use std::{
 
 use libchess::{
     AccessToken, Account, BoardState, BotGame, BotGameRequest, BotGameTimeControl, Client,
-    ColorPreference, ErrorKind, GameExport, GameHistoryPage, GameId, LibChessError,
+    ColorPreference, ErrorKind, GameExport, GameHistoryPage, GameId, GameReview, LibChessError,
     LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameEvent,
     LiveGameRequest, LiveGameSummary, MoveSubmission, OAuthConnection, PlayerColor,
     ProviderDescriptor,
@@ -110,6 +110,9 @@ enum Command {
     ExportGame {
         game_id: String,
     },
+    LoadGameReview {
+        game_id: String,
+    },
     ListProviders,
     PerformGameAction {
         game_id: String,
@@ -128,6 +131,10 @@ enum Command {
         limit: u16,
     },
     RefreshLiveGames,
+    ShowGameReviewPosition {
+        game_id: String,
+        ply: u32,
+    },
     StartLiveGame {
         game_id: String,
         player_color: PlayerColor,
@@ -174,6 +181,15 @@ enum Event {
     GameHistoryUpdated {
         page: GameHistoryPage,
         append: bool,
+    },
+    GameReviewLoaded {
+        review: GameReview,
+        board: BoardState,
+    },
+    GameReviewPositionUpdated {
+        game_id: String,
+        ply: u32,
+        board: BoardState,
     },
     LiveGameChat {
         chat: LiveChatMessage,
@@ -240,6 +256,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
     let mut live_tasks = BTreeMap::<String, tokio::task::JoinHandle<()>>::new();
     let mut catalog_task: Option<tokio::task::JoinHandle<()>> = None;
     let latest_games = Arc::new(Mutex::new(BTreeMap::<String, LiveGame>::new()));
+    let mut game_reviews = BTreeMap::<String, GameReview>::new();
     sink.emit(
         None,
         Event::Ready {
@@ -360,6 +377,22 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             Ok(game_export) => {
                                 sink.emit(request_id, Event::GameExported { game_export });
                             }
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        },
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
+                    Command::LoadGameReview { game_id } => match GameId::new(&game_id) {
+                        Ok(valid_game_id) => match client.review_game(valid_game_id).await {
+                            Ok(review) => match review_position(&review, review.moves.len()) {
+                                Ok(board) => {
+                                    game_reviews.insert(game_id, review.clone());
+                                    sink.emit(
+                                        request_id,
+                                        Event::GameReviewLoaded { review, board },
+                                    );
+                                }
+                                Err(error) => sink.emit(request_id, Event::Error { error }),
+                            },
                             Err(error) => sink.emit(request_id, Event::Error { error }),
                         },
                         Err(error) => sink.emit(request_id, Event::Error { error }),
@@ -545,6 +578,42 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         },
                         Err(error) => sink.emit(request_id, Event::Error { error }),
                     },
+                    Command::ShowGameReviewPosition { game_id, ply } => {
+                        match game_reviews.get(&game_id) {
+                            Some(review) => match usize::try_from(ply)
+                                .ok()
+                                .filter(|ply| *ply <= review.moves.len())
+                            {
+                                Some(position_ply) => match review_position(review, position_ply) {
+                                    Ok(board) => sink.emit(
+                                        request_id,
+                                        Event::GameReviewPositionUpdated {
+                                            game_id,
+                                            ply,
+                                            board,
+                                        },
+                                    ),
+                                    Err(error) => sink.emit(request_id, Event::Error { error }),
+                                },
+                                None => sink.emit(
+                                    request_id,
+                                    Event::Error {
+                                        error: LibChessError::invalid_input(
+                                            "the requested review position is outside the game",
+                                        ),
+                                    },
+                                ),
+                            },
+                            None => sink.emit(
+                                request_id,
+                                Event::Error {
+                                    error: LibChessError::invalid_input(
+                                        "the game review has not loaded yet",
+                                    ),
+                                },
+                            ),
+                        }
+                    }
                     Command::WatchLiveGames => {
                         stop_task(&mut catalog_task).await;
                         match client.connected_backend() {
@@ -577,6 +646,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         if let Ok(mut games) = latest_games.lock() {
                             games.clear();
                         }
+                        game_reviews.clear();
                         client.disconnect();
                         sink.emit(
                             request_id,
@@ -593,6 +663,26 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
 
     stop_all_live_tasks(&mut live_tasks).await;
     stop_task(&mut catalog_task).await;
+}
+
+fn review_position(review: &GameReview, ply: usize) -> Result<BoardState, LibChessError> {
+    let moves = review
+        .moves
+        .iter()
+        .take(ply)
+        .map(|review_move| review_move.move_id.clone())
+        .collect::<Vec<_>>();
+    let mut board =
+        libchess_rules::reconstruct(review.variant_id.as_str(), &review.initial_fen, &moves)
+            .map_err(|error| {
+                LibChessError::new(
+                    ErrorKind::Provider,
+                    format!("could not reconstruct the reviewed position: {error}"),
+                    false,
+                )
+            })?;
+    board.legal_moves.clear();
+    Ok(board)
 }
 
 fn predict_move(
@@ -803,6 +893,7 @@ mod tests {
         assert!(ready.contains(r#""id":"lichess""#));
         assert!(ready.contains(r#""bot_opponents""#));
         assert!(ready.contains(r#""id":"level-1""#));
+        assert!(ready.contains(r#""game_review""#));
 
         let command = br#"{"version":1,"request_id":"providers-1","type":"list_providers"}"#;
         assert_eq!(
@@ -931,6 +1022,18 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("export validation error");
         assert!(error.contains(r#""request_id":"export-1""#));
+        assert!(error.contains("game identifiers"));
+
+        let invalid_review =
+            br#"{"version":1,"request_id":"review-1","type":"load_game_review","game_id":"../game"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, invalid_review.as_ptr(), invalid_review.len()) },
+            SEND_OK
+        );
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("review validation error");
+        assert!(error.contains(r#""request_id":"review-1""#));
         assert!(error.contains("game identifiers"));
 
         // SAFETY: This is the only destroy and no sends run concurrently.

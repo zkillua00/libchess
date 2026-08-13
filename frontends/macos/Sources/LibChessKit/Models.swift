@@ -20,6 +20,7 @@ public struct PlatformCapability: RawRepresentable, Codable, Hashable, Sendable 
     public static let botGames = Self(rawValue: "bot_games")
     public static let challenges = Self(rawValue: "challenges")
     public static let gameHistory = Self(rawValue: "game_history")
+    public static let gameReview = Self(rawValue: "game_review")
     public static let liveGames = Self(rawValue: "live_games")
     public static let matchmaking = Self(rawValue: "matchmaking")
     public static let oauthPkce = Self(rawValue: "oauth_pkce")
@@ -213,6 +214,75 @@ public struct GameExport: Codable, Equatable, Sendable {
         case suggestedFilename = "suggested_filename"
         case pgn
     }
+}
+
+public struct GameReview: Codable, Equatable, Sendable {
+    public let provider: String
+    public let gameID: String
+    public let variantID: String
+    public let initialFEN: String
+    public let opening: GameOpening?
+    public let moves: [GameReviewMove]
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case gameID = "game_id"
+        case variantID = "variant_id"
+        case initialFEN = "initial_fen"
+        case opening
+        case moves
+    }
+}
+
+public struct GameOpening: Codable, Equatable, Sendable {
+    public let eco: String
+    public let name: String
+    public let ply: UInt32
+}
+
+public struct GameReviewMove: Codable, Equatable, Identifiable, Sendable {
+    public let ply: UInt32
+    public let san: String
+    public let moveID: String
+    public let clockMillis: UInt64?
+    public let evaluation: GameMoveEvaluation?
+
+    public var id: UInt32 { ply }
+
+    private enum CodingKeys: String, CodingKey {
+        case ply
+        case san
+        case moveID = "move_id"
+        case clockMillis = "clock_millis"
+        case evaluation
+    }
+}
+
+public struct GameMoveEvaluation: Codable, Equatable, Sendable {
+    public let centipawns: Int32?
+    public let mate: Int32?
+    public let bestMove: String?
+    public let variation: String?
+    public let judgment: GameMoveJudgment?
+
+    private enum CodingKeys: String, CodingKey {
+        case centipawns
+        case mate
+        case bestMove = "best_move"
+        case variation
+        case judgment
+    }
+}
+
+public struct GameMoveJudgment: Codable, Equatable, Sendable {
+    public let kind: GameMoveJudgmentKind
+    public let comment: String
+}
+
+public enum GameMoveJudgmentKind: String, Codable, CaseIterable, Sendable {
+    case inaccuracy
+    case mistake
+    case blunder
 }
 
 public enum BoardPerspective {
@@ -591,6 +661,7 @@ struct WireEvent: Decodable, Sendable {
     let expiresInSeconds: UInt64?
     let game: BotGame?
     let gameExport: GameExport?
+    let review: GameReview?
     let page: GameHistoryPage?
     let append: Bool?
     let liveGame: LiveGame?
@@ -616,6 +687,7 @@ struct WireEvent: Decodable, Sendable {
         case expiresInSeconds = "expires_in_seconds"
         case game
         case gameExport = "game_export"
+        case review
         case page
         case append
         case liveGame = "live_game"

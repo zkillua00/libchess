@@ -6,13 +6,14 @@ pub use libchess_core::{
     AccessToken, Account, BoardPiece, BoardState, BotGame, BotGameOptions, BotGameRequest,
     BotGameTimeControl, BotOpponent, BotOpponentId, ChessContext, ClockTimeControl,
     ClockTimeControlOptions, ColorPreference, ErrorKind, GameExport, GameHistoryEntry,
-    GameHistoryPage, GameHistoryRequest, GameId, GameStatus, GameVariant, GameVariantId, LegalMove,
-    LibChessError, LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent,
-    LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent, LiveGameEventSink, LiveGamePlayer,
-    LiveGameRequest, LiveGameState, LiveGameSummary, MoveSubmission, OAuthAuthorization,
-    OAuthClientConfiguration, OAuthToken, PieceRole, PlatformBackend, PlatformBackendFactory,
-    PlatformCapability, PlatformOAuthSession, PlayerColor, PocketPiece, ProviderDescriptor,
-    ProviderId, ensure_engine_allowed,
+    GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation, GameMoveJudgment,
+    GameMoveJudgmentKind, GameOpening, GameReview, GameReviewMove, GameStatus, GameVariant,
+    GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
+    LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
+    LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
+    MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceRole,
+    PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
+    PocketPiece, ProviderDescriptor, ProviderId, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
 
@@ -187,6 +188,10 @@ impl Client {
 
     pub async fn export_game(&self, game_id: GameId) -> Result<GameExport, LibChessError> {
         self.connected_backend()?.export_game(game_id).await
+    }
+
+    pub async fn review_game(&self, game_id: GameId) -> Result<GameReview, LibChessError> {
+        self.connected_backend()?.review_game(game_id).await
     }
 
     pub fn connected_backend(&self) -> Result<Arc<dyn PlatformBackend>, LibChessError> {

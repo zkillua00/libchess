@@ -69,6 +69,7 @@ impl LichessFactory {
             PlatformCapability::Account,
             PlatformCapability::BotGames,
             PlatformCapability::GameHistory,
+            PlatformCapability::GameReview,
             PlatformCapability::LiveGames,
             PlatformCapability::OAuthPkce,
             PlatformCapability::PgnExport,
@@ -606,6 +607,13 @@ impl PlatformBackend for LichessBackend {
         game_id: libchess_core::GameId,
     ) -> Result<libchess_core::GameExport, LibChessError> {
         history::export(self, game_id).await
+    }
+
+    async fn review_game(
+        &self,
+        game_id: libchess_core::GameId,
+    ) -> Result<libchess_core::GameReview, LibChessError> {
+        history::review(self, game_id).await
     }
 
     async fn watch_live_game_catalog(

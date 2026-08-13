@@ -8,6 +8,7 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var account: ChessAccount?
     @Published public private(set) var connectionState = ConnectionState.disconnected
     @Published public private(set) var savedCredentialAvailable = false
+    @Published public private(set) var isLoadingSavedCredential = false
     @Published public private(set) var authorizationURL: URL?
     @Published public private(set) var createdBotGames: [String: BotGame] = [:]
     @Published public private(set) var isCreatingBotGame = false
@@ -17,6 +18,10 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var isLoadingGameHistory = false
     @Published public private(set) var nextGameHistoryCursor: UInt64?
     @Published public private(set) var exportedGame: GameExport?
+    @Published public private(set) var gameReviews: [String: GameReview] = [:]
+    @Published public private(set) var reviewBoards: [String: BoardState] = [:]
+    @Published private var loadingGameReviewIDs: Set<String> = []
+    @Published private var loadingReviewPositionIDs: Set<String> = []
     @Published public private(set) var focusedGameID: String?
     @Published public private(set) var predictedBoards: [String: BoardState] = [:]
     @Published private var liveGameReceivedDates: [String: Date] = [:]
@@ -39,6 +44,9 @@ public final class LibChessStore: ObservableObject {
     private var predictions: [String: MovePrediction] = [:]
     private var pendingGameHistoryRequest: PendingGameHistoryRequest?
     private var pendingGameExportRequests: [String: String] = [:]
+    private var pendingGameReviewRequests: [String: String] = [:]
+    private var pendingReviewPositionRequests: [String: PendingReviewPosition] = [:]
+    private var pendingReviewPositionRequestByGame: [String: String] = [:]
     private var catalogWatchStarted = false
     private var catalogWatchRequestID: String?
     private var liveGamesRefreshTask: Task<Void, Never>?
@@ -82,16 +90,30 @@ public final class LibChessStore: ObservableObject {
     }
 
     public func connectUsingSavedCredential() {
-        do {
-            guard let token = try tokenStore.load(provider: "lichess") else {
-                savedCredentialAvailable = false
-                message = "No saved Lichess credential was found."
-                return
+        guard !isLoadingSavedCredential else {
+            return
+        }
+        isLoadingSavedCredential = true
+        let tokenStore = tokenStore
+        Task { [weak self] in
+            defer { self?.isLoadingSavedCredential = false }
+            do {
+                let token = try await Task.detached(priority: .userInitiated) {
+                    try tokenStore.load(provider: "lichess")
+                }.value
+                guard let self else {
+                    return
+                }
+                guard let token else {
+                    savedCredentialAvailable = false
+                    message = "No saved Lichess credential was found."
+                    return
+                }
+                message = nil
+                send(ConnectCommand(provider: "lichess", accessToken: token))
+            } catch {
+                self?.message = error.localizedDescription
             }
-            message = nil
-            send(ConnectCommand(provider: "lichess", accessToken: token))
-        } catch {
-            message = error.localizedDescription
         }
     }
 
@@ -138,6 +160,10 @@ public final class LibChessStore: ObservableObject {
 
     public var supportsGameHistory: Bool {
         connectedProvider?.capabilities.contains(.gameHistory) == true
+    }
+
+    public var supportsGameReview: Bool {
+        connectedProvider?.capabilities.contains(.gameReview) == true
     }
 
     public var supportsPGNExport: Bool {
@@ -236,6 +262,57 @@ public final class LibChessStore: ObservableObject {
 
     public func isExportingGame(_ gameID: String) -> Bool {
         pendingGameExportRequests.values.contains(gameID)
+    }
+
+    public func loadGameReview(_ gameID: String, reload: Bool = false) {
+        guard connectionState == .connected,
+              supportsGameReview,
+              recentGames.contains(where: { $0.id == gameID }),
+              !loadingGameReviewIDs.contains(gameID),
+              reload || gameReviews[gameID] == nil
+        else {
+            return
+        }
+        let command = LoadGameReviewCommand(gameID: gameID)
+        pendingGameReviewRequests[command.requestID] = gameID
+        loadingGameReviewIDs.insert(gameID)
+        message = nil
+        if !send(command) {
+            pendingGameReviewRequests.removeValue(forKey: command.requestID)
+            loadingGameReviewIDs.remove(gameID)
+        }
+    }
+
+    public func showGameReviewPosition(_ gameID: String, ply: UInt32) {
+        guard let review = gameReviews[gameID],
+              ply <= UInt32(review.moves.count)
+        else {
+            return
+        }
+        if reviewBoards[gameID]?.ply == ply {
+            return
+        }
+        if let previousRequestID = pendingReviewPositionRequestByGame[gameID] {
+            pendingReviewPositionRequests.removeValue(forKey: previousRequestID)
+        }
+        let command = ShowGameReviewPositionCommand(gameID: gameID, ply: ply)
+        pendingReviewPositionRequests[command.requestID] = PendingReviewPosition(
+            gameID: gameID,
+            ply: ply
+        )
+        pendingReviewPositionRequestByGame[gameID] = command.requestID
+        loadingReviewPositionIDs.insert(gameID)
+        if !send(command) {
+            clearPendingReviewPosition(requestID: command.requestID)
+        }
+    }
+
+    public func isLoadingGameReview(_ gameID: String) -> Bool {
+        loadingGameReviewIDs.contains(gameID)
+    }
+
+    public func isLoadingReviewPosition(_ gameID: String) -> Bool {
+        loadingReviewPositionIDs.contains(gameID)
     }
 
     public func consumeExportedGame() {
@@ -371,6 +448,10 @@ public final class LibChessStore: ObservableObject {
         isLoadingGameHistory = false
         nextGameHistoryCursor = nil
         exportedGame = nil
+        gameReviews = [:]
+        reviewBoards = [:]
+        loadingGameReviewIDs = []
+        loadingReviewPositionIDs = []
         focusedGameID = nil
         predictedBoards = [:]
         liveGameReceivedDates = [:]
@@ -380,6 +461,7 @@ public final class LibChessStore: ObservableObject {
         submittingMoveGameIDs = []
         performingActionGameIDs = []
         isCreatingBotGame = false
+        isLoadingSavedCredential = false
         pendingBotGameRequestID = nil
         pendingLiveGameRequests = [:]
         pendingMoveRequests = [:]
@@ -389,6 +471,9 @@ public final class LibChessStore: ObservableObject {
         predictions = [:]
         pendingGameHistoryRequest = nil
         pendingGameExportRequests = [:]
+        pendingGameReviewRequests = [:]
+        pendingReviewPositionRequests = [:]
+        pendingReviewPositionRequestByGame = [:]
         catalogWatchStarted = false
         catalogWatchRequestID = nil
         liveGamesRefreshTask?.cancel()
@@ -399,11 +484,16 @@ public final class LibChessStore: ObservableObject {
         guard forgetCredential else {
             return
         }
-        do {
-            try tokenStore.delete(provider: "lichess")
-            savedCredentialAvailable = false
-        } catch {
-            message = error.localizedDescription
+        savedCredentialAvailable = false
+        let tokenStore = tokenStore
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try tokenStore.delete(provider: "lichess")
+                }.value
+            } catch {
+                self?.message = error.localizedDescription
+            }
         }
     }
 
@@ -462,6 +552,10 @@ public final class LibChessStore: ObservableObject {
                 receiveGameHistory(event)
             case "game_exported":
                 receiveGameExport(event)
+            case "game_review_loaded":
+                receiveGameReview(event)
+            case "game_review_position_updated":
+                receiveGameReviewPosition(event)
             case "live_games_changed":
                 scheduleLiveGamesRefresh()
             case "live_game_chat":
@@ -517,6 +611,16 @@ public final class LibChessStore: ObservableObject {
                 if let requestID = event.requestID {
                     pendingGameExportRequests.removeValue(forKey: requestID)
                 }
+                if let requestID = event.requestID,
+                   let gameID = pendingGameReviewRequests.removeValue(forKey: requestID)
+                {
+                    loadingGameReviewIDs.remove(gameID)
+                }
+                if let requestID = event.requestID,
+                   pendingReviewPositionRequests[requestID] != nil
+                {
+                    clearPendingReviewPosition(requestID: requestID)
+                }
                 if event.requestID == catalogWatchRequestID {
                     catalogWatchStarted = false
                     catalogWatchRequestID = nil
@@ -552,11 +656,17 @@ public final class LibChessStore: ObservableObject {
             return
         }
         let provider = event.provider ?? "lichess"
-        do {
-            try tokenStore.save(token, provider: provider)
-            savedCredentialAvailable = true
-        } catch {
-            message = "Connected, but the credential could not be saved: \(error.localizedDescription)"
+        let tokenStore = tokenStore
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try tokenStore.save(token, provider: provider)
+                }.value
+                self?.savedCredentialAvailable = true
+            } catch {
+                self?.message =
+                    "Connected, but the credential could not be saved: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -821,6 +931,59 @@ public final class LibChessStore: ObservableObject {
         exportedGame = export
     }
 
+    private func receiveGameReview(_ event: WireEvent) {
+        guard let requestID = event.requestID,
+              let expectedGameID = pendingGameReviewRequests.removeValue(forKey: requestID)
+        else {
+            return
+        }
+        loadingGameReviewIDs.remove(expectedGameID)
+
+        guard let review = event.review,
+              review.gameID == expectedGameID,
+              gameReviewIsValid(review),
+              let board = event.board,
+              board.ply == UInt32(review.moves.count),
+              board.moves == review.moves.map(\.moveID),
+              boardStateIsValid(board)
+        else {
+            message = "LibChess returned an invalid game review."
+            return
+        }
+        gameReviews[expectedGameID] = review
+        reviewBoards[expectedGameID] = board
+    }
+
+    private func receiveGameReviewPosition(_ event: WireEvent) {
+        guard let requestID = event.requestID,
+              let pending = pendingReviewPositionRequests[requestID],
+              pendingReviewPositionRequestByGame[pending.gameID] == requestID,
+              event.gameID == pending.gameID,
+              let review = gameReviews[pending.gameID],
+              let board = event.board,
+              event.board?.ply == pending.ply,
+              event.board?.moves == review.moves.prefix(Int(pending.ply)).map(\.moveID),
+              boardStateIsValid(board)
+        else {
+            if let requestID = event.requestID {
+                clearPendingReviewPosition(requestID: requestID)
+            }
+            return
+        }
+        reviewBoards[pending.gameID] = board
+        clearPendingReviewPosition(requestID: requestID)
+    }
+
+    private func clearPendingReviewPosition(requestID: String) {
+        guard let pending = pendingReviewPositionRequests.removeValue(forKey: requestID) else {
+            return
+        }
+        if pendingReviewPositionRequestByGame[pending.gameID] == requestID {
+            pendingReviewPositionRequestByGame.removeValue(forKey: pending.gameID)
+            loadingReviewPositionIDs.remove(pending.gameID)
+        }
+    }
+
     private func receiveMovePrediction(_ event: WireEvent) {
         guard let requestID = event.requestID,
               let pending = pendingMoveRequests[requestID],
@@ -975,6 +1138,33 @@ public final class LibChessStore: ObservableObject {
             && Self.providerURL(game.analysisURL, belongsTo: providerWebURL)
     }
 
+    private func gameReviewIsValid(_ review: GameReview) -> Bool {
+        guard review.provider == connectedProvider?.id,
+              let history = recentGames.first(where: { $0.id == review.gameID }),
+              review.variantID == history.variantID,
+              !review.initialFEN.isEmpty,
+              review.initialFEN.utf8.count <= 4_096,
+              review.initialFEN.unicodeScalars.allSatisfy({ (32 ... 126).contains($0.value) }),
+              review.moves.count <= 2_048
+        else {
+            return false
+        }
+        return review.moves.enumerated().allSatisfy { index, move in
+            move.ply == UInt32(index + 1)
+                && !move.san.isEmpty
+                && move.san.utf8.count <= 32
+                && !move.moveID.isEmpty
+                && move.moveID.utf8.count <= 16
+                && move.evaluation.map(gameMoveEvaluationIsValid) ?? true
+        }
+    }
+
+    private func gameMoveEvaluationIsValid(_ evaluation: GameMoveEvaluation) -> Bool {
+        (evaluation.bestMove?.utf8.count ?? 0) <= 16
+            && (evaluation.variation?.utf8.count ?? 0) <= 4_096
+            && (evaluation.judgment?.comment.utf8.count ?? 0) <= 2_048
+    }
+
     private static func providerURL(_ value: String, belongsTo providerValue: String) -> Bool {
         guard let url = URL(string: value),
               let providerURL = URL(string: providerValue),
@@ -1041,6 +1231,11 @@ private struct PendingMove {
 private struct PendingGameHistoryRequest {
     let requestID: String
     let beforeMillis: UInt64?
+}
+
+private struct PendingReviewPosition {
+    let gameID: String
+    let ply: UInt32
 }
 
 private struct MovePrediction {
@@ -1216,6 +1411,36 @@ struct ExportGameCommand: Encodable {
         case requestID = "request_id"
         case type
         case gameID = "game_id"
+    }
+}
+
+struct LoadGameReviewCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "load_game_review"
+    let gameID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
+    }
+}
+
+struct ShowGameReviewPositionCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "show_game_review_position"
+    let gameID: String
+    let ply: UInt32
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
+        case ply
     }
 }
 

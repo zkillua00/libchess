@@ -52,6 +52,7 @@ pub enum PlatformCapability {
     BotGames,
     Challenges,
     GameHistory,
+    GameReview,
     LiveGames,
     Matchmaking,
     #[serde(rename = "oauth_pkce")]
@@ -545,6 +546,13 @@ pub trait PlatformBackend: Send + Sync {
     async fn export_game(&self, _game_id: GameId) -> Result<GameExport, LibChessError> {
         Err(LibChessError::unsupported(format!(
             "provider '{}' does not support PGN export",
+            self.descriptor().id
+        )))
+    }
+
+    async fn review_game(&self, _game_id: GameId) -> Result<GameReview, LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not support game review",
             self.descriptor().id
         )))
     }

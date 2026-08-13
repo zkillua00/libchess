@@ -1,4 +1,5 @@
 import LibChessKit
+import Charts
 import Foundation
 import SwiftUI
 
@@ -155,6 +156,721 @@ struct LiveGameplayView: View {
             return "The game will end without a result."
         }
         return "The game will end immediately and your opponent will win."
+    }
+}
+
+struct GameReviewView: View {
+    @EnvironmentObject private var store: LibChessStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openURL) private var openURL
+
+    let game: GameHistoryEntry
+
+    @AppStorage("org.libchess.macos.boardZoom") private var boardZoomRaw = BoardZoomLevel.medium.rawValue
+    @State private var selectedPly: UInt32?
+    @State private var showsInspector = true
+
+    var body: some View {
+        Group {
+            if let review = store.gameReviews[game.id],
+               let board = store.reviewBoards[game.id]
+            {
+                reviewWorkspace(review: review, board: board)
+            } else if store.isLoadingGameReview(game.id) {
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("Loading game review…")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView {
+                    Label("Review Unavailable", systemImage: "chart.xyaxis.line")
+                } description: {
+                    Text("The game review could not be loaded.")
+                } actions: {
+                    Button("Try Again") {
+                        store.loadGameReview(game.id, reload: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .task(id: game.id) {
+            if let board = store.reviewBoards[game.id] {
+                selectedPly = board.ply
+            } else {
+                selectedPly = nil
+                store.loadGameReview(game.id)
+            }
+        }
+        .onChange(of: store.gameReviews[game.id]?.moves.count) { _, moveCount in
+            guard let moveCount else {
+                return
+            }
+            let finalPly = UInt32(moveCount)
+            if selectedPly == nil || selectedPly.map({ $0 > finalPly }) == true {
+                selectedPly = finalPly
+            }
+        }
+    }
+
+    private func reviewWorkspace(review: GameReview, board: BoardState) -> some View {
+        GeometryReader { geometry in
+            let availableWidth = max(160, geometry.size.width - 56)
+            let availableHeight = max(160, geometry.size.height - 140)
+            let fittedBoardSize = min(900, availableWidth, availableHeight)
+            let boardSize = min(
+                fittedBoardSize,
+                max(240, fittedBoardSize * boardZoomLevel.scale)
+            )
+
+            ReviewChessBoardView(
+                board: board,
+                perspective: game.playerColor
+            )
+            .id(game.id)
+            .frame(width: boardSize)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(28)
+            .overlay(alignment: .topTrailing) {
+                if store.isLoadingReviewPosition(game.id) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(14)
+                }
+            }
+            .animation(
+                reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0),
+                value: boardZoomRaw
+            )
+        }
+        .inspector(isPresented: $showsInspector) {
+            GameReviewInspector(
+                game: game,
+                review: review,
+                selectedPly: currentPly(review),
+                selectPly: { selectPly($0, in: review) }
+            )
+            .inspectorColumnWidth(min: 300, ideal: 340, max: 420)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    selectPly(0, in: review)
+                } label: {
+                    Label("First Position", systemImage: "backward.end.fill")
+                }
+                .disabled(currentPly(review) == 0)
+
+                Button {
+                    step(-1, in: review)
+                } label: {
+                    Label("Previous Move", systemImage: "chevron.left")
+                }
+                .disabled(currentPly(review) == 0)
+
+                Button {
+                    step(1, in: review)
+                } label: {
+                    Label("Next Move", systemImage: "chevron.right")
+                }
+                .disabled(currentPly(review) >= UInt32(review.moves.count))
+
+                Button {
+                    selectPly(UInt32(review.moves.count), in: review)
+                } label: {
+                    Label("Final Position", systemImage: "forward.end.fill")
+                }
+                .disabled(currentPly(review) >= UInt32(review.moves.count))
+            }
+
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    store.exportGame(game.id)
+                } label: {
+                    if store.isExportingGame(game.id) {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Export PGN", systemImage: "square.and.arrow.down")
+                    }
+                }
+                .disabled(!store.supportsPGNExport || store.isExportingGame(game.id))
+                .help("Export Annotated PGN…")
+
+                Menu {
+                    Button("Refresh Review") {
+                        selectedPly = UInt32(review.moves.count)
+                        store.loadGameReview(game.id, reload: true)
+                    }
+
+                    Button("Open on Lichess") {
+                        if let url = URL(string: game.url) {
+                            openURL(url)
+                        }
+                    }
+
+                    Divider()
+
+                    Button("Zoom In") {
+                        setBoardZoom(boardZoomLevel.larger)
+                    }
+                    .disabled(boardZoomLevel.larger == boardZoomLevel)
+
+                    Button("Zoom Out") {
+                        setBoardZoom(boardZoomLevel.smaller)
+                    }
+                    .disabled(boardZoomLevel.smaller == boardZoomLevel)
+
+                    Picker("Board Size", selection: $boardZoomRaw) {
+                        ForEach(BoardZoomLevel.allCases) { level in
+                            Text(level.label).tag(level.rawValue)
+                        }
+                    }
+                } label: {
+                    Label("Review Options", systemImage: "ellipsis.circle")
+                }
+
+                Button {
+                    showsInspector.toggle()
+                } label: {
+                    Label("Review Inspector", systemImage: "sidebar.right")
+                }
+                .help(showsInspector ? "Hide Review Inspector" : "Show Review Inspector")
+            }
+        }
+        .onMoveCommand { direction in
+            switch direction {
+            case .left:
+                step(-1, in: review)
+            case .right:
+                step(1, in: review)
+            default:
+                break
+            }
+        }
+        .focusable()
+    }
+
+    private func currentPly(_ review: GameReview) -> UInt32 {
+        min(selectedPly ?? UInt32(review.moves.count), UInt32(review.moves.count))
+    }
+
+    private func selectPly(_ ply: UInt32, in review: GameReview) {
+        let boundedPly = min(ply, UInt32(review.moves.count))
+        selectedPly = boundedPly
+        store.showGameReviewPosition(game.id, ply: boundedPly)
+    }
+
+    private func step(_ amount: Int, in review: GameReview) {
+        let next = max(0, min(Int(currentPly(review)) + amount, review.moves.count))
+        selectPly(UInt32(next), in: review)
+    }
+
+    private var boardZoomLevel: BoardZoomLevel {
+        BoardZoomLevel(rawValue: boardZoomRaw) ?? .medium
+    }
+
+    private func setBoardZoom(_ level: BoardZoomLevel) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0)) {
+            boardZoomRaw = level.rawValue
+        }
+    }
+}
+
+private struct ReviewChessBoardView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let board: BoardState
+    let perspective: PlayerColor
+
+    @State private var renderedPieces: [RenderedBoardPiece]
+    @State private var renderedPly: UInt32
+    @Namespace private var pieceAnimation
+
+    init(board: BoardState, perspective: PlayerColor) {
+        self.board = board
+        self.perspective = perspective
+        _renderedPieces = State(initialValue: board.pieces.map(RenderedBoardPiece.initial))
+        _renderedPly = State(initialValue: board.ply)
+    }
+
+    var body: some View {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 8)
+        let boardPieces = Dictionary(uniqueKeysWithValues: board.pieces.map { ($0.square, $0) })
+        let animatedPieces = Dictionary(
+            uniqueKeysWithValues: renderedPieces.map { ($0.piece.square, $0) }
+        )
+        let lastMoveSquares = Set([board.lastMove?.from, board.lastMove?.to].compactMap { $0 })
+
+        LazyVGrid(columns: columns, spacing: 0) {
+            ForEach(Array(BoardPerspective.squares(for: perspective).enumerated()), id: \.element) {
+                index, square in
+                let piece = boardPieces[square]
+                BoardSquareView(
+                    square: square,
+                    piece: piece,
+                    isLight: isLightSquare(square),
+                    isSelected: false,
+                    isDestination: false,
+                    isLastMove: lastMoveSquares.contains(square),
+                    isCheckedKing: board.inCheck
+                        && piece?.role == .king
+                        && piece?.color == board.turn,
+                    showsRank: index.isMultiple(of: 8),
+                    showsFile: index >= 56
+                )
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    if let renderedPiece = animatedPieces[square] {
+                        AnimatedPieceView(piece: renderedPiece.piece)
+                            .matchedGeometryEffect(id: renderedPiece.id, in: pieceAnimation)
+                            .transition(.scale(scale: 0.55).combined(with: .opacity))
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityLabel(for: square, piece: piece))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(.black.opacity(0.25), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
+        .onChange(of: board.pieces) { _, pieces in
+            updateRenderedPieces(pieces)
+        }
+    }
+
+    private func updateRenderedPieces(_ pieces: [BoardPiece]) {
+        let next = RenderedBoardPiece.reconcile(
+            previous: renderedPieces,
+            current: pieces,
+            lastMove: board.lastMove
+        )
+        let shouldAnimate = !reduceMotion && abs(Int(board.ply) - Int(renderedPly)) <= 1
+        withAnimation(shouldAnimate ? .snappy(duration: 0.18, extraBounce: 0) : nil) {
+            renderedPieces = next
+            renderedPly = board.ply
+        }
+    }
+
+    private func isLightSquare(_ square: String) -> Bool {
+        let bytes = Array(square.utf8)
+        guard bytes.count == 2 else {
+            return false
+        }
+        return !(Int(bytes[0] - 97) + Int(bytes[1] - 49)).isMultiple(of: 2)
+    }
+
+    private func accessibilityLabel(for square: String, piece: BoardPiece?) -> String {
+        guard let piece else {
+            return "Empty square \(square)"
+        }
+        return "\(piece.color.displayName) \(piece.role.displayName) on \(square)"
+    }
+}
+
+private struct GameReviewInspector: View {
+    let game: GameHistoryEntry
+    let review: GameReview
+    let selectedPly: UInt32
+    let selectPly: (UInt32) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        gameSummary
+
+                        if !evaluatedMoves.isEmpty {
+                            analysisChart
+                        }
+
+                        selectedMoveAnalysis
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Moves")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            moveList
+                        }
+                    }
+                    .padding(16)
+                }
+                .onChange(of: selectedPly) { _, ply in
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(ply, anchor: .center)
+                    }
+                }
+            }
+
+            Divider()
+
+            reviewControls
+                .padding(12)
+        }
+    }
+
+    private var gameSummary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(game.playerColor == .white ? .white : .black)
+                    .frame(width: 22, height: 22)
+                    .overlay { Circle().stroke(.secondary, lineWidth: 1) }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("vs \(game.opponentDisplayName)")
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text("\(resultText) · \(game.variantName) · \(game.speed.displayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let opening = review.opening {
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(opening.name)
+                            .lineLimit(2)
+                        Text(opening.eco)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "book.closed")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !judgments.isEmpty {
+                HStack(spacing: 14) {
+                    JudgmentCount(label: "Inaccuracies", count: judgmentCount(.inaccuracy), color: .yellow)
+                    JudgmentCount(label: "Mistakes", count: judgmentCount(.mistake), color: .orange)
+                    JudgmentCount(label: "Blunders", count: judgmentCount(.blunder), color: .red)
+                }
+            }
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var analysisChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Evaluation")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let evaluation = selectedEvaluation {
+                    Text(evaluation.displayText)
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                }
+            }
+
+            Chart {
+                RuleMark(y: .value("Equal", 0))
+                    .foregroundStyle(.secondary.opacity(0.35))
+
+                ForEach(evaluatedMoves, id: \.ply) { move in
+                    LineMark(
+                        x: .value("Ply", move.ply),
+                        y: .value("Evaluation", move.evaluation.chartValue)
+                    )
+                    .interpolationMethod(.catmullRom)
+                    .foregroundStyle(Color.accentColor)
+                }
+
+                RuleMark(x: .value("Selected", selectedPly))
+                    .foregroundStyle(.primary.opacity(0.4))
+            }
+            .chartYScale(domain: -10 ... 10)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: 92)
+            .contentShape(Rectangle())
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private var selectedMoveAnalysis: some View {
+        if selectedPly == 0 {
+            Label("Starting position", systemImage: "flag.pattern.checkered")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+        } else if let move = selectedMove, let evaluation = move.evaluation {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text(moveTitle(move))
+                        .font(.headline)
+                    Spacer()
+                    Text(evaluation.displayText)
+                        .font(.body.monospacedDigit().weight(.semibold))
+                }
+
+                if let judgment = evaluation.judgment {
+                    Label(judgment.kind.displayName, systemImage: judgment.kind.symbolName)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(judgment.kind.color)
+                    Text(judgment.comment)
+                        .font(.callout)
+                }
+
+                if let bestMove = evaluation.bestMove {
+                    LabeledContent("Best move", value: bestMove)
+                        .font(.callout)
+                }
+
+                if let variation = evaluation.variation {
+                    Text("Suggested line")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(variation)
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(12)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        } else if selectedPly > 0 {
+            ContentUnavailableView {
+                Label("No Engine Evaluation", systemImage: "gauge.with.dots.needle.0percent")
+            } description: {
+                Text(
+                    evaluatedMoves.isEmpty
+                        ? "Lichess has not produced computer analysis for this game. Move replay and PGN export remain available here."
+                        : "This move has no stored engine annotation."
+                )
+            }
+            .frame(minHeight: 110)
+        }
+    }
+
+    private var moveList: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.fixed(30), alignment: .trailing),
+                GridItem(.flexible(), spacing: 5),
+                GridItem(.flexible(), spacing: 5),
+            ],
+            alignment: .leading,
+            spacing: 5
+        ) {
+            ForEach(Array(movePairs.enumerated()), id: \.element.number) { _, pair in
+                Text("\(pair.number).")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+
+                reviewMoveButton(pair.white)
+
+                if let black = pair.black {
+                    reviewMoveButton(black)
+                } else {
+                    Color.clear.frame(height: 28)
+                }
+            }
+        }
+    }
+
+    private func reviewMoveButton(_ move: GameReviewMove) -> some View {
+        Button {
+            selectPly(move.ply)
+        } label: {
+            HStack(spacing: 4) {
+                Text(move.san)
+                    .font(.callout.monospaced())
+                    .lineLimit(1)
+                if let judgment = move.evaluation?.judgment {
+                    Image(systemName: judgment.kind.symbolName)
+                        .font(.caption2)
+                        .foregroundStyle(judgment.kind.color)
+                }
+                Spacer(minLength: 1)
+            }
+            .padding(.horizontal, 7)
+            .frame(height: 28)
+            .background(
+                selectedPly == move.ply ? Color.accentColor.opacity(0.18) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+        }
+        .buttonStyle(.plain)
+        .id(move.ply)
+    }
+
+    private var reviewControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                selectPly(0)
+            } label: {
+                Image(systemName: "backward.end.fill")
+            }
+            .disabled(selectedPly == 0)
+
+            Button {
+                selectPly(selectedPly - 1)
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(selectedPly == 0)
+
+            Spacer()
+
+            Text("\(selectedPly) / \(review.moves.count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button {
+                selectPly(selectedPly + 1)
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(selectedPly >= UInt32(review.moves.count))
+
+            Button {
+                selectPly(UInt32(review.moves.count))
+            } label: {
+                Image(systemName: "forward.end.fill")
+            }
+            .disabled(selectedPly >= UInt32(review.moves.count))
+        }
+        .buttonStyle(.borderless)
+    }
+
+    private var selectedMove: GameReviewMove? {
+        guard selectedPly > 0 else {
+            return nil
+        }
+        return review.moves[Int(selectedPly - 1)]
+    }
+
+    private var selectedEvaluation: GameMoveEvaluation? {
+        selectedMove?.evaluation
+    }
+
+    private var evaluatedMoves: [EvaluatedReviewMove] {
+        review.moves.compactMap { move in
+            move.evaluation.map { EvaluatedReviewMove(ply: move.ply, evaluation: $0) }
+        }
+    }
+
+    private var judgments: [GameMoveJudgment] {
+        review.moves.compactMap { $0.evaluation?.judgment }
+    }
+
+    private func judgmentCount(_ kind: GameMoveJudgmentKind) -> Int {
+        judgments.filter { $0.kind == kind }.count
+    }
+
+    private var movePairs: [ReviewMovePair] {
+        stride(from: 0, to: review.moves.count, by: 2).map { index in
+            ReviewMovePair(
+                number: index / 2 + 1,
+                white: review.moves[index],
+                black: review.moves.indices.contains(index + 1) ? review.moves[index + 1] : nil
+            )
+        }
+    }
+
+    private func moveTitle(_ move: GameReviewMove) -> String {
+        move.ply.isMultiple(of: 2)
+            ? "\((move.ply + 1) / 2)… \(move.san)"
+            : "\((move.ply + 1) / 2). \(move.san)"
+    }
+
+    private var resultText: String {
+        guard let winner = game.winner else {
+            return game.status == "aborted" ? "Aborted" : "Draw"
+        }
+        return winner == game.playerColor ? "Won" : "Lost"
+    }
+}
+
+private struct JudgmentCount: View {
+    let label: String
+    let count: Int
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(count)")
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(color)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct ReviewMovePair {
+    let number: Int
+    let white: GameReviewMove
+    let black: GameReviewMove?
+}
+
+private struct EvaluatedReviewMove {
+    let ply: UInt32
+    let evaluation: GameMoveEvaluation
+}
+
+private extension GameMoveEvaluation {
+    var displayText: String {
+        if let mate {
+            return mate >= 0 ? "M\(mate)" : "−M\(-mate)"
+        }
+        guard let centipawns else {
+            return "—"
+        }
+        return String(format: "%+.2f", Double(centipawns) / 100)
+    }
+
+    var chartValue: Double {
+        if let mate {
+            return mate >= 0 ? 10 : -10
+        }
+        return min(10, max(-10, Double(centipawns ?? 0) / 100))
+    }
+}
+
+private extension GameMoveJudgmentKind {
+    var displayName: String {
+        switch self {
+        case .inaccuracy: "Inaccuracy"
+        case .mistake: "Mistake"
+        case .blunder: "Blunder"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .inaccuracy: "questionmark.circle.fill"
+        case .mistake: "exclamationmark.triangle.fill"
+        case .blunder: "xmark.octagon.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .inaccuracy: .yellow
+        case .mistake: .orange
+        case .blunder: .red
+        }
     }
 }
 

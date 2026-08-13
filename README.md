@@ -50,7 +50,17 @@ with Lichess**, approve the narrowly fixed `board:play` scope in the system
 browser, and Lichess returns to the app through
 `org.libchess.macos://oauth/lichess`. The Rust adapter creates and validates the
 PKCE transaction and exchanges the one-time code. The macOS wrapper stores the
-validated access token in Keychain.
+validated access token in Keychain. Credential reads explicitly disallow
+authentication UI, so LibChess never opens a Keychain password prompt or waits
+for one on the app's UI thread.
+
+A provisioned, stably signed build uses the macOS data-protection Keychain with
+`AfterFirstUnlockThisDeviceOnly`, which keeps the token available to background
+work after the first device unlock without synchronizing it to another device.
+The ad-hoc local bundle has no provisioning profile, so it can only fall back to
+the legacy file-based Keychain; an inaccessible legacy item is ignored rather
+than prompting, and signing in once replaces it when secure persistence is
+available.
 
 The callback scheme and OAuth client identifier are tied to the macOS bundle
 identifier, `org.libchess.macos`. A distributable fork should choose its own
@@ -88,17 +98,21 @@ The board-size menu offers persistent Small, Medium, and Large zoom levels.
 ## Recent games and analysis
 
 The **Recent Games** sidebar destination pages through the connected provider's
-finished games newest-first. Each row can open the provider's post-game
-analysis, open the original game, or request an annotated PGN export. On
-Lichess, exports include clocks, opening data, existing evaluations, and
-literate annotations when the provider has them; the native save panel writes
-the result as a `.pgn` file.
+finished games newest-first. A single click opens a native review workspace in
+the LibChess window. It includes an animated replay board, keyboard and button
+navigation, SAN move selection, opening metadata, an evaluation chart, best
+lines, and inaccuracy, mistake, and blunder judgments whenever the provider has
+computer analysis for the game. Opening the original game on the provider is an
+explicit secondary action and never happens just because a history row was
+selected.
 
-Analysis links and export payloads are returned by the active provider through
-the shared Rust contract. The SwiftUI frontend neither constructs Lichess
-routes nor treats cached cloud evaluations as a local engine run. A future
-engine adapter can implement offline full-game analysis as a separate
-post-game context.
+Review data and export payloads come from the active provider through the
+shared Rust contract. Lichess SAN is normalized into provider-neutral move IDs
+in Rust, and every reviewed position is reconstructed by `libchess-rules`; the
+SwiftUI frontend does not parse provider JSON or calculate board state. Export
+controls live in the review toolbar. Lichess exports include clocks, opening
+data, existing evaluations, and literate annotations when available, and the
+native save panel writes the result as a `.pgn` file.
 
 Lichess live play is an authenticated streaming HTTP connection carrying
 newline-delimited JSON, not a WebSocket. The provider adapter consumes that

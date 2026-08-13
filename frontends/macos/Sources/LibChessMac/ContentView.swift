@@ -45,9 +45,16 @@ struct ContentView: View {
                 selection = .newGame
             }
         }
+        .onChange(of: store.recentGames.map(\.id)) { _, gameIDs in
+            if case let .some(.review(gameID)) = selection, !gameIDs.contains(gameID) {
+                selection = .history
+            }
+        }
         .onChange(of: selection) { _, destination in
             if case let .some(.game(gameID)) = destination {
                 store.openLiveGame(gameID)
+            } else if case let .some(.review(gameID)) = destination {
+                store.loadGameReview(gameID)
             } else if destination == .history, store.recentGames.isEmpty {
                 store.refreshGameHistory()
             }
@@ -86,7 +93,7 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $selection) {
+        List(selection: sidebarSelection) {
             Section("Play") {
                 Label("New Game", systemImage: "plus.square")
                     .tag(SidebarDestination.newGame)
@@ -123,6 +130,18 @@ struct ContentView: View {
             .background(.bar)
         }
         .navigationTitle("LibChess")
+    }
+
+    private var sidebarSelection: Binding<SidebarDestination?> {
+        Binding(
+            get: {
+                if case .some(.review) = selection {
+                    return .history
+                }
+                return selection
+            },
+            set: { selection = $0 }
+        )
     }
 
     @ViewBuilder
@@ -170,7 +189,18 @@ struct ContentView: View {
                 NewGameView()
             }
         case .history:
-            RecentGamesView()
+            RecentGamesView { gameID in
+                selection = .review(gameID)
+            }
+        case let .review(gameID):
+            if let game = store.recentGames.first(where: { $0.id == gameID }) {
+                GameReviewView(game: game)
+                    .navigationTitle("vs (game.opponentDisplayName)")
+            } else {
+                RecentGamesView { selectedGameID in
+                    selection = .review(selectedGameID)
+                }
+            }
         case .account:
             AccountOverviewView()
         }
@@ -181,6 +211,7 @@ private enum SidebarDestination: Hashable {
     case newGame
     case game(String)
     case history
+    case review(String)
     case account
 }
 
@@ -301,6 +332,7 @@ private struct SidebarAccountButton: View {
 
 private struct RecentGamesView: View {
     @EnvironmentObject private var store: LibChessStore
+    let openReview: (String) -> Void
 
     var body: some View {
         Group {
@@ -334,7 +366,9 @@ private struct RecentGamesView: View {
                 List {
                     Section {
                         ForEach(store.recentGames) { game in
-                            HistoryGameRow(game: game)
+                            HistoryGameRow(game: game) {
+                                openReview(game.id)
+                            }
                                 .transition(.move(edge: .top).combined(with: .opacity))
                         }
                     }
@@ -387,54 +421,61 @@ private struct HistoryGameRow: View {
     @Environment(\.openURL) private var openURL
 
     let game: GameHistoryEntry
+    let openReview: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: resultSymbol)
-                .font(.title3)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(resultColor)
-                .frame(width: 24)
-                .accessibilityLabel(resultText)
+            Button(action: openReview) {
+                HStack(spacing: 14) {
+                    Image(systemName: resultSymbol)
+                        .font(.title3)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(resultColor)
+                        .frame(width: 24)
+                        .accessibilityLabel(resultText)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 7) {
-                    Text(game.opponentDisplayName)
-                        .font(.headline)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 7) {
+                            Text(game.opponentDisplayName)
+                                .font(.headline)
+                                .lineLimit(1)
+                            if let rating = game.opponentRating {
+                                Text("\(rating)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let level = game.opponentAILevel {
+                                Text("Level \(level)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        HStack(spacing: 6) {
+                            Text(resultText)
+                            Text("·")
+                            Text(game.variantName)
+                            Text("·")
+                            Text(game.speed.displayName)
+                            Text("·")
+                            Text(game.rated ? "Rated" : "Casual")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if let rating = game.opponentRating {
-                        Text("\(rating)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
                     }
-                    if let level = game.opponentAILevel {
-                        Text("Level \(level)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
 
-                HStack(spacing: 6) {
-                    Text(resultText)
-                    Text("·")
-                    Text(game.variantName)
-                    Text("·")
-                    Text(game.speed.displayName)
-                    Text("·")
-                    Text(game.rated ? "Rated" : "Casual")
+                    Spacer(minLength: 12)
+
+                    Text(gameDate, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .help(gameDate.formatted(date: .complete, time: .shortened))
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .contentShape(Rectangle())
             }
-
-            Spacer(minLength: 12)
-
-            Text(gameDate, style: .relative)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .help(gameDate.formatted(date: .complete, time: .shortened))
+            .buttonStyle(.plain)
 
             if store.isExportingGame(game.id) {
                 ProgressView()
@@ -444,9 +485,9 @@ private struct HistoryGameRow: View {
 
             Menu {
                 Button {
-                    openAnalysis()
+                    openReview()
                 } label: {
-                    Label("Analyze on Lichess", systemImage: "chart.xyaxis.line")
+                    Label("Review in LibChess", systemImage: "chart.xyaxis.line")
                 }
                 if store.supportsPGNExport {
                     Button {
@@ -469,10 +510,8 @@ private struct HistoryGameRow: View {
             .fixedSize()
         }
         .padding(.vertical, 7)
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2, perform: openAnalysis)
         .contextMenu {
-            Button("Analyze on Lichess", action: openAnalysis)
+            Button("Review in LibChess", action: openReview)
             if store.supportsPGNExport {
                 Button("Export PGN…") {
                     store.exportGame(game.id)
@@ -509,12 +548,6 @@ private struct HistoryGameRow: View {
         return winner == game.playerColor ? .green : .red
     }
 
-    private func openAnalysis() {
-        if let url = URL(string: game.analysisURL) {
-            openURL(url)
-        }
-    }
-
     private func openGame() {
         if let url = URL(string: game.url) {
             openURL(url)
@@ -540,15 +573,24 @@ private struct ConnectView: View {
                     .keyboardShortcut(.defaultAction)
 
                     if store.savedCredentialAvailable {
-                        Button("Use Saved Credential") {
+                        Button {
                             store.connectUsingSavedCredential()
+                        } label: {
+                            if store.isLoadingSavedCredential {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 132)
+                            } else {
+                                Text("Use Saved Credential")
+                            }
                         }
+                        .disabled(store.isLoadingSavedCredential)
                     }
                 }
             }
 
             Label(
-                "Authentication opens on lichess.org. Your credential is stored in macOS Keychain.",
+                "Authentication opens on lichess.org. Your credential is stored in macOS Keychain without password prompts.",
                 systemImage: "lock.shield"
             )
             .font(.caption)
