@@ -115,7 +115,8 @@ enum Command {
     },
     LoadBoardPresentation {
         provider: String,
-        theme: String,
+        board_theme: String,
+        piece_theme: String,
     },
     ListBoardProviders,
     ListProviders,
@@ -398,15 +399,17 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             board_providers: client.board_providers(),
                         },
                     ),
-                    Command::LoadBoardPresentation { provider, theme } => {
-                        match client.board_presentation(&provider, &theme) {
-                            Ok(board_presentation) => sink.emit(
-                                request_id,
-                                Event::BoardPresentationLoaded { board_presentation },
-                            ),
-                            Err(error) => sink.emit(request_id, Event::Error { error }),
-                        }
-                    }
+                    Command::LoadBoardPresentation {
+                        provider,
+                        board_theme,
+                        piece_theme,
+                    } => match client.board_presentation(&provider, &board_theme, &piece_theme) {
+                        Ok(board_presentation) => sink.emit(
+                            request_id,
+                            Event::BoardPresentationLoaded { board_presentation },
+                        ),
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
                     Command::ExportGame { game_id } => match GameId::new(game_id) {
                         Ok(game_id) => match client.export_game(game_id).await {
                             Ok(game_export) => {
@@ -930,7 +933,8 @@ mod tests {
         assert!(ready.contains(r#""id":"level-1""#));
         assert!(ready.contains(r#""game_review""#));
         assert!(ready.contains(r#""board_providers""#));
-        assert!(ready.contains(r#""default_theme":"classic""#));
+        assert!(ready.contains(r#""default_board_theme":"classic""#));
+        assert!(ready.contains(r#""default_piece_theme":"system-solid""#));
         assert!(ready.contains(r#""board_presentation""#));
         assert!(ready.contains(r#""kind":"text_glyph""#));
 
@@ -946,7 +950,7 @@ mod tests {
         assert!(providers.contains(r#""request_id":"providers-1""#));
         assert!(providers.contains(r#""type":"providers""#));
 
-        let board_command = br#"{"version":1,"request_id":"board-1","type":"load_board_presentation","provider":"libchess","theme":"slate"}"#;
+        let board_command = br#"{"version":1,"request_id":"board-1","type":"load_board_presentation","provider":"libchess","board_theme":"ocean","piece_theme":"cc0-silhouette"}"#;
         assert_eq!(
             unsafe { libchess_client_send(client, board_command.as_ptr(), board_command.len()) },
             SEND_OK
@@ -956,7 +960,9 @@ mod tests {
             .expect("board presentation event");
         assert!(board_presentation.contains(r#""request_id":"board-1""#));
         assert!(board_presentation.contains(r#""type":"board_presentation_loaded""#));
-        assert!(board_presentation.contains(r#""theme":"slate""#));
+        assert!(board_presentation.contains(r#""board_theme":"ocean""#));
+        assert!(board_presentation.contains(r#""piece_theme":"cc0-silhouette""#));
+        assert!(board_presentation.contains(r#""kind":"svg""#));
         assert!(board_presentation.contains(r#""duration_millis":260"#));
 
         // SAFETY: This is the only destroy and no sends run concurrently.

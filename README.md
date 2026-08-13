@@ -95,10 +95,15 @@ history, draw and takeback offers, abort, resign, and disconnect recovery.
 Piece movement, captures, promotions, castling, rollbacks, and board resizing
 use rules supplied by the Rust board provider and translated into native
 SwiftUI transitions that respect Reduce Motion. The Board Appearance menu
-selects the built-in Classic or Slate theme and provider-advertised Small,
-Medium, and Large zoom levels. These assets, palettes, geometry values,
-animation rules, and zoom presets are not defined in Swift, so future WinUI 3
-and Qt frontends can consume the same customization contract.
+selects board and piece themes independently. Built-in boards are Classic,
+Slate, Walnut, Ocean, Charcoal, and Rosewood; piece sets are System Solid,
+System Outline, CC0 Silhouette, and Notation. Compact, Small, Medium, Large, and
+Maximum zoom levels are provider-advertised as well. These assets, palettes,
+geometry values, animation rules, and zoom presets are not defined in Swift,
+so future WinUI 3 and Qt frontends can consume the same customization contract.
+The vector Silhouette pieces come from a
+[CC0 release by femrek](https://opengameart.org/content/chess-pieces-in-svg-format),
+with provenance and checksums retained beside the embedded SVG files.
 
 ## Recent games and analysis
 

@@ -3,14 +3,28 @@ import Foundation
 public struct BoardProviderDescriptor: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let displayName: String
-    public let themes: [BoardThemeDescriptor]
-    public let defaultTheme: String
+    public let boardThemes: [BoardThemeDescriptor]
+    public let pieceThemes: [PieceThemeDescriptor]
+    public let defaultBoardTheme: String
+    public let defaultPieceTheme: String
 
     private enum CodingKeys: String, CodingKey {
         case id
         case displayName = "display_name"
-        case themes
-        case defaultTheme = "default_theme"
+        case boardThemes = "board_themes"
+        case pieceThemes = "piece_themes"
+        case defaultBoardTheme = "default_board_theme"
+        case defaultPieceTheme = "default_piece_theme"
+    }
+}
+
+public struct PieceThemeDescriptor: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let displayName: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
     }
 }
 
@@ -26,33 +40,57 @@ public struct BoardThemeDescriptor: Codable, Equatable, Identifiable, Sendable {
 
 public struct BoardPresentation: Codable, Equatable, Identifiable, Sendable {
     public let provider: String
-    public let theme: String
-    public let displayName: String
-    public let assets: BoardAssets
-    public let palette: BoardPalette
-    public let metrics: BoardMetrics
+    public let boardTheme: String
+    public let pieceTheme: String
+    public let board: BoardStyle
+    public let pieces: PieceStyle
     public let motion: BoardMotion
     public let zoom: BoardZoomRules
 
-    public var id: String { "\(provider)/\(theme)" }
+    public var id: String { "\(provider)/\(boardTheme)/\(pieceTheme)" }
 
     public func pieceAsset(for role: PieceRole, color: PlayerColor) -> BoardAsset? {
-        assets.pieces.first(where: { $0.role == role && $0.color == color })?.asset
+        pieces.assets.pieces.first(where: { $0.role == role && $0.color == color })?.asset
     }
 
     private enum CodingKeys: String, CodingKey {
         case provider
-        case theme
-        case displayName = "display_name"
-        case assets
-        case palette
-        case metrics
+        case boardTheme = "board_theme"
+        case pieceTheme = "piece_theme"
+        case board
+        case pieces
         case motion
         case zoom
     }
 }
 
-public struct BoardAssets: Codable, Equatable, Sendable {
+public struct BoardStyle: Codable, Equatable, Sendable {
+    public let displayName: String
+    public let palette: BoardPalette
+    public let metrics: BoardMetrics
+
+    private enum CodingKeys: String, CodingKey {
+        case displayName = "display_name"
+        case palette
+        case metrics
+    }
+}
+
+public struct PieceStyle: Codable, Equatable, Sendable {
+    public let displayName: String
+    public let assets: PieceAssets
+    public let palette: PiecePalette
+    public let metrics: PieceMetrics
+
+    private enum CodingKeys: String, CodingKey {
+        case displayName = "display_name"
+        case assets
+        case palette
+        case metrics
+    }
+}
+
+public struct PieceAssets: Codable, Equatable, Sendable {
     public let pieces: [BoardPieceAsset]
     public let promotedMarker: BoardAsset
 
@@ -71,10 +109,12 @@ public struct BoardPieceAsset: Codable, Equatable, Sendable {
 public struct BoardAsset: Codable, Equatable, Sendable {
     public let kind: BoardAssetKind
     public let value: String
+    public let tintable: Bool
 }
 
 public enum BoardAssetKind: String, Codable, Equatable, Sendable {
     case textGlyph = "text_glyph"
+    case svg
 }
 
 public struct RgbaColor: Codable, Equatable, Sendable {
@@ -96,11 +136,6 @@ public struct BoardPalette: Codable, Equatable, Sendable {
     public let checkEdge: RgbaColor
     public let border: RgbaColor
     public let shadow: RgbaColor
-    public let whitePiece: RgbaColor
-    public let blackPiece: RgbaColor
-    public let whitePieceShadow: RgbaColor
-    public let blackPieceShadow: RgbaColor
-    public let promotedMarker: RgbaColor
 
     private enum CodingKeys: String, CodingKey {
         case lightSquare = "light_square"
@@ -114,6 +149,17 @@ public struct BoardPalette: Codable, Equatable, Sendable {
         case checkEdge = "check_edge"
         case border
         case shadow
+    }
+}
+
+public struct PiecePalette: Codable, Equatable, Sendable {
+    public let whitePiece: RgbaColor
+    public let blackPiece: RgbaColor
+    public let whitePieceShadow: RgbaColor
+    public let blackPieceShadow: RgbaColor
+    public let promotedMarker: RgbaColor
+
+    private enum CodingKeys: String, CodingKey {
         case whitePiece = "white_piece"
         case blackPiece = "black_piece"
         case whitePieceShadow = "white_piece_shadow"
@@ -128,11 +174,6 @@ public struct BoardMetrics: Codable, Equatable, Sendable {
     public let borderWidth: UInt16
     public let shadowRadius: UInt16
     public let shadowOffsetY: Int16
-    public let pieceScalePercent: UInt8
-    public let pieceShadowRadiusTenths: UInt8
-    public let pieceShadowOffsetYTenths: Int8
-    public let promotedMarkerScalePercent: UInt8
-    public let promotedMarkerInset: UInt8
     public let coordinateFontScalePercent: UInt8
     public let coordinateInset: UInt8
     public let destinationDotScalePercent: UInt8
@@ -146,17 +187,28 @@ public struct BoardMetrics: Codable, Equatable, Sendable {
         case borderWidth = "border_width"
         case shadowRadius = "shadow_radius"
         case shadowOffsetY = "shadow_offset_y"
-        case pieceScalePercent = "piece_scale_percent"
-        case pieceShadowRadiusTenths = "piece_shadow_radius_tenths"
-        case pieceShadowOffsetYTenths = "piece_shadow_offset_y_tenths"
-        case promotedMarkerScalePercent = "promoted_marker_scale_percent"
-        case promotedMarkerInset = "promoted_marker_inset"
         case coordinateFontScalePercent = "coordinate_font_scale_percent"
         case coordinateInset = "coordinate_inset"
         case destinationDotScalePercent = "destination_dot_scale_percent"
         case destinationRingInsetPercent = "destination_ring_inset_percent"
         case destinationRingWidthPercent = "destination_ring_width_percent"
         case checkGradientRadiusPercent = "check_gradient_radius_percent"
+    }
+}
+
+public struct PieceMetrics: Codable, Equatable, Sendable {
+    public let scalePercent: UInt8
+    public let shadowRadiusTenths: UInt8
+    public let shadowOffsetYTenths: Int8
+    public let promotedMarkerScalePercent: UInt8
+    public let promotedMarkerInset: UInt8
+
+    private enum CodingKeys: String, CodingKey {
+        case scalePercent = "scale_percent"
+        case shadowRadiusTenths = "shadow_radius_tenths"
+        case shadowOffsetYTenths = "shadow_offset_y_tenths"
+        case promotedMarkerScalePercent = "promoted_marker_scale_percent"
+        case promotedMarkerInset = "promoted_marker_inset"
     }
 }
 
@@ -237,7 +289,8 @@ public struct BoardZoomPreset: Codable, Equatable, Hashable, Identifiable, Senda
 public enum BoardPreferenceKey {
     public static let zoomPreset = "org.libchess.macos.boardZoom"
     public static let provider = "org.libchess.macos.boardProvider"
-    public static let theme = "org.libchess.macos.boardTheme"
+    public static let boardTheme = "org.libchess.macos.boardTheme"
+    public static let pieceTheme = "org.libchess.macos.pieceTheme"
 }
 
 public enum ChessBoardLayout {
@@ -251,7 +304,7 @@ public enum ChessBoardLayout {
         let availableWidth = max(0, container.width - horizontalChrome)
         let availableHeight = max(0, container.height - verticalChrome)
         let fittedExtent = min(
-            CGFloat(presentation.metrics.maximumExtent),
+            CGFloat(presentation.board.metrics.maximumExtent),
             availableWidth,
             availableHeight
         )

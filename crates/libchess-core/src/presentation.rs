@@ -46,37 +46,60 @@ macro_rules! stable_id {
 
 stable_id!(BoardProviderId, "board provider identifiers");
 stable_id!(BoardThemeId, "board theme identifiers");
+stable_id!(PieceThemeId, "piece theme identifiers");
 stable_id!(BoardZoomPresetId, "board zoom preset identifiers");
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BoardProviderDescriptor {
     pub id: BoardProviderId,
     pub display_name: String,
-    pub themes: Vec<BoardThemeDescriptor>,
-    pub default_theme: BoardThemeId,
+    pub board_themes: Vec<BoardThemeDescriptor>,
+    pub piece_themes: Vec<PieceThemeDescriptor>,
+    pub default_board_theme: BoardThemeId,
+    pub default_piece_theme: PieceThemeId,
 }
 
 impl BoardProviderDescriptor {
     pub fn validate(&self) -> Result<(), LibChessError> {
         validate_display_name(&self.display_name, "board provider")?;
-        if self.themes.is_empty() || self.themes.len() > 64 {
+        if self.board_themes.is_empty() || self.board_themes.len() > 64 {
             return Err(LibChessError::invalid_input(
-                "board providers must advertise between 1 and 64 themes",
+                "board providers must advertise between 1 and 64 board themes",
             ));
         }
 
-        let mut ids = HashSet::new();
-        for theme in &self.themes {
+        let mut board_ids = HashSet::new();
+        for theme in &self.board_themes {
             validate_display_name(&theme.display_name, "board theme")?;
-            if !ids.insert(theme.id.clone()) {
+            if !board_ids.insert(theme.id.clone()) {
                 return Err(LibChessError::invalid_input(
-                    "board providers cannot advertise duplicate theme identifiers",
+                    "board providers cannot advertise duplicate board-theme identifiers",
                 ));
             }
         }
-        if !ids.contains(&self.default_theme) {
+        if !board_ids.contains(&self.default_board_theme) {
             return Err(LibChessError::invalid_input(
                 "the default board theme must be advertised by its provider",
+            ));
+        }
+
+        if self.piece_themes.is_empty() || self.piece_themes.len() > 64 {
+            return Err(LibChessError::invalid_input(
+                "board providers must advertise between 1 and 64 piece themes",
+            ));
+        }
+        let mut piece_ids = HashSet::new();
+        for theme in &self.piece_themes {
+            validate_display_name(&theme.display_name, "piece theme")?;
+            if !piece_ids.insert(theme.id.clone()) {
+                return Err(LibChessError::invalid_input(
+                    "board providers cannot advertise duplicate piece-theme identifiers",
+                ));
+            }
+        }
+        if !piece_ids.contains(&self.default_piece_theme) {
+            return Err(LibChessError::invalid_input(
+                "the default piece theme must be advertised by its provider",
             ));
         }
         Ok(())
@@ -90,22 +113,26 @@ pub struct BoardThemeDescriptor {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PieceThemeDescriptor {
+    pub id: PieceThemeId,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BoardPresentation {
     pub provider: BoardProviderId,
-    pub theme: BoardThemeId,
-    pub display_name: String,
-    pub assets: BoardAssets,
-    pub palette: BoardPalette,
-    pub metrics: BoardMetrics,
+    pub board_theme: BoardThemeId,
+    pub piece_theme: PieceThemeId,
+    pub board: BoardStyle,
+    pub pieces: PieceStyle,
     pub motion: BoardMotion,
     pub zoom: BoardZoomRules,
 }
 
 impl BoardPresentation {
     pub fn validate(&self) -> Result<(), LibChessError> {
-        validate_display_name(&self.display_name, "board presentation")?;
-        self.assets.validate()?;
-        self.metrics.validate()?;
+        self.board.validate()?;
+        self.pieces.validate()?;
         self.motion.validate()?;
         self.zoom.validate()?;
         Ok(())
@@ -113,12 +140,42 @@ impl BoardPresentation {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct BoardAssets {
+pub struct BoardStyle {
+    pub display_name: String,
+    pub palette: BoardPalette,
+    pub metrics: BoardMetrics,
+}
+
+impl BoardStyle {
+    fn validate(&self) -> Result<(), LibChessError> {
+        validate_display_name(&self.display_name, "board theme")?;
+        self.metrics.validate()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PieceStyle {
+    pub display_name: String,
+    pub assets: PieceAssets,
+    pub palette: PiecePalette,
+    pub metrics: PieceMetrics,
+}
+
+impl PieceStyle {
+    fn validate(&self) -> Result<(), LibChessError> {
+        validate_display_name(&self.display_name, "piece theme")?;
+        self.assets.validate()?;
+        self.metrics.validate()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PieceAssets {
     pub pieces: Vec<BoardPieceAsset>,
     pub promoted_marker: BoardAsset,
 }
 
-impl BoardAssets {
+impl PieceAssets {
     fn validate(&self) -> Result<(), LibChessError> {
         let expected = [
             PieceRole::Pawn,
@@ -170,6 +227,7 @@ pub struct BoardPieceAsset {
 pub struct BoardAsset {
     pub kind: BoardAssetKind,
     pub value: String,
+    pub tintable: bool,
 }
 
 impl BoardAsset {
@@ -177,16 +235,60 @@ impl BoardAsset {
         Self {
             kind: BoardAssetKind::TextGlyph,
             value: value.into(),
+            tintable: true,
+        }
+    }
+
+    pub fn tintable_svg(value: impl Into<String>) -> Self {
+        Self {
+            kind: BoardAssetKind::Svg,
+            value: value.into(),
+            tintable: true,
         }
     }
 
     fn validate(&self) -> Result<(), LibChessError> {
-        if self.value.is_empty()
-            || self.value.len() > 64
-            || self.value.chars().any(char::is_control)
+        match self.kind {
+            BoardAssetKind::TextGlyph => {
+                if !self.tintable
+                    || self.value.is_empty()
+                    || self.value.len() > 64
+                    || self.value.chars().any(char::is_control)
+                {
+                    return Err(LibChessError::invalid_input(
+                        "text-glyph assets must be tintable and contain 1 to 64 non-control bytes",
+                    ));
+                }
+            }
+            BoardAssetKind::Svg => self.validate_svg()?,
+        }
+        Ok(())
+    }
+
+    fn validate_svg(&self) -> Result<(), LibChessError> {
+        if self.value.is_empty() || self.value.len() > 64 * 1_024 || self.value.contains('\0') {
+            return Err(LibChessError::invalid_input(
+                "SVG board assets must contain between 1 and 65536 bytes",
+            ));
+        }
+
+        let trimmed = self.value.trim();
+        let lowercase = trimmed.to_ascii_lowercase();
+        let forbidden = [
+            "<!doctype",
+            "<!entity",
+            "<script",
+            "<foreignobject",
+            "href=",
+            "xlink:href",
+            "url(",
+        ];
+        if !lowercase.starts_with("<svg")
+            || !lowercase.ends_with("</svg>")
+            || forbidden.iter().any(|token| lowercase.contains(token))
         {
             return Err(LibChessError::invalid_input(
-                "board asset values must contain between 1 and 64 non-control bytes",
+                "SVG board assets must be self-contained and exclude active or external content",
             ));
         }
         Ok(())
@@ -197,6 +299,7 @@ impl BoardAsset {
 #[serde(rename_all = "snake_case")]
 pub enum BoardAssetKind {
     TextGlyph,
+    Svg,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -231,6 +334,10 @@ pub struct BoardPalette {
     pub check_edge: RgbaColor,
     pub border: RgbaColor,
     pub shadow: RgbaColor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PiecePalette {
     pub white_piece: RgbaColor,
     pub black_piece: RgbaColor,
     pub white_piece_shadow: RgbaColor,
@@ -245,11 +352,6 @@ pub struct BoardMetrics {
     pub border_width: u16,
     pub shadow_radius: u16,
     pub shadow_offset_y: i16,
-    pub piece_scale_percent: u8,
-    pub piece_shadow_radius_tenths: u8,
-    pub piece_shadow_offset_y_tenths: i8,
-    pub promoted_marker_scale_percent: u8,
-    pub promoted_marker_inset: u8,
     pub coordinate_font_scale_percent: u8,
     pub coordinate_inset: u8,
     pub destination_dot_scale_percent: u8,
@@ -265,8 +367,6 @@ impl BoardMetrics {
             || self.border_width > 16
             || self.shadow_radius > 64
             || !(-64..=64).contains(&self.shadow_offset_y)
-            || self.piece_shadow_radius_tenths > 100
-            || !(-100..=100).contains(&self.piece_shadow_offset_y_tenths)
         {
             return Err(LibChessError::invalid_input(
                 "board extent, border, corner, or shadow metrics are outside safe bounds",
@@ -274,8 +374,6 @@ impl BoardMetrics {
         }
 
         let percentages = [
-            self.piece_scale_percent,
-            self.promoted_marker_scale_percent,
             self.coordinate_font_scale_percent,
             self.destination_dot_scale_percent,
             self.destination_ring_inset_percent,
@@ -287,9 +385,34 @@ impl BoardMetrics {
                 "board percentage metrics must be between 1 and 100",
             ));
         }
-        if self.promoted_marker_inset > 32 || self.coordinate_inset > 32 {
+        if self.coordinate_inset > 32 {
             return Err(LibChessError::invalid_input(
-                "board asset insets must not exceed 32 logical pixels",
+                "board coordinate insets must not exceed 32 logical pixels",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PieceMetrics {
+    pub scale_percent: u8,
+    pub shadow_radius_tenths: u8,
+    pub shadow_offset_y_tenths: i8,
+    pub promoted_marker_scale_percent: u8,
+    pub promoted_marker_inset: u8,
+}
+
+impl PieceMetrics {
+    fn validate(&self) -> Result<(), LibChessError> {
+        if !(1..=100).contains(&self.scale_percent)
+            || self.shadow_radius_tenths > 100
+            || !(-100..=100).contains(&self.shadow_offset_y_tenths)
+            || !(1..=100).contains(&self.promoted_marker_scale_percent)
+            || self.promoted_marker_inset > 32
+        {
+            return Err(LibChessError::invalid_input(
+                "piece scale, shadow, or promoted-marker metrics are outside safe bounds",
             ));
         }
         Ok(())
@@ -401,7 +524,11 @@ pub struct BoardZoomPreset {
 pub trait BoardProvider: Send + Sync {
     fn descriptor(&self) -> &BoardProviderDescriptor;
 
-    fn presentation(&self, theme: &BoardThemeId) -> Result<BoardPresentation, LibChessError>;
+    fn presentation(
+        &self,
+        board_theme: &BoardThemeId,
+        piece_theme: &PieceThemeId,
+    ) -> Result<BoardPresentation, LibChessError>;
 }
 
 fn validate_display_name(value: &str, subject: &str) -> Result<(), LibChessError> {
@@ -421,6 +548,27 @@ mod tests {
     fn validates_board_identifiers() {
         assert!(BoardProviderId::new("built-in").is_ok());
         assert!(BoardThemeId::new("midnight-blue").is_ok());
+        assert!(PieceThemeId::new("cc0-silhouette").is_ok());
         assert!(BoardZoomPresetId::new("100% ").is_err());
+    }
+
+    #[test]
+    fn accepts_self_contained_svg_assets() {
+        let asset = BoardAsset::tintable_svg(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>"#,
+        );
+
+        assert!(asset.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_active_or_external_svg_content() {
+        for value in [
+            r#"<svg><script>alert(1)</script></svg>"#,
+            r#"<svg><image href="https://example.com/piece.png"/></svg>"#,
+            r#"<svg><style>path { fill: url(#paint); }</style></svg>"#,
+        ] {
+            assert!(BoardAsset::tintable_svg(value).validate().is_err());
+        }
     }
 }

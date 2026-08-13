@@ -57,62 +57,80 @@ final class BoardSizingTests: XCTestCase {
             presentation.pieceAsset(for: .knight, color: .white)?.value,
             "N"
         )
-        XCTAssertEqual(presentation.assets.promotedMarker.value, "*")
+        XCTAssertEqual(presentation.pieces.assets.promotedMarker.value, "*")
         XCTAssertEqual(presentation.motion.pieceMove.durationMillis, 180)
         XCTAssertEqual(presentation.motion.pieceMove.curve, .spring)
-        XCTAssertEqual(presentation.metrics.pieceScalePercent, 72)
+        XCTAssertEqual(presentation.pieces.metrics.scalePercent, 72)
     }
 
     private func makePresentation() -> BoardPresentation {
         BoardPresentation(
             provider: "test",
-            theme: "portable",
-            displayName: "Portable",
-            assets: BoardAssets(
-                pieces: [
-                    BoardPieceAsset(
-                        color: .white,
-                        role: .knight,
-                        asset: BoardAsset(kind: .textGlyph, value: "N")
-                    ),
-                ],
-                promotedMarker: BoardAsset(kind: .textGlyph, value: "*")
+            boardTheme: "portable",
+            pieceTheme: "notation",
+            board: BoardStyle(
+                displayName: "Portable",
+                palette: BoardPalette(
+                    lightSquare: color(220),
+                    darkSquare: color(100),
+                    coordinateOnLight: color(100),
+                    coordinateOnDark: color(220),
+                    lastMove: color(180),
+                    selection: color(160),
+                    legalMove: color(80),
+                    checkCenter: color(240),
+                    checkEdge: color(120),
+                    border: color(50),
+                    shadow: color(30)
+                ),
+                metrics: BoardMetrics(
+                    maximumExtent: 900,
+                    cornerRadius: 6,
+                    borderWidth: 1,
+                    shadowRadius: 10,
+                    shadowOffsetY: 5,
+                    coordinateFontScalePercent: 11,
+                    coordinateInset: 3,
+                    destinationDotScalePercent: 21,
+                    destinationRingInsetPercent: 5,
+                    destinationRingWidthPercent: 6,
+                    checkGradientRadiusPercent: 53
+                )
             ),
-            palette: BoardPalette(
-                lightSquare: color(220),
-                darkSquare: color(100),
-                coordinateOnLight: color(100),
-                coordinateOnDark: color(220),
-                lastMove: color(180),
-                selection: color(160),
-                legalMove: color(80),
-                checkCenter: color(240),
-                checkEdge: color(120),
-                border: color(50),
-                shadow: color(30),
-                whitePiece: color(255),
-                blackPiece: color(0),
-                whitePieceShadow: color(0),
-                blackPieceShadow: color(255),
-                promotedMarker: color(200)
-            ),
-            metrics: BoardMetrics(
-                maximumExtent: 900,
-                cornerRadius: 6,
-                borderWidth: 1,
-                shadowRadius: 10,
-                shadowOffsetY: 5,
-                pieceScalePercent: 72,
-                pieceShadowRadiusTenths: 7,
-                pieceShadowOffsetYTenths: 5,
-                promotedMarkerScalePercent: 13,
-                promotedMarkerInset: 3,
-                coordinateFontScalePercent: 11,
-                coordinateInset: 3,
-                destinationDotScalePercent: 21,
-                destinationRingInsetPercent: 5,
-                destinationRingWidthPercent: 6,
-                checkGradientRadiusPercent: 53
+            pieces: PieceStyle(
+                displayName: "Notation",
+                assets: PieceAssets(
+                    pieces: [
+                        BoardPieceAsset(
+                            color: .white,
+                            role: .knight,
+                            asset: BoardAsset(
+                                kind: .textGlyph,
+                                value: "N",
+                                tintable: true
+                            )
+                        ),
+                    ],
+                    promotedMarker: BoardAsset(
+                        kind: .textGlyph,
+                        value: "*",
+                        tintable: true
+                    )
+                ),
+                palette: PiecePalette(
+                    whitePiece: color(255),
+                    blackPiece: color(0),
+                    whitePieceShadow: color(0),
+                    blackPieceShadow: color(255),
+                    promotedMarker: color(200)
+                ),
+                metrics: PieceMetrics(
+                    scalePercent: 72,
+                    shadowRadiusTenths: 7,
+                    shadowOffsetYTenths: 5,
+                    promotedMarkerScalePercent: 13,
+                    promotedMarkerInset: 3
+                )
             ),
             motion: BoardMotion(
                 boardResize: animation(260),

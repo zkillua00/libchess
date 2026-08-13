@@ -1,4 +1,5 @@
 @testable import LibChessKit
+import AppKit
 import Foundation
 import XCTest
 
@@ -275,29 +276,38 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesPortableBoardProviderPresentation() throws {
         let data = Data(
-            #"{"version":1,"request_id":"board-1","type":"board_presentation_loaded","board_presentation":{"provider":"libchess","theme":"slate","display_name":"Slate","assets":{"pieces":[{"color":"white","role":"pawn","asset":{"kind":"text_glyph","value":"♟"}}],"promoted_marker":{"kind":"text_glyph","value":"★"}},"palette":{"light_square":{"red":204,"green":213,"blue":224,"alpha":255},"dark_square":{"red":78,"green":101,"blue":128,"alpha":255},"coordinate_on_light":{"red":78,"green":101,"blue":128,"alpha":255},"coordinate_on_dark":{"red":204,"green":213,"blue":224,"alpha":255},"last_move":{"red":255,"green":190,"blue":74,"alpha":112},"selection":{"red":100,"green":210,"blue":255,"alpha":132},"legal_move":{"red":14,"green":23,"blue":33,"alpha":92},"check_center":{"red":255,"green":69,"blue":58,"alpha":204},"check_edge":{"red":255,"green":69,"blue":58,"alpha":23},"border":{"red":7,"green":17,"blue":28,"alpha":82},"shadow":{"red":0,"green":0,"blue":0,"alpha":56},"white_piece":{"red":250,"green":252,"blue":255,"alpha":255},"black_piece":{"red":18,"green":25,"blue":34,"alpha":255},"white_piece_shadow":{"red":3,"green":13,"blue":24,"alpha":153},"black_piece_shadow":{"red":226,"green":239,"blue":255,"alpha":92},"promoted_marker":{"red":255,"green":190,"blue":74,"alpha":255}},"metrics":{"maximum_extent":900,"corner_radius":6,"border_width":1,"shadow_radius":10,"shadow_offset_y":5,"piece_scale_percent":72,"piece_shadow_radius_tenths":7,"piece_shadow_offset_y_tenths":5,"promoted_marker_scale_percent":13,"promoted_marker_inset":3,"coordinate_font_scale_percent":11,"coordinate_inset":3,"destination_dot_scale_percent":21,"destination_ring_inset_percent":5,"destination_ring_width_percent":6,"check_gradient_radius_percent":53},"motion":{"board_resize":{"duration_millis":260,"curve":"spring","extra_bounce_percent":0},"piece_move":{"duration_millis":180,"curve":"spring","extra_bounce_percent":0},"selection":{"duration_millis":120,"curve":"ease_out","extra_bounce_percent":0},"piece_appearance_scale_percent":55,"fade_piece_appearance":true,"maximum_animated_ply_distance":1},"zoom":{"presets":[{"id":"small","display_name":"Small","scale_percent":70},{"id":"medium","display_name":"Medium","scale_percent":85},{"id":"large","display_name":"Large","scale_percent":100}],"default_preset":"medium"}}}"#.utf8
+            #"{"version":1,"request_id":"board-1","type":"board_presentation_loaded","board_presentation":{"provider":"libchess","board_theme":"slate","piece_theme":"cc0-silhouette","board":{"display_name":"Slate","palette":{"light_square":{"red":204,"green":213,"blue":224,"alpha":255},"dark_square":{"red":78,"green":101,"blue":128,"alpha":255},"coordinate_on_light":{"red":78,"green":101,"blue":128,"alpha":255},"coordinate_on_dark":{"red":204,"green":213,"blue":224,"alpha":255},"last_move":{"red":255,"green":190,"blue":74,"alpha":112},"selection":{"red":100,"green":210,"blue":255,"alpha":132},"legal_move":{"red":14,"green":23,"blue":33,"alpha":92},"check_center":{"red":255,"green":69,"blue":58,"alpha":204},"check_edge":{"red":255,"green":69,"blue":58,"alpha":23},"border":{"red":7,"green":17,"blue":28,"alpha":82},"shadow":{"red":0,"green":0,"blue":0,"alpha":56}},"metrics":{"maximum_extent":900,"corner_radius":6,"border_width":1,"shadow_radius":10,"shadow_offset_y":5,"coordinate_font_scale_percent":11,"coordinate_inset":3,"destination_dot_scale_percent":21,"destination_ring_inset_percent":5,"destination_ring_width_percent":6,"check_gradient_radius_percent":53}},"pieces":{"display_name":"CC0 Silhouette","assets":{"pieces":[{"color":"white","role":"pawn","asset":{"kind":"svg","value":"<svg width='50' height='50' viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'><circle cx='25' cy='25' r='20' fill='black'/></svg>","tintable":true}}],"promoted_marker":{"kind":"text_glyph","value":"★","tintable":true}},"palette":{"white_piece":{"red":250,"green":252,"blue":255,"alpha":255},"black_piece":{"red":18,"green":25,"blue":34,"alpha":255},"white_piece_shadow":{"red":3,"green":13,"blue":24,"alpha":153},"black_piece_shadow":{"red":226,"green":239,"blue":255,"alpha":92},"promoted_marker":{"red":255,"green":190,"blue":74,"alpha":255}},"metrics":{"scale_percent":82,"shadow_radius_tenths":9,"shadow_offset_y_tenths":6,"promoted_marker_scale_percent":13,"promoted_marker_inset":3}},"motion":{"board_resize":{"duration_millis":260,"curve":"spring","extra_bounce_percent":0},"piece_move":{"duration_millis":180,"curve":"spring","extra_bounce_percent":0},"selection":{"duration_millis":120,"curve":"ease_out","extra_bounce_percent":0},"piece_appearance_scale_percent":55,"fade_piece_appearance":true,"maximum_animated_ply_distance":1},"zoom":{"presets":[{"id":"small","display_name":"Small","scale_percent":70},{"id":"medium","display_name":"Medium","scale_percent":85},{"id":"large","display_name":"Large","scale_percent":100}],"default_preset":"medium"}}}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
         let presentation = try XCTUnwrap(event.boardPresentation)
 
         XCTAssertEqual(event.requestID, "board-1")
-        XCTAssertEqual(presentation.id, "libchess/slate")
+        XCTAssertEqual(presentation.id, "libchess/slate/cc0-silhouette")
         XCTAssertEqual(
-            presentation.pieceAsset(for: .pawn, color: .white)?.value,
-            "♟"
+            presentation.pieceAsset(for: .pawn, color: .white)?.kind,
+            .svg
         )
+        XCTAssertEqual(presentation.board.displayName, "Slate")
+        XCTAssertEqual(presentation.pieces.displayName, "CC0 Silhouette")
+        let svg = try XCTUnwrap(presentation.pieceAsset(for: .pawn, color: .white))
+        XCTAssertNotNil(svg.value.data(using: .utf8).flatMap(NSImage.init(data:)))
         XCTAssertEqual(presentation.motion.selection.curve, .easeOut)
         XCTAssertEqual(presentation.zoom.defaultValue?.displayName, "Medium")
     }
 
     func testEncodesBoardPresentationCommandWithExplicitWireKeys() throws {
-        let command = LoadBoardPresentationCommand(provider: "libchess", theme: "slate")
+        let command = LoadBoardPresentationCommand(
+            provider: "libchess",
+            boardTheme: "slate",
+            pieceTheme: "cc0-silhouette"
+        )
         let object = try jsonObject(command)
 
         XCTAssertEqual(object["type"] as? String, "load_board_presentation")
         XCTAssertEqual(object["provider"] as? String, "libchess")
-        XCTAssertEqual(object["theme"] as? String, "slate")
+        XCTAssertEqual(object["board_theme"] as? String, "slate")
+        XCTAssertEqual(object["piece_theme"] as? String, "cc0-silhouette")
         XCTAssertNotNil(object["request_id"])
     }
 

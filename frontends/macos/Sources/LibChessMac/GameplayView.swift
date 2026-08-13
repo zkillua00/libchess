@@ -1,3 +1,4 @@
+import AppKit
 import LibChessKit
 import Charts
 import Foundation
@@ -393,10 +394,21 @@ private struct BoardAppearanceMenu: View {
 
     var body: some View {
         Menu {
-            Picker("Board Theme", selection: themeSelection) {
+            Picker("Board", selection: boardThemeSelection) {
                 ForEach(store.boardProviders) { provider in
                     Section(provider.displayName) {
-                        ForEach(provider.themes) { theme in
+                        ForEach(provider.boardThemes) { theme in
+                            Text(theme.displayName)
+                                .tag("\(provider.id)/\(theme.id)")
+                        }
+                    }
+                }
+            }
+
+            Picker("Pieces", selection: pieceThemeSelection) {
+                ForEach(store.boardProviders) { provider in
+                    Section(provider.displayName) {
+                        ForEach(provider.pieceThemes) { theme in
                             Text(theme.displayName)
                                 .tag("\(provider.id)/\(theme.id)")
                         }
@@ -429,7 +441,11 @@ private struct BoardAppearanceMenu: View {
                 Label("Board Appearance", systemImage: "checkerboard.rectangle")
             }
         }
-        .help("\(presentation.displayName) · \(currentZoom.displayName)")
+        .help(
+            "\(presentation.board.displayName) board · "
+                + "\(presentation.pieces.displayName) pieces · "
+                + currentZoom.displayName
+        )
     }
 
     private var currentZoom: BoardZoomPreset {
@@ -438,17 +454,64 @@ private struct BoardAppearanceMenu: View {
             ?? presentation.zoom.presets[0]
     }
 
-    private var themeSelection: Binding<String> {
+    private var boardThemeSelection: Binding<String> {
         Binding(
-            get: { presentation.id },
+            get: { "\(presentation.provider)/\(presentation.boardTheme)" },
             set: { selection in
-                let parts = selection.split(separator: "/", maxSplits: 1).map(String.init)
-                guard parts.count == 2 else {
+                guard let (provider, boardTheme) = parse(selection),
+                      let descriptor = store.boardProviders.first(where: {
+                          $0.id == provider
+                      })
+                else {
                     return
                 }
-                store.selectBoardPresentation(provider: parts[0], theme: parts[1])
+                let pieceTheme = provider == presentation.provider
+                    && descriptor.pieceThemes.contains(where: {
+                        $0.id == presentation.pieceTheme
+                    })
+                    ? presentation.pieceTheme
+                    : descriptor.defaultPieceTheme
+                store.selectBoardPresentation(
+                    provider: provider,
+                    boardTheme: boardTheme,
+                    pieceTheme: pieceTheme
+                )
             }
         )
+    }
+
+    private var pieceThemeSelection: Binding<String> {
+        Binding(
+            get: { "\(presentation.provider)/\(presentation.pieceTheme)" },
+            set: { selection in
+                guard let (provider, pieceTheme) = parse(selection),
+                      let descriptor = store.boardProviders.first(where: {
+                          $0.id == provider
+                      })
+                else {
+                    return
+                }
+                let boardTheme = provider == presentation.provider
+                    && descriptor.boardThemes.contains(where: {
+                        $0.id == presentation.boardTheme
+                    })
+                    ? presentation.boardTheme
+                    : descriptor.defaultBoardTheme
+                store.selectBoardPresentation(
+                    provider: provider,
+                    boardTheme: boardTheme,
+                    pieceTheme: pieceTheme
+                )
+            }
+        )
+    }
+
+    private func parse(_ selection: String) -> (provider: String, theme: String)? {
+        let parts = selection.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else {
+            return nil
+        }
+        return (parts[0], parts[1])
     }
 
     private func setZoom(_ preset: BoardZoomPreset) {
@@ -1257,20 +1320,22 @@ private struct AnimatedPieceView: View {
             PieceGlyph(
                 role: piece.role,
                 color: piece.color,
-                size: size * CGFloat(presentation.metrics.pieceScalePercent) / 100,
+                size: size * CGFloat(presentation.pieces.metrics.scalePercent) / 100,
                 presentation: presentation
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 if piece.promoted {
-                    Text(presentation.assets.promotedMarker.value)
-                        .font(.system(
-                            size: size
-                                * CGFloat(presentation.metrics.promotedMarkerScalePercent)
-                                / 100
-                        ))
-                        .foregroundStyle(presentation.palette.promotedMarker.color)
-                        .padding(CGFloat(presentation.metrics.promotedMarkerInset))
+                    BoardAssetView(
+                        asset: presentation.pieces.assets.promotedMarker,
+                        size: size
+                            * CGFloat(
+                                presentation.pieces.metrics.promotedMarkerScalePercent
+                            )
+                            / 100
+                    )
+                        .foregroundStyle(presentation.pieces.palette.promotedMarker.color)
+                        .padding(CGFloat(presentation.pieces.metrics.promotedMarkerInset))
                 }
             }
         }
@@ -1294,25 +1359,27 @@ private struct BoardSquareView: View {
             let size = min(geometry.size.width, geometry.size.height)
             ZStack {
                 (isLight
-                    ? presentation.palette.lightSquare.color
-                    : presentation.palette.darkSquare.color)
+                    ? presentation.board.palette.lightSquare.color
+                    : presentation.board.palette.darkSquare.color)
 
                 if isLastMove {
-                    presentation.palette.lastMove.color
+                    presentation.board.palette.lastMove.color
                 }
                 if isSelected {
-                    presentation.palette.selection.color
+                    presentation.board.palette.selection.color
                 }
                 if isCheckedKing {
                     RadialGradient(
                         colors: [
-                            presentation.palette.checkCenter.color,
-                            presentation.palette.checkEdge.color,
+                            presentation.board.palette.checkCenter.color,
+                            presentation.board.palette.checkEdge.color,
                         ],
                         center: .center,
                         startRadius: 0,
                         endRadius: size
-                            * CGFloat(presentation.metrics.checkGradientRadiusPercent)
+                            * CGFloat(
+                                presentation.board.metrics.checkGradientRadiusPercent
+                            )
                             / 100
                     )
                 }
@@ -1320,29 +1387,33 @@ private struct BoardSquareView: View {
                 if isDestination {
                     if piece == nil {
                         Circle()
-                            .fill(presentation.palette.legalMove.color)
+                            .fill(presentation.board.palette.legalMove.color)
                             .frame(
                                 width: size
-                                    * CGFloat(presentation.metrics.destinationDotScalePercent)
+                                    * CGFloat(
+                                        presentation.board.metrics.destinationDotScalePercent
+                                    )
                                     / 100,
                                 height: size
-                                    * CGFloat(presentation.metrics.destinationDotScalePercent)
+                                    * CGFloat(
+                                        presentation.board.metrics.destinationDotScalePercent
+                                    )
                                     / 100
                             )
                     } else {
                         Circle()
                             .stroke(
-                                presentation.palette.legalMove.color,
+                                presentation.board.palette.legalMove.color,
                                 lineWidth: size
                                     * CGFloat(
-                                        presentation.metrics.destinationRingWidthPercent
+                                        presentation.board.metrics.destinationRingWidthPercent
                                     )
                                     / 100
                             )
                             .padding(
                                 size
                                     * CGFloat(
-                                        presentation.metrics.destinationRingInsetPercent
+                                        presentation.board.metrics.destinationRingInsetPercent
                                     )
                                     / 100
                             )
@@ -1372,16 +1443,18 @@ private struct BoardSquareView: View {
     private func coordinateLabel(_ text: String, size: CGFloat) -> some View {
         Text(text)
             .font(.system(
-                size: size * CGFloat(presentation.metrics.coordinateFontScalePercent) / 100,
+                size: size
+                    * CGFloat(presentation.board.metrics.coordinateFontScalePercent)
+                    / 100,
                 weight: .bold,
                 design: .rounded
             ))
             .foregroundStyle(
                 isLight
-                    ? presentation.palette.coordinateOnLight.color
-                    : presentation.palette.coordinateOnDark.color
+                    ? presentation.board.palette.coordinateOnLight.color
+                    : presentation.board.palette.coordinateOnDark.color
             )
-            .padding(CGFloat(presentation.metrics.coordinateInset))
+            .padding(CGFloat(presentation.board.metrics.coordinateInset))
     }
 }
 
@@ -1508,27 +1581,71 @@ private struct PieceGlyph: View {
     var body: some View {
         Group {
             if let asset = presentation.pieceAsset(for: role, color: color) {
-                switch asset.kind {
-                case .textGlyph:
-                    Text(asset.value)
-                        .font(.system(size: size, weight: .regular, design: .serif))
-                }
+                BoardAssetView(asset: asset, size: size)
             }
         }
         .foregroundStyle(
             color == .white
-                ? presentation.palette.whitePiece.color
-                : presentation.palette.blackPiece.color
+                ? presentation.pieces.palette.whitePiece.color
+                : presentation.pieces.palette.blackPiece.color
         )
         .shadow(
             color: color == .white
-                ? presentation.palette.whitePieceShadow.color
-                : presentation.palette.blackPieceShadow.color,
-            radius: CGFloat(presentation.metrics.pieceShadowRadiusTenths) / 10,
+                ? presentation.pieces.palette.whitePieceShadow.color
+                : presentation.pieces.palette.blackPieceShadow.color,
+            radius: CGFloat(presentation.pieces.metrics.shadowRadiusTenths) / 10,
             x: 0,
-            y: CGFloat(presentation.metrics.pieceShadowOffsetYTenths) / 10
+            y: CGFloat(presentation.pieces.metrics.shadowOffsetYTenths) / 10
         )
         .accessibilityHidden(true)
+    }
+}
+
+private struct BoardAssetView: View {
+    let asset: BoardAsset
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            switch asset.kind {
+            case .textGlyph:
+                Text(asset.value)
+                    .font(.system(size: size, weight: .regular, design: .serif))
+            case .svg:
+                if let image = BoardAssetImageCache.shared.image(for: asset) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .renderingMode(asset.tintable ? .template : .original)
+                        .scaledToFit()
+                        .frame(width: size, height: size)
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+private final class BoardAssetImageCache {
+    static let shared = BoardAssetImageCache()
+
+    private var images: [String: NSImage] = [:]
+
+    func image(for asset: BoardAsset) -> NSImage? {
+        guard asset.kind == .svg else {
+            return nil
+        }
+        let cacheKey = "\(asset.tintable):\(asset.value)"
+        if let cached = images[cacheKey] {
+            return cached
+        }
+        guard let data = asset.value.data(using: .utf8),
+              let image = NSImage(data: data)
+        else {
+            return nil
+        }
+        image.isTemplate = asset.tintable
+        images[cacheKey] = image
+        return image
     }
 }
 
@@ -2046,19 +2163,19 @@ private extension BoardPresentation {
 
 private extension View {
     func boardChrome(_ presentation: BoardPresentation) -> some View {
-        let cornerRadius = CGFloat(presentation.metrics.cornerRadius)
+        let cornerRadius = CGFloat(presentation.board.metrics.cornerRadius)
         return clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .stroke(
-                        presentation.palette.border.color,
-                        lineWidth: CGFloat(presentation.metrics.borderWidth)
+                        presentation.board.palette.border.color,
+                        lineWidth: CGFloat(presentation.board.metrics.borderWidth)
                     )
             }
             .shadow(
-                color: presentation.palette.shadow.color,
-                radius: CGFloat(presentation.metrics.shadowRadius),
-                y: CGFloat(presentation.metrics.shadowOffsetY)
+                color: presentation.board.palette.shadow.color,
+                radius: CGFloat(presentation.board.metrics.shadowRadius),
+                y: CGFloat(presentation.board.metrics.shadowOffsetY)
             )
     }
 }

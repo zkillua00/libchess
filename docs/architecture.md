@@ -52,13 +52,13 @@ frontends continue to use the same command/event protocol.
 ## Board customization is portable
 
 Board appearance is a separate provider axis; it does not belong to a chess
-platform adapter or a native frontend. A board provider advertises stable theme
-identifiers and returns one validated presentation containing piece and
-promotion assets for each player color, colors, board and marker geometry,
-piece shadows, animation curves and durations, transition behavior, and
-ordered zoom presets. The
-registry is owned by `libchess`, so installing another board provider does not
-change Lichess, a future Chess.com adapter, or an engine provider.
+platform adapter or a native frontend. A board provider advertises independent
+board-theme and piece-theme catalogs. A selection combines one of each into a
+validated presentation containing square colors and geometry, piece and
+promotion assets for each player color, piece styling, animation curves and
+durations, transition behavior, and ordered zoom presets. The registry is owned
+by `libchess`, so installing another board provider does not change Lichess, a
+future Chess.com adapter, or an engine provider.
 
 The C ABI exposes the board-provider catalog and the selected presentation in
 the same versioned event stream as application state. Native wrappers decode
@@ -71,10 +71,18 @@ themes without recreating customization policy. Motion curves are portable
 semantics such as `spring` and `ease_out`; each renderer maps those semantics to
 its closest native animation primitive.
 
-The built-in `libchess-board` provider currently supplies Classic and Slate.
-Its first asset kind is a tintable text glyph; the tagged asset contract can be
-extended with additional portable kinds without exposing Rust implementation
-types across the ABI.
+The built-in `libchess-board` provider supplies Classic, Slate, Walnut, Ocean,
+Charcoal, and Rosewood boards. Piece selection is independent: System Solid,
+System Outline, CC0 Silhouette, and Notation can be paired with any board. The
+tagged asset contract supports tintable text glyphs and self-contained SVG.
+Rust bounds and validates SVG payloads and rejects scripts, entities, external
+references, and CSS URLs before they cross the ABI; native renderers cache the
+decoded result.
+
+The CC0 Silhouette vectors are embedded at compile time from femrek's
+[CC0 OpenGameArt release](https://opengameart.org/content/chess-pieces-in-svg-format).
+The original bytes, retrieval date, license link, and SHA-256 checksums live
+beside the assets under `crates/libchess-board/assets/cc0-silhouette`.
 
 ## History, exports, and post-game analysis
 

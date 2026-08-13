@@ -182,22 +182,37 @@ public final class LibChessStore: ObservableObject {
         connectedProvider?.botGameOptions
     }
 
-    public func selectBoardPresentation(provider: String, theme: String) {
+    public func selectBoardPresentation(
+        provider: String,
+        boardTheme: String,
+        pieceTheme: String
+    ) {
         guard boardProviders.contains(where: {
-            $0.id == provider && $0.themes.contains(where: { $0.id == theme })
+            $0.id == provider
+                && $0.boardThemes.contains(where: { $0.id == boardTheme })
+                && $0.pieceThemes.contains(where: { $0.id == pieceTheme })
         }) else {
-            message = "The selected board theme is not advertised by LibChess."
+            message = "The selected board or piece theme is not advertised by LibChess."
             return
         }
 
         if boardPresentation?.provider == provider,
-           boardPresentation?.theme == theme
+           boardPresentation?.boardTheme == boardTheme,
+           boardPresentation?.pieceTheme == pieceTheme
         {
-            persistBoardPresentation(provider: provider, theme: theme)
+            persistBoardPresentation(
+                provider: provider,
+                boardTheme: boardTheme,
+                pieceTheme: pieceTheme
+            )
             return
         }
 
-        let command = LoadBoardPresentationCommand(provider: provider, theme: theme)
+        let command = LoadBoardPresentationCommand(
+            provider: provider,
+            boardTheme: boardTheme,
+            pieceTheme: pieceTheme
+        )
         pendingBoardPresentationRequestID = command.requestID
         isLoadingBoardPresentation = true
         if !send(command) {
@@ -701,19 +716,30 @@ public final class LibChessStore: ObservableObject {
         let defaults = UserDefaults.standard
         let provider = defaults.string(forKey: BoardPreferenceKey.provider)
             ?? boardPresentation.provider
-        let theme = defaults.string(forKey: BoardPreferenceKey.theme)
-            ?? boardPresentation.theme
+        let boardTheme = defaults.string(forKey: BoardPreferenceKey.boardTheme)
+            ?? boardPresentation.boardTheme
+        let pieceTheme = defaults.string(forKey: BoardPreferenceKey.pieceTheme)
+            ?? boardPresentation.pieceTheme
         let preferenceIsValid = boardProviders.contains(where: {
-            $0.id == provider && $0.themes.contains(where: { $0.id == theme })
+            $0.id == provider
+                && $0.boardThemes.contains(where: { $0.id == boardTheme })
+                && $0.pieceThemes.contains(where: { $0.id == pieceTheme })
         })
         if preferenceIsValid,
-           (provider != boardPresentation.provider || theme != boardPresentation.theme)
+           (provider != boardPresentation.provider
+               || boardTheme != boardPresentation.boardTheme
+               || pieceTheme != boardPresentation.pieceTheme)
         {
-            selectBoardPresentation(provider: provider, theme: theme)
+            selectBoardPresentation(
+                provider: provider,
+                boardTheme: boardTheme,
+                pieceTheme: pieceTheme
+            )
         } else {
             persistBoardPresentation(
                 provider: boardPresentation.provider,
-                theme: boardPresentation.theme
+                boardTheme: boardPresentation.boardTheme,
+                pieceTheme: boardPresentation.pieceTheme
             )
         }
     }
@@ -724,7 +750,12 @@ public final class LibChessStore: ObservableObject {
               let presentation = event.boardPresentation,
               boardProviders.contains(where: {
                   $0.id == presentation.provider
-                      && $0.themes.contains(where: { $0.id == presentation.theme })
+                      && $0.boardThemes.contains(where: {
+                          $0.id == presentation.boardTheme
+                      })
+                      && $0.pieceThemes.contains(where: {
+                          $0.id == presentation.pieceTheme
+                      })
               })
         else {
             return
@@ -734,13 +765,22 @@ public final class LibChessStore: ObservableObject {
         isLoadingBoardPresentation = false
         boardPresentation = presentation
         reconcileBoardZoomPreference(with: presentation)
-        persistBoardPresentation(provider: presentation.provider, theme: presentation.theme)
+        persistBoardPresentation(
+            provider: presentation.provider,
+            boardTheme: presentation.boardTheme,
+            pieceTheme: presentation.pieceTheme
+        )
     }
 
-    private func persistBoardPresentation(provider: String, theme: String) {
+    private func persistBoardPresentation(
+        provider: String,
+        boardTheme: String,
+        pieceTheme: String
+    ) {
         let defaults = UserDefaults.standard
         defaults.set(provider, forKey: BoardPreferenceKey.provider)
-        defaults.set(theme, forKey: BoardPreferenceKey.theme)
+        defaults.set(boardTheme, forKey: BoardPreferenceKey.boardTheme)
+        defaults.set(pieceTheme, forKey: BoardPreferenceKey.pieceTheme)
     }
 
     private func reconcileBoardZoomPreference(with presentation: BoardPresentation) {
@@ -1540,14 +1580,16 @@ struct LoadBoardPresentationCommand: Encodable {
     let requestID = UUID().uuidString
     let type = "load_board_presentation"
     let provider: String
-    let theme: String
+    let boardTheme: String
+    let pieceTheme: String
 
     private enum CodingKeys: String, CodingKey {
         case version
         case requestID = "request_id"
         case type
         case provider
-        case theme
+        case boardTheme = "board_theme"
+        case pieceTheme = "piece_theme"
     }
 }
 

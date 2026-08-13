@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use libchess_board::BuiltinBoardProvider;
 pub use libchess_core::{
     AccessToken, Account, BoardAnimationCurve, BoardAnimationRule, BoardAsset, BoardAssetKind,
-    BoardAssets, BoardMetrics, BoardMotion, BoardPalette, BoardPiece, BoardPieceAsset,
-    BoardPresentation, BoardProvider, BoardProviderDescriptor, BoardProviderId, BoardState,
+    BoardMetrics, BoardMotion, BoardPalette, BoardPiece, BoardPieceAsset, BoardPresentation,
+    BoardProvider, BoardProviderDescriptor, BoardProviderId, BoardState, BoardStyle,
     BoardThemeDescriptor, BoardThemeId, BoardZoomPreset, BoardZoomPresetId, BoardZoomRules,
     BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId,
     ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference, ErrorKind,
@@ -15,7 +15,8 @@ pub use libchess_core::{
     GameVariant, GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame,
     LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
     LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
-    MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceRole,
+    MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceAssets,
+    PieceMetrics, PiecePalette, PieceRole, PieceStyle, PieceThemeDescriptor, PieceThemeId,
     PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
     PocketPiece, ProviderDescriptor, ProviderId, RgbaColor, ensure_engine_allowed,
 };
@@ -116,17 +117,23 @@ impl Client {
         let provider = self.board_providers.get(provider_id).ok_or_else(|| {
             LibChessError::unsupported("the default board presentation provider is unavailable")
         })?;
-        let theme = provider.descriptor().default_theme.clone();
-        self.board_presentation(provider_id.as_str(), theme.as_str())
+        let descriptor = provider.descriptor();
+        self.board_presentation(
+            provider_id.as_str(),
+            descriptor.default_board_theme.as_str(),
+            descriptor.default_piece_theme.as_str(),
+        )
     }
 
     pub fn board_presentation(
         &self,
         provider: &str,
-        theme: &str,
+        board_theme: &str,
+        piece_theme: &str,
     ) -> Result<BoardPresentation, LibChessError> {
         let provider_id = BoardProviderId::new(provider)?;
-        let theme_id = BoardThemeId::new(theme)?;
+        let board_theme_id = BoardThemeId::new(board_theme)?;
+        let piece_theme_id = PieceThemeId::new(piece_theme)?;
         let board_provider = self.board_providers.get(&provider_id).ok_or_else(|| {
             LibChessError::unsupported(format!(
                 "board presentation provider '{provider}' is not installed"
@@ -134,16 +141,32 @@ impl Client {
         })?;
         let descriptor = board_provider.descriptor();
         descriptor.validate()?;
-        if !descriptor.themes.iter().any(|item| item.id == theme_id) {
+        if !descriptor
+            .board_themes
+            .iter()
+            .any(|item| item.id == board_theme_id)
+        {
             return Err(LibChessError::unsupported(format!(
-                "board theme '{theme}' is not installed for provider '{provider}'"
+                "board theme '{board_theme}' is not installed for provider '{provider}'"
+            )));
+        }
+        if !descriptor
+            .piece_themes
+            .iter()
+            .any(|item| item.id == piece_theme_id)
+        {
+            return Err(LibChessError::unsupported(format!(
+                "piece theme '{piece_theme}' is not installed for provider '{provider}'"
             )));
         }
 
-        let presentation = board_provider.presentation(&theme_id)?;
-        if presentation.provider != provider_id || presentation.theme != theme_id {
+        let presentation = board_provider.presentation(&board_theme_id, &piece_theme_id)?;
+        if presentation.provider != provider_id
+            || presentation.board_theme != board_theme_id
+            || presentation.piece_theme != piece_theme_id
+        {
             return Err(LibChessError::invalid_input(
-                "a board provider returned a presentation for a different provider or theme",
+                "a board provider returned a presentation for different provider or theme identifiers",
             ));
         }
         presentation.validate()?;
@@ -362,12 +385,14 @@ mod tests {
         let board_providers = client.board_providers();
         assert_eq!(board_providers.len(), 1);
         assert_eq!(board_providers[0].id.as_str(), "libchess");
-        assert_eq!(board_providers[0].themes.len(), 2);
+        assert_eq!(board_providers[0].board_themes.len(), 6);
+        assert_eq!(board_providers[0].piece_themes.len(), 4);
         let presentation = client
             .default_board_presentation()
             .expect("default board presentation");
-        assert_eq!(presentation.theme.as_str(), "classic");
-        assert_eq!(presentation.assets.pieces.len(), 12);
+        assert_eq!(presentation.board_theme.as_str(), "classic");
+        assert_eq!(presentation.piece_theme.as_str(), "system-solid");
+        assert_eq!(presentation.pieces.assets.pieces.len(), 12);
     }
 
     #[test]
