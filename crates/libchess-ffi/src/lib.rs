@@ -4,12 +4,14 @@ use std::{
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr, slice,
+    sync::Arc,
     thread::{self, JoinHandle},
 };
 
 use libchess::{
     AccessToken, Account, BotGame, BotGameRequest, BotGameTimeControl, Client, ColorPreference,
-    LibChessError, OAuthConnection, ProviderDescriptor,
+    GameId, LibChessError, LiveChatMessage, LiveGame, LiveGameAction, LiveGameEvent,
+    LiveGameRequest, MoveSubmission, OAuthConnection, PlayerColor, ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -34,6 +36,7 @@ pub struct LibChessClient {
     worker: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone)]
 struct EventSink {
     callback: LibChessEventCallback,
     // Raw pointers are not Send. Treating the opaque address as an integer
@@ -102,7 +105,22 @@ enum Command {
     },
     Disconnect,
     ListProviders,
+    PerformGameAction {
+        game_id: String,
+        action: LiveGameAction,
+    },
+    PlayMove {
+        game_id: String,
+        move_id: String,
+        #[serde(default)]
+        offer_draw: bool,
+    },
     RefreshAccount,
+    StartLiveGame {
+        game_id: String,
+        player_color: PlayerColor,
+    },
+    StopLiveGame,
 }
 
 #[derive(Serialize)]
@@ -130,6 +148,23 @@ enum Event {
     },
     Error {
         error: LibChessError,
+    },
+    GameActionCompleted {
+        game_id: String,
+        action: LiveGameAction,
+    },
+    LiveGameChat {
+        chat: LiveChatMessage,
+    },
+    LiveGameStreamEnded {
+        game_id: String,
+    },
+    LiveGameUpdated {
+        live_game: Box<LiveGame>,
+    },
+    MoveSubmitted {
+        game_id: String,
+        move_id: String,
     },
     OauthAuthorizationRequired {
         provider: String,
@@ -171,6 +206,7 @@ impl Serialize for SerializableAccessToken {
 
 async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: EventSink) {
     let mut client = Client::new();
+    let mut live_task: Option<tokio::task::JoinHandle<()>> = None;
     sink.emit(
         None,
         Event::Ready {
@@ -180,7 +216,10 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
 
     while let Some(message) = receiver.recv().await {
         match message {
-            WorkerMessage::Shutdown => break,
+            WorkerMessage::Shutdown => {
+                stop_live_task(&mut live_task).await;
+                break;
+            }
             WorkerMessage::Command(envelope) => {
                 let request_id = envelope.request_id.as_deref();
                 match envelope.command {
@@ -346,6 +385,72 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             Err(error) => sink.emit(request_id, Event::Error { error }),
                         }
                     }
+                    Command::StartLiveGame {
+                        game_id,
+                        player_color,
+                    } => {
+                        stop_live_task(&mut live_task).await;
+                        let request = LiveGameRequest::new(game_id.clone(), player_color);
+                        match (request, client.connected_backend()) {
+                            (Ok(request), Ok(backend)) => {
+                                let event_sink = sink.clone();
+                                let stream_sink = sink.clone();
+                                let stream_request_id = envelope.request_id.clone();
+                                let ended_game_id = game_id;
+                                live_task = Some(tokio::spawn(async move {
+                                    let events = Arc::new(move |event| match event {
+                                        LiveGameEvent::GameUpdated { game } => event_sink
+                                            .emit(None, Event::LiveGameUpdated { live_game: game }),
+                                        LiveGameEvent::ChatMessage { message } => event_sink
+                                            .emit(None, Event::LiveGameChat { chat: message }),
+                                    });
+                                    match backend.watch_live_game(request, events).await {
+                                        Ok(()) => stream_sink.emit(
+                                            stream_request_id.as_deref(),
+                                            Event::LiveGameStreamEnded {
+                                                game_id: ended_game_id,
+                                            },
+                                        ),
+                                        Err(error) => stream_sink.emit(
+                                            stream_request_id.as_deref(),
+                                            Event::Error { error },
+                                        ),
+                                    }
+                                }));
+                            }
+                            (Err(error), _) | (_, Err(error)) => {
+                                sink.emit(request_id, Event::Error { error });
+                            }
+                        }
+                    }
+                    Command::StopLiveGame => {
+                        stop_live_task(&mut live_task).await;
+                    }
+                    Command::PlayMove {
+                        game_id,
+                        move_id,
+                        offer_draw,
+                    } => match MoveSubmission::new(&game_id, &move_id, offer_draw) {
+                        Ok(submission) => match client.play_move(submission).await {
+                            Ok(()) => {
+                                sink.emit(request_id, Event::MoveSubmitted { game_id, move_id })
+                            }
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        },
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
+                    Command::PerformGameAction { game_id, action } => match GameId::new(&game_id) {
+                        Ok(valid_game_id) => {
+                            match client.perform_game_action(valid_game_id, action).await {
+                                Ok(()) => sink.emit(
+                                    request_id,
+                                    Event::GameActionCompleted { game_id, action },
+                                ),
+                                Err(error) => sink.emit(request_id, Event::Error { error }),
+                            }
+                        }
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
                     Command::RefreshAccount => match client.refresh_account().await {
                         Ok(account) => {
                             sink.emit(request_id, Event::AccountUpdated { account });
@@ -353,6 +458,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         Err(error) => sink.emit(request_id, Event::Error { error }),
                     },
                     Command::Disconnect => {
+                        stop_live_task(&mut live_task).await;
                         client.disconnect();
                         sink.emit(
                             request_id,
@@ -365,6 +471,15 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                 }
             }
         }
+    }
+
+    stop_live_task(&mut live_task).await;
+}
+
+async fn stop_live_task(task: &mut Option<tokio::task::JoinHandle<()>>) {
+    if let Some(task) = task.take() {
+        task.abort();
+        let _ = task.await;
     }
 }
 
@@ -583,6 +698,46 @@ mod tests {
         assert!(error.contains(r#""type":"error""#));
         assert!(error.contains(r#""kind":"invalid_input""#));
         assert!(error.contains("bot opponent identifiers"));
+
+        // SAFETY: This is the only destroy and no sends run concurrently.
+        unsafe { libchess_client_destroy(client) };
+        drop(sender);
+    }
+
+    #[test]
+    fn accepts_live_game_commands_and_validates_their_boundaries() {
+        let (sender, receiver) = std_mpsc::channel::<String>();
+        let sender = Box::new(sender);
+        let context = (&*sender as *const std_mpsc::Sender<String>)
+            .cast_mut()
+            .cast();
+        // SAFETY: The boxed sender outlives the client and callback.
+        let client = unsafe { libchess_client_create(Some(collect_event), context) };
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ready event");
+
+        let start = br#"{"version":1,"request_id":"live-1","type":"start_live_game","game_id":"v8BRXYtM","player_color":"white"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, start.as_ptr(), start.len()) },
+            SEND_OK
+        );
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("connection boundary error");
+        assert!(error.contains(r#""request_id":"live-1""#));
+        assert!(error.contains("no provider is connected"));
+
+        let invalid_move = br#"{"version":1,"request_id":"move-1","type":"play_move","game_id":"v8BRXYtM","move_id":"e2/e4"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, invalid_move.as_ptr(), invalid_move.len()) },
+            SEND_OK
+        );
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("move validation error");
+        assert!(error.contains(r#""request_id":"move-1""#));
+        assert!(error.contains("compact ASCII move notation"));
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

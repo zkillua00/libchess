@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/libchess-core",
+    "crates/libchess-rules",
     "crates/libchess-lichess",
     "crates/libchess",
     "crates/libchess-ffi",
@@ -17,10 +18,12 @@ async-trait = "0.1"
 base64 = "0.22"
 getrandom = "0.4"
 libchess-core = { path = "crates/libchess-core" }
+libchess-rules = { path = "crates/libchess-rules" }
 libchess-lichess = { path = "crates/libchess-lichess" }
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "native-tls-no-alpn"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shakmaty = { version = "0.30.1", default-features = false, features = ["std", "variant"] }
 sha2 = "0.10"
 subtle = "2"
 thiserror = "2"

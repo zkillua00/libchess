@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroize;
 
+mod live;
+
+pub use live::*;
+
 /// Stable identifier used by configuration and the frontend protocol.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -505,6 +509,35 @@ pub trait PlatformBackend: Send + Sync {
     async fn create_bot_game(&self, _request: BotGameRequest) -> Result<BotGame, LibChessError> {
         Err(LibChessError::unsupported(format!(
             "provider '{}' does not support bot games",
+            self.descriptor().id
+        )))
+    }
+
+    async fn watch_live_game(
+        &self,
+        _request: LiveGameRequest,
+        _events: LiveGameEventSink,
+    ) -> Result<(), LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not support live games",
+            self.descriptor().id
+        )))
+    }
+
+    async fn play_move(&self, _submission: MoveSubmission) -> Result<(), LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not support live moves",
+            self.descriptor().id
+        )))
+    }
+
+    async fn perform_game_action(
+        &self,
+        _game_id: GameId,
+        _action: LiveGameAction,
+    ) -> Result<(), LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not support live game actions",
             self.descriptor().id
         )))
     }

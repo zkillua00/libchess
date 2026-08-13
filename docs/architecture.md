@@ -61,9 +61,10 @@ the common kebab-case variant identifiers to Lichess's API keys. A future
 Chess.com adapter can advertise named personalities and its own supported
 settings without changing the common models or native frontends.
 
-Provider descriptors also carry their trusted web origin. The current slice
-uses it to validate the returned game URL before a native frontend opens it,
-without hard-coding `lichess.org` into the shared UI.
+Provider descriptors also carry their trusted web origin. The native wrapper
+validates every returned game URL against that origin before presenting an
+optional provider-site link, without hard-coding `lichess.org` into the shared
+UI.
 
 The shared request contains only normalized game choices: opponent and variant
 identifiers, one tagged time control (`clock`, `correspondence`, or
@@ -84,8 +85,13 @@ active PlatformBackend
 provider bot-game endpoint
         |
         v
-bot_game_created event ---> native board (future)
-                       `--> provider game URL (current slice)
+bot_game_created event
+        |
+        v
+start_live_game command
+        |
+        +--> live_game_updated events ---> native board
+        `--> play_move / perform_game_action commands
 ```
 
 Human challenges, matchmaking, and local engine games are intentionally
@@ -98,6 +104,20 @@ Engine analysis is rejected whenever the active context is a live online game,
 rated or casual. This rule is enforced in `libchess-core`, below every native
 frontend, so a UI bug cannot accidentally enable assistance. Post-game review,
 offline analysis, and local computer games are separate contexts.
+
+## Rules and live-game state
+
+`libchess-rules` reconstructs a position from its initial FEN plus the
+authoritative move list. It uses the same normalized output for Standard,
+Chess960, Crazyhouse, Antichess, Atomic, Horde, King of the Hill, Racing Kings,
+and Three-check. Each snapshot contains pieces, pockets, side to move, check
+state, move history, the last move, and provider-ready legal move identifiers.
+Castling keeps a human board destination while retaining the provider's UCI
+identifier; Crazyhouse drops have no source square.
+
+The frontend can therefore render and submit only moves advertised in the
+snapshot. It does not embed a second chess rules implementation, and a future
+Chess.com adapter can reuse the rules crate and the same live-game contract.
 
 ## Credentials
 
@@ -150,6 +170,10 @@ handle. Native code sends commands without blocking its UI thread. Rust emits
 immutable event snapshots through a callback; each wrapper copies the bytes and
 marshals decoding onto its UI executor.
 
-Lichess NDJSON streams, clock projection, reconnection, and move submission all
-remain inside the Lichess adapter and application service. The frontend receives
-normalized game snapshots rather than raw Lichess payloads.
+Lichess exposes the Board API game feed as authenticated streaming HTTP with
+NDJSON rather than WebSockets. The adapter owns that wire protocol, validates
+bounded event lines, reconstructs every authoritative position, and maps
+move/game-action commands to the Board API. The frontend receives normalized
+game snapshots rather than raw Lichess payloads. It projects clocks between
+snapshots and can restart an interrupted stream without discarding the last
+valid board.

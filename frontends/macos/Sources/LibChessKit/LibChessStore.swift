@@ -10,14 +10,23 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var savedCredentialAvailable = false
     @Published public private(set) var authorizationURL: URL?
     @Published public private(set) var createdBotGame: BotGame?
-    @Published public private(set) var gameURLToOpen: URL?
     @Published public private(set) var isCreatingBotGame = false
+    @Published public private(set) var liveGame: LiveGame?
+    @Published public private(set) var liveGameReceivedAt: Date?
+    @Published public private(set) var liveChatMessages: [LiveChatMessage] = []
+    @Published public private(set) var isLoadingLiveGame = false
+    @Published public private(set) var isLiveStreamConnected = false
+    @Published public private(set) var isSubmittingMove = false
+    @Published public private(set) var isPerformingGameAction = false
     @Published public var message: String?
 
     private let decoder: JSONDecoder
     private let tokenStore = KeychainTokenStore()
     private var nativeClient: NativeClient?
     private var pendingBotGameRequestID: String?
+    private var pendingLiveGameRequestID: String?
+    private var pendingMoveRequestID: String?
+    private var pendingGameActionRequestID: String?
 
     public init() {
         decoder = JSONDecoder()
@@ -136,7 +145,7 @@ public final class LibChessStore: ObservableObject {
 
         message = nil
         createdBotGame = nil
-        gameURLToOpen = nil
+        leaveLiveGame()
         isCreatingBotGame = true
         let command = CreateBotGameCommand(
             opponentID: opponentID,
@@ -153,8 +162,69 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    public func didOpenCreatedGame() {
-        gameURLToOpen = nil
+    public func playMove(_ move: LegalMove, offerDraw: Bool = false) {
+        guard let game = liveGame,
+              game.state.isPlayable,
+              game.state.board.turn == game.playerColor,
+              game.state.board.legalMoves.contains(move),
+              !isSubmittingMove,
+              !isPerformingGameAction
+        else {
+            return
+        }
+        let command = PlayMoveCommand(
+            gameID: game.id,
+            moveID: move.id,
+            offerDraw: offerDraw
+        )
+        pendingMoveRequestID = command.requestID
+        isSubmittingMove = true
+        message = nil
+        if !send(command) {
+            pendingMoveRequestID = nil
+            isSubmittingMove = false
+        }
+    }
+
+    public func performGameAction(_ action: LiveGameAction) {
+        guard let game = liveGame,
+              game.state.isPlayable,
+              !isSubmittingMove,
+              !isPerformingGameAction
+        else {
+            return
+        }
+        let command = PerformGameActionCommand(gameID: game.id, action: action)
+        pendingGameActionRequestID = command.requestID
+        isPerformingGameAction = true
+        message = nil
+        if !send(command) {
+            pendingGameActionRequestID = nil
+            isPerformingGameAction = false
+        }
+    }
+
+    public func reconnectLiveGame() {
+        guard let createdBotGame, let liveGame, liveGame.state.isPlayable else {
+            return
+        }
+        startLiveGame(createdBotGame, preservingSnapshot: true)
+    }
+
+    public func leaveLiveGame() {
+        if liveGame != nil || isLoadingLiveGame {
+            send(BasicCommand(type: "stop_live_game"))
+        }
+        liveGame = nil
+        liveGameReceivedAt = nil
+        liveChatMessages = []
+        isLoadingLiveGame = false
+        isLiveStreamConnected = false
+        isSubmittingMove = false
+        isPerformingGameAction = false
+        pendingLiveGameRequestID = nil
+        pendingMoveRequestID = nil
+        pendingGameActionRequestID = nil
     }
 
     public func disconnect(forgetCredential: Bool = false) {
@@ -162,9 +232,18 @@ public final class LibChessStore: ObservableObject {
         account = nil
         authorizationURL = nil
         createdBotGame = nil
-        gameURLToOpen = nil
+        liveGame = nil
+        liveGameReceivedAt = nil
+        liveChatMessages = []
+        isLoadingLiveGame = false
+        isLiveStreamConnected = false
+        isSubmittingMove = false
+        isPerformingGameAction = false
         isCreatingBotGame = false
         pendingBotGameRequestID = nil
+        pendingLiveGameRequestID = nil
+        pendingMoveRequestID = nil
+        pendingGameActionRequestID = nil
 
         guard forgetCredential else {
             return
@@ -220,10 +299,43 @@ public final class LibChessStore: ObservableObject {
                 persistOAuthCredential(event)
             case "bot_game_created":
                 receiveBotGame(event.game, requestID: event.requestID)
+            case "live_game_updated":
+                receiveLiveGame(event.liveGame)
+            case "live_game_chat":
+                receiveChat(event.chat)
+            case "live_game_stream_ended":
+                if event.gameID == liveGame?.id || event.gameID == createdBotGame?.id {
+                    isLoadingLiveGame = false
+                    isLiveStreamConnected = false
+                    pendingLiveGameRequestID = nil
+                }
+            case "move_submitted":
+                if event.requestID == pendingMoveRequestID {
+                    pendingMoveRequestID = nil
+                    isSubmittingMove = false
+                }
+            case "game_action_completed":
+                if event.requestID == pendingGameActionRequestID {
+                    pendingGameActionRequestID = nil
+                    isPerformingGameAction = false
+                }
             case "error":
                 if event.requestID == pendingBotGameRequestID {
                     isCreatingBotGame = false
                     pendingBotGameRequestID = nil
+                }
+                if event.requestID == pendingLiveGameRequestID {
+                    isLoadingLiveGame = false
+                    isLiveStreamConnected = false
+                    pendingLiveGameRequestID = nil
+                }
+                if event.requestID == pendingMoveRequestID {
+                    isSubmittingMove = false
+                    pendingMoveRequestID = nil
+                }
+                if event.requestID == pendingGameActionRequestID {
+                    isPerformingGameAction = false
+                    pendingGameActionRequestID = nil
                 }
                 message = event.error?.message ?? "LibChess reported an unknown error."
             default:
@@ -302,7 +414,85 @@ public final class LibChessStore: ObservableObject {
 
         isCreatingBotGame = false
         createdBotGame = game
-        gameURLToOpen = url
+        startLiveGame(game, preservingSnapshot: false)
+    }
+
+    private func startLiveGame(_ game: BotGame, preservingSnapshot: Bool) {
+        let command = StartLiveGameCommand(
+            gameID: game.id,
+            playerColor: game.playerColor
+        )
+        if !preservingSnapshot {
+            liveGame = nil
+            liveGameReceivedAt = nil
+            liveChatMessages = []
+        }
+        isLoadingLiveGame = true
+        isLiveStreamConnected = false
+        pendingLiveGameRequestID = command.requestID
+        if !send(command) {
+            isLoadingLiveGame = false
+            pendingLiveGameRequestID = nil
+        }
+    }
+
+    private func receiveLiveGame(_ game: LiveGame?) {
+        guard let game,
+              let createdBotGame,
+              game.id == createdBotGame.id,
+              game.provider == createdBotGame.provider,
+              game.playerColor == createdBotGame.playerColor,
+              liveGameIsValid(game)
+        else {
+            isLoadingLiveGame = false
+            message = "LibChess returned an invalid live-game position."
+            return
+        }
+        liveGame = game
+        liveGameReceivedAt = Date()
+        isLoadingLiveGame = false
+        isLiveStreamConnected = true
+        if !game.state.isPlayable {
+            isSubmittingMove = false
+            isPerformingGameAction = false
+            pendingMoveRequestID = nil
+            pendingGameActionRequestID = nil
+        }
+    }
+
+    private func receiveChat(_ chat: LiveChatMessage?) {
+        guard let chat, chat.gameID == liveGame?.id else {
+            return
+        }
+        liveChatMessages.append(chat)
+        if liveChatMessages.count > 100 {
+            liveChatMessages.removeFirst(liveChatMessages.count - 100)
+        }
+    }
+
+    private func liveGameIsValid(_ game: LiveGame) -> Bool {
+        let pieces = game.state.board.pieces
+        let occupiedSquares = Set(pieces.map(\.square))
+        guard occupiedSquares.count == pieces.count,
+              pieces.allSatisfy({ Self.isBoardSquare($0.square) }),
+              game.state.board.legalMoves.allSatisfy({ move in
+                  Self.isBoardSquare(move.to)
+                      && (move.from.map(Self.isBoardSquare) ?? true)
+                      && !move.id.isEmpty
+                      && move.id.utf8.count <= 16
+              })
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func isBoardSquare(_ value: String) -> Bool {
+        guard value.utf8.count == 2 else {
+            return false
+        }
+        let bytes = Array(value.utf8)
+        return (97 ... 104).contains(bytes[0]) && (49 ... 56).contains(bytes[1])
     }
 
     private func supports(_ timeControl: BotGameTimeControl, using options: BotGameOptions) -> Bool {
@@ -445,5 +635,55 @@ struct CreateBotGameCommand: Encodable {
         case timeControl = "time_control"
         case color
         case initialFEN = "initial_fen"
+    }
+}
+
+struct StartLiveGameCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "start_live_game"
+    let gameID: String
+    let playerColor: PlayerColor
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
+        case playerColor = "player_color"
+    }
+}
+
+struct PlayMoveCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "play_move"
+    let gameID: String
+    let moveID: String
+    let offerDraw: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
+        case moveID = "move_id"
+        case offerDraw = "offer_draw"
+    }
+}
+
+struct PerformGameActionCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "perform_game_action"
+    let gameID: String
+    let action: LiveGameAction
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
+        case action
     }
 }

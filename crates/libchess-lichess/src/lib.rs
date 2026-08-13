@@ -21,6 +21,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod live;
+
 const DEFAULT_BASE_URL: &str = "https://lichess.org/";
 const OAUTH_SESSION_TTL: Duration = Duration::from_secs(10 * 60);
 const OAUTH_SCOPES: [&str; 1] = ["board:play"];
@@ -65,7 +67,9 @@ impl LichessFactory {
         let capabilities = BTreeSet::from([
             PlatformCapability::Account,
             PlatformCapability::BotGames,
+            PlatformCapability::LiveGames,
             PlatformCapability::OAuthPkce,
+            PlatformCapability::RealtimeEvents,
         ]);
         let bot_opponents = (1_u8..=8)
             .map(|level| BotOpponent::new(format!("level-{level}"), format!("Level {level}")))
@@ -567,6 +571,29 @@ impl PlatformBackend for LichessBackend {
             time_control: request.time_control,
             initial_fen: request.initial_fen,
         })
+    }
+
+    async fn watch_live_game(
+        &self,
+        request: libchess_core::LiveGameRequest,
+        events: libchess_core::LiveGameEventSink,
+    ) -> Result<(), LibChessError> {
+        live::watch(self, request, events).await
+    }
+
+    async fn play_move(
+        &self,
+        submission: libchess_core::MoveSubmission,
+    ) -> Result<(), LibChessError> {
+        live::play_move(self, submission).await
+    }
+
+    async fn perform_game_action(
+        &self,
+        game_id: libchess_core::GameId,
+        action: libchess_core::LiveGameAction,
+    ) -> Result<(), LibChessError> {
+        live::perform_action(self, game_id, action).await
     }
 }
 

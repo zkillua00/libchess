@@ -12,6 +12,7 @@ without changing the frontend contract.
 ## Repository layout
 
 - `crates/libchess-core`: domain types, provider ports, and safety policy
+- `crates/libchess-rules`: provider-neutral legal positions and move generation
 - `crates/libchess-lichess`: Lichess HTTP adapter
 - `crates/libchess`: provider registry and application service
 - `crates/libchess-ffi`: small, versioned C ABI for native frontends
@@ -75,10 +76,18 @@ levels and the complete AI-challenge option set:
 - optional X-FEN positions for Standard and Chess960, and required X-FEN for
   From Position
 
-Choose the settings, then select **Create and Open**. Lichess AI games are
-always casual, so rated play is not a missing frontend option. The current
-slice opens the resulting game on Lichess; native board play and move streaming
-are the next layer.
+Choose the settings, then select **Create Game**. Lichess AI games are always
+casual, so rated play is not a missing frontend option. The app enters its
+native board as soon as the game is created. It supports legal click-to-move,
+promotions, Chess960 castling, Crazyhouse pockets and drops, clocks, move
+history, draw and takeback offers, abort, resign, and disconnect recovery.
+
+Lichess live play is an authenticated streaming HTTP connection carrying
+newline-delimited JSON, not a WebSocket. The provider adapter consumes that
+transport and emits provider-neutral immutable game snapshots through the C
+ABI. The SwiftUI frontend never parses Lichess payloads or decides move
+legality. Moves and game actions travel back through independent commands so
+the live stream remains open while the player acts.
 
 The frontend sends opaque opponent and variant identifiers plus a normalized
 time-control value through the shared C ABI. It does not encode Lichess's
@@ -86,4 +95,6 @@ numeric levels, variant keys, ranges, or correspondence intervals. This leaves
 a future Chess.com adapter free to advertise named bot personalities and a
 different supported option set through the same contract.
 
-No license has been selected yet. Add one before publishing the repository.
+No license has been selected yet. `libchess-rules` currently depends on
+Shakmaty, which is distributed under GPL-3.0-or-later, so choose a compatible
+project/distribution license or replace that dependency before publishing.

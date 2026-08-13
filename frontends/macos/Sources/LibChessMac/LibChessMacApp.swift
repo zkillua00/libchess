@@ -26,18 +26,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         application.mainMenu = makeMainMenu(for: application)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "LibChess"
-        window.contentMinSize = NSSize(width: 820, height: 560)
+        window.contentMinSize = NSSize(width: 920, height: 640)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(
             rootView: ContentView()
                 .environmentObject(store)
-                .frame(minWidth: 820, minHeight: 560)
+                .frame(minWidth: 920, minHeight: 640)
         )
         window.center()
         window.makeKeyAndOrderFront(nil)

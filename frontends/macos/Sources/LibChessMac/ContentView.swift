@@ -30,12 +30,6 @@ struct ContentView: View {
                 openURL(authorizationURL)
             }
         }
-        .onChange(of: store.gameURLToOpen) { _, gameURL in
-            if let gameURL {
-                openURL(gameURL)
-                store.didOpenCreatedGame()
-            }
-        }
         .onOpenURL { callbackURL in
             _ = store.handleOpenURL(callbackURL)
         }
@@ -55,10 +49,19 @@ struct ContentView: View {
             }
 
             Section("Status") {
-                Label(statusTitle, systemImage: statusSymbol)
-                    .foregroundStyle(statusColor)
+                Label {
+                    Text(statusTitle)
+                        .foregroundStyle(statusColor)
+                } icon: {
+                    Image(systemName: statusSymbol)
+                        .symbolRenderingMode(.monochrome)
+                        .foregroundStyle(statusColor)
+                }
             }
         }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(.clear)
         .navigationTitle("LibChess")
     }
 
@@ -208,65 +211,92 @@ private struct ConnectedView: View {
     @EnvironmentObject private var store: LibChessStore
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 16) {
-                    Image(systemName: "person.crop.circle.badge.checkmark")
-                        .font(.system(size: 46))
-                        .foregroundStyle(.green)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.title)
+                    .foregroundStyle(.green)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(store.account?.displayName ?? "Connected")
-                            .font(.title.bold())
-                        Text("\(store.connectedProvider?.displayName ?? "Chess provider") account verified through LibChess")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Menu("Account") {
-                        Button("Refresh Account") {
-                            store.refreshAccount()
-                        }
-                        Button("Disconnect") {
-                            store.disconnect()
-                        }
-                        Divider()
-                        Button("Disconnect and Remove from This Mac", role: .destructive) {
-                            store.disconnect(forgetCredential: true)
-                        }
-                    }
-                }
-
-                if store.supportsBotGames {
-                    BotGameCreatorView()
-                } else {
-                    GroupBox("Play a bot") {
-                        Label(
-                            "The connected provider does not advertise bot game creation.",
-                            systemImage: "exclamationmark.triangle"
-                        )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.account?.displayName ?? "Connected")
+                        .font(.headline)
+                    Text(store.connectedProvider?.displayName ?? "Chess provider")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(8)
+                }
+
+                Spacer()
+
+                Menu("Account") {
+                    Button("Refresh Account") {
+                        store.refreshAccount()
                     }
-                }
-
-                if let game = store.createdBotGame {
-                    CreatedBotGameView(game: game)
-                }
-
-                GroupBox("Coming next") {
-                    Text("The native board, game-state stream, move submission, clocks, and game actions will attach to the created game in the next slices.")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .foregroundStyle(.secondary)
-                        .padding(6)
+                    Button("Disconnect") {
+                        store.disconnect()
+                    }
+                    Divider()
+                    Button("Disconnect and Remove from This Mac", role: .destructive) {
+                        store.disconnect(forgetCredential: true)
+                    }
                 }
             }
-            .padding(32)
-            .frame(maxWidth: 760)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .background(.bar)
+
+            Divider()
+
+            if let game = store.liveGame {
+                LiveGameplayView(game: game)
+            } else if store.isLoadingLiveGame {
+                LiveGameLoadingView()
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        if store.supportsBotGames {
+                            BotGameCreatorView()
+                        } else {
+                            GroupBox("Play a bot") {
+                                Label(
+                                    "The connected provider does not advertise bot game creation.",
+                                    systemImage: "exclamationmark.triangle"
+                                )
+                                .foregroundStyle(.secondary)
+                                .padding(8)
+                            }
+                        }
+                    }
+                    .padding(32)
+                    .frame(maxWidth: 760)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct LiveGameLoadingView: View {
+    @EnvironmentObject private var store: LibChessStore
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Preparing the native board…")
+                .font(.title2.bold())
+            if let game = store.createdBotGame {
+                Text("Connecting to \(game.opponent.displayName) · \(game.variant.displayName)")
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Cancel", role: .cancel) {
+                store.leaveLiveGame()
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -428,7 +458,7 @@ private struct BotGameCreatorView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Text(store.isCreatingBotGame ? "Creating…" : "Create and Open")
+                            Text(store.isCreatingBotGame ? "Creating…" : "Create Game")
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -652,34 +682,6 @@ private struct BotGameCreatorView: View {
         return "\(variant) · Casual · \(requestedTimeControl?.label ?? "Time control")"
     }
 
-}
-
-private struct CreatedBotGameView: View {
-    let game: BotGame
-
-    var body: some View {
-        GroupBox("Last created game") {
-            HStack(spacing: 14) {
-                Image(systemName: "checkerboard.rectangle")
-                    .font(.title)
-                    .foregroundStyle(.tint)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(game.opponent.displayName)
-                        .font(.headline)
-                    Text("\(game.variant.displayName) · \(game.playerColor.label) · \(game.timeControl.label)")
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                if let url = URL(string: game.url) {
-                    Link("Open Game", destination: url)
-                }
-            }
-            .padding(8)
-        }
-    }
 }
 
 private enum BotTimeControlMode: String, Hashable, Identifiable {

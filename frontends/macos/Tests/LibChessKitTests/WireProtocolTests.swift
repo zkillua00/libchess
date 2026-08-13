@@ -160,6 +160,44 @@ final class WireProtocolTests: XCTestCase {
         )
     }
 
+    func testDecodesLiveGameSnapshotWithBoardAndLegalMoves() throws {
+        let data = Data(
+            #"{"version":1,"type":"live_game_updated","live_game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"white","variant_id":"standard","variant_name":"Standard","rated":false,"speed":"rapid","clock":{"initial_millis":600000,"increment_millis":0},"white":{"id":"test-user","name":"TestUser","rating":1500,"provisional":false},"black":{"name":"Stockfish level 4","provisional":false,"ai_level":4},"state":{"board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e2","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"white","ply":0,"moves":[],"legal_moves":[{"id":"e2e4","from":"e2","to":"e4"}],"in_check":false},"status":"started","white_time_millis":600000,"black_time_millis":600000,"white_increment_millis":0,"black_increment_millis":0,"white_draw_offer":false,"black_draw_offer":false,"white_takeback_offer":false,"black_takeback_offer":false,"opponent_gone":false}}}"#.utf8
+        )
+
+        let event = try JSONDecoder().decode(WireEvent.self, from: data)
+        let game = try XCTUnwrap(event.liveGame)
+
+        XCTAssertEqual(game.id, "v8BRXYtM")
+        XCTAssertEqual(game.playerColor, .white)
+        XCTAssertEqual(game.black.aiLevel, 4)
+        XCTAssertEqual(game.clock?.initialMillis, 600_000)
+        XCTAssertEqual(game.state.board.pieces.count, 3)
+        XCTAssertEqual(game.state.board.legalMoves.first?.id, "e2e4")
+        XCTAssertEqual(game.state.board.legalMoves.first?.from, "e2")
+        XCTAssertEqual(game.state.board.legalMoves.first?.to, "e4")
+        XCTAssertTrue(game.state.isPlayable)
+    }
+
+    func testEncodesLiveGameplayCommandsWithExplicitWireKeys() throws {
+        let start = StartLiveGameCommand(gameID: "v8BRXYtM", playerColor: .black)
+        let move = PlayMoveCommand(gameID: "v8BRXYtM", moveID: "e7e8q", offerDraw: true)
+        let action = PerformGameActionCommand(gameID: "v8BRXYtM", action: .offerTakeback)
+
+        let startObject = try jsonObject(start)
+        let moveObject = try jsonObject(move)
+        let actionObject = try jsonObject(action)
+
+        XCTAssertEqual(startObject["type"] as? String, "start_live_game")
+        XCTAssertEqual(startObject["game_id"] as? String, "v8BRXYtM")
+        XCTAssertEqual(startObject["player_color"] as? String, "black")
+        XCTAssertEqual(moveObject["type"] as? String, "play_move")
+        XCTAssertEqual(moveObject["move_id"] as? String, "e7e8q")
+        XCTAssertEqual(moveObject["offer_draw"] as? Bool, true)
+        XCTAssertEqual(actionObject["type"] as? String, "perform_game_action")
+        XCTAssertEqual(actionObject["action"] as? String, "offer_takeback")
+    }
+
     private func jsonObject<Value: Encodable>(_ value: Value) throws -> [String: Any] {
         let data = try JSONEncoder().encode(value)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])

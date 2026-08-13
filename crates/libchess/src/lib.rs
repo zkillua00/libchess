@@ -3,12 +3,14 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 pub use libchess_core::{
-    AccessToken, Account, BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent,
-    BotOpponentId, ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference,
-    ErrorKind, GameVariant, GameVariantId, LibChessError, OAuthAuthorization,
-    OAuthClientConfiguration, OAuthToken, PlatformBackend, PlatformBackendFactory,
-    PlatformCapability, PlatformOAuthSession, PlayerColor, ProviderDescriptor, ProviderId,
-    ensure_engine_allowed,
+    AccessToken, Account, BoardPiece, BoardState, BotGame, BotGameOptions, BotGameRequest,
+    BotGameTimeControl, BotOpponent, BotOpponentId, ChessContext, ClockTimeControl,
+    ClockTimeControlOptions, ColorPreference, ErrorKind, GameId, GameStatus, GameVariant,
+    GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
+    LiveGameClock, LiveGameEvent, LiveGameEventSink, LiveGamePlayer, LiveGameRequest,
+    LiveGameState, MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken,
+    PieceRole, PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession,
+    PlayerColor, PocketPiece, ProviderDescriptor, ProviderId, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
 
@@ -163,6 +165,26 @@ impl Client {
         backend.create_bot_game(request).await
     }
 
+    pub fn connected_backend(&self) -> Result<Arc<dyn PlatformBackend>, LibChessError> {
+        self.backend
+            .clone()
+            .ok_or_else(|| LibChessError::invalid_input("no provider is connected"))
+    }
+
+    pub async fn play_move(&self, submission: MoveSubmission) -> Result<(), LibChessError> {
+        self.connected_backend()?.play_move(submission).await
+    }
+
+    pub async fn perform_game_action(
+        &self,
+        game_id: GameId,
+        action: LiveGameAction,
+    ) -> Result<(), LibChessError> {
+        self.connected_backend()?
+            .perform_game_action(game_id, action)
+            .await
+    }
+
     pub fn disconnect(&mut self) {
         self.oauth_session = None;
         self.account = None;
@@ -217,9 +239,14 @@ mod tests {
         assert_eq!(bot_options.correspondence_days.len(), 7);
         assert!(bot_options.unlimited);
         assert!(
-            !providers[0]
+            providers[0]
                 .capabilities
                 .contains(&PlatformCapability::LiveGames)
+        );
+        assert!(
+            providers[0]
+                .capabilities
+                .contains(&PlatformCapability::RealtimeEvents)
         );
     }
 

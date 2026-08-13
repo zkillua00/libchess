@@ -138,9 +138,199 @@ public enum GameColorPreference: String, Codable, CaseIterable, Hashable, Identi
     public var id: Self { self }
 }
 
-public enum PlayerColor: String, Codable, Sendable {
+public enum PlayerColor: String, Codable, CaseIterable, Hashable, Sendable {
     case white
     case black
+}
+
+public enum PieceRole: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
+    case pawn
+    case knight
+    case bishop
+    case rook
+    case queen
+    case king
+
+    public var id: Self { self }
+}
+
+public struct BoardPiece: Codable, Hashable, Identifiable, Sendable {
+    public let square: String
+    public let color: PlayerColor
+    public let role: PieceRole
+    public let promoted: Bool
+
+    public var id: String { square }
+}
+
+public struct PocketPiece: Codable, Hashable, Identifiable, Sendable {
+    public let color: PlayerColor
+    public let role: PieceRole
+    public let count: UInt8
+
+    public var id: String { "\(color.rawValue)-\(role.rawValue)" }
+}
+
+public struct LegalMove: Codable, Hashable, Identifiable, Sendable {
+    public let id: String
+    public let from: String?
+    public let to: String
+    public let promotion: PieceRole?
+    public let drop: PieceRole?
+}
+
+public struct BoardState: Codable, Equatable, Sendable {
+    public let pieces: [BoardPiece]
+    public let pockets: [PocketPiece]
+    public let turn: PlayerColor
+    public let ply: UInt32
+    public let moves: [String]
+    public let lastMove: LegalMove?
+    public let legalMoves: [LegalMove]
+    public let inCheck: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case pieces
+        case pockets
+        case turn
+        case ply
+        case moves
+        case lastMove = "last_move"
+        case legalMoves = "legal_moves"
+        case inCheck = "in_check"
+    }
+}
+
+public struct LiveGamePlayer: Codable, Equatable, Sendable {
+    public let id: String?
+    public let name: String
+    public let title: String?
+    public let rating: UInt32?
+    public let provisional: Bool
+    public let aiLevel: UInt8?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case title
+        case rating
+        case provisional
+        case aiLevel = "ai_level"
+    }
+
+    public var displayName: String {
+        if let title {
+            return "\(title) \(name)"
+        }
+        return name
+    }
+}
+
+public struct LiveGameState: Codable, Equatable, Sendable {
+    public let board: BoardState
+    public let status: String
+    public let winner: PlayerColor?
+    public let whiteTimeMillis: UInt64?
+    public let blackTimeMillis: UInt64?
+    public let whiteIncrementMillis: UInt64?
+    public let blackIncrementMillis: UInt64?
+    public let whiteDrawOffer: Bool
+    public let blackDrawOffer: Bool
+    public let whiteTakebackOffer: Bool
+    public let blackTakebackOffer: Bool
+    public let opponentGone: Bool
+    public let claimWinInSeconds: UInt32?
+
+    private enum CodingKeys: String, CodingKey {
+        case board
+        case status
+        case winner
+        case whiteTimeMillis = "white_time_millis"
+        case blackTimeMillis = "black_time_millis"
+        case whiteIncrementMillis = "white_increment_millis"
+        case blackIncrementMillis = "black_increment_millis"
+        case whiteDrawOffer = "white_draw_offer"
+        case blackDrawOffer = "black_draw_offer"
+        case whiteTakebackOffer = "white_takeback_offer"
+        case blackTakebackOffer = "black_takeback_offer"
+        case opponentGone = "opponent_gone"
+        case claimWinInSeconds = "claim_win_in_seconds"
+    }
+
+    public var isPlayable: Bool {
+        status == "created" || status == "started"
+    }
+}
+
+public struct LiveGameClock: Codable, Equatable, Sendable {
+    public let initialMillis: UInt64
+    public let incrementMillis: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case initialMillis = "initial_millis"
+        case incrementMillis = "increment_millis"
+    }
+}
+
+public struct LiveGame: Codable, Equatable, Identifiable, Sendable {
+    public let provider: String
+    public let id: String
+    public let url: String
+    public let playerColor: PlayerColor
+    public let variantID: String
+    public let variantName: String
+    public let rated: Bool
+    public let speed: String
+    public let clock: LiveGameClock?
+    public let daysPerTurn: UInt32?
+    public let white: LiveGamePlayer
+    public let black: LiveGamePlayer
+    public let state: LiveGameState
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case id
+        case url
+        case playerColor = "player_color"
+        case variantID = "variant_id"
+        case variantName = "variant_name"
+        case rated
+        case speed
+        case clock
+        case daysPerTurn = "days_per_turn"
+        case white
+        case black
+        case state
+    }
+}
+
+public struct LiveChatMessage: Codable, Equatable, Sendable {
+    public let gameID: String
+    public let room: String
+    public let username: String
+    public let text: String
+
+    private enum CodingKeys: String, CodingKey {
+        case gameID = "game_id"
+        case room
+        case username
+        case text
+    }
+}
+
+public enum LiveGameAction: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
+    case abort
+    case resign
+    case offerDraw = "offer_draw"
+    case acceptDraw = "accept_draw"
+    case declineDraw = "decline_draw"
+    case offerTakeback = "offer_takeback"
+    case acceptTakeback = "accept_takeback"
+    case declineTakeback = "decline_takeback"
+    case claimVictory = "claim_victory"
+    case claimDraw = "claim_draw"
+
+    public var id: Self { self }
 }
 
 public enum BotGameTimeControl: Codable, Equatable, Sendable {
@@ -243,6 +433,11 @@ struct WireEvent: Decodable, Sendable {
     let accessToken: String?
     let expiresInSeconds: UInt64?
     let game: BotGame?
+    let liveGame: LiveGame?
+    let chat: LiveChatMessage?
+    let gameID: String?
+    let moveID: String?
+    let action: LiveGameAction?
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -258,5 +453,10 @@ struct WireEvent: Decodable, Sendable {
         case accessToken = "access_token"
         case expiresInSeconds = "expires_in_seconds"
         case game
+        case liveGame = "live_game"
+        case chat
+        case gameID = "game_id"
+        case moveID = "move_id"
+        case action
     }
 }
