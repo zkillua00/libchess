@@ -4,6 +4,8 @@ import SwiftUI
 
 extension Notification.Name {
     static let showNewGame = Notification.Name("org.libchess.macos.show-new-game")
+    static let showGame = Notification.Name("org.libchess.macos.show-game")
+    static let showFloatingBoard = Notification.Name("org.libchess.macos.show-floating-board")
 }
 
 @main
@@ -21,11 +23,12 @@ enum LibChessMacApp {
 }
 
 @MainActor
-private final class AppDelegate: NSObject, NSApplicationDelegate {
+private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let store = LibChessStore()
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
     private var settingsWindowCoordinator: SettingsWindowCoordinator?
+    private var floatingBoardWindowCoordinator: FloatingBoardWindowCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let application = notification.object as? NSApplication ?? NSApplication.shared
@@ -52,7 +55,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         application.activate(ignoringOtherApps: true)
         self.window = window
+        floatingBoardWindowCoordinator = FloatingBoardWindowCoordinator(
+            store: store,
+            showMainGame: { [weak self] gameID in
+                self?.showGameInMainWindow(gameID)
+            }
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showFloatingBoard(_:)),
+            name: .showFloatingBoard,
+            object: nil
+        )
         store.refreshSavedCredentialAvailability()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self)
+        floatingBoardWindowCoordinator?.close()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -66,10 +86,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
-        hasVisibleWindows flag: Bool
+        hasVisibleWindows _: Bool
     ) -> Bool {
-        if !flag {
+        if window?.isVisible != true {
             window?.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(showFocusedGameInFloatingWindow(_:)) {
+            guard let gameID = store.focusedGameID,
+                  let game = store.liveGame(gameID)
+            else {
+                return false
+            }
+            return game.state.isPlayable && store.boardPresentation != nil
         }
         return true
     }
@@ -189,6 +221,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             item(
+                "Show Floating Board",
+                action: #selector(showFocusedGameInFloatingWindow(_:)),
+                key: "b",
+                modifiers: [.command, .control],
+                target: self
+            )
+        )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            item(
                 "Enter Full Screen",
                 action: #selector(NSWindow.toggleFullScreen(_:)),
                 key: "f",
@@ -249,6 +291,33 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settingsWindow = settingsWindow
         }
         settingsWindow?.makeKeyAndOrderFront(sender)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showFloatingBoard(_ notification: Notification) {
+        guard let gameID = notification.object as? String else {
+            return
+        }
+        presentFloatingBoard(for: gameID)
+    }
+
+    @objc private func showFocusedGameInFloatingWindow(_ sender: Any?) {
+        guard let gameID = store.focusedGameID else {
+            return
+        }
+        presentFloatingBoard(for: gameID)
+    }
+
+    private func presentFloatingBoard(for gameID: String) {
+        floatingBoardWindowCoordinator?.show(
+            gameID: gameID,
+            beside: window
+        )
+    }
+
+    private func showGameInMainWindow(_ gameID: String) {
+        NotificationCenter.default.post(name: .showGame, object: gameID)
+        window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 

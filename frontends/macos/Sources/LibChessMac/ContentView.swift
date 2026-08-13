@@ -80,6 +80,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .showNewGame)) { _ in
             selection = .newGame
         }
+        .onReceive(NotificationCenter.default.publisher(for: .showGame)) { notification in
+            guard let gameID = notification.object as? String else {
+                return
+            }
+            selection = .game(gameID)
+        }
         .fileExporter(
             isPresented: $showsFileExporter,
             document: exportDocument,

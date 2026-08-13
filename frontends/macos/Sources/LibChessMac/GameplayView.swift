@@ -35,6 +35,19 @@ struct LiveGameplayView: View {
 
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    NotificationCenter.default.post(
+                        name: .showFloatingBoard,
+                        object: game.id
+                    )
+                } label: {
+                    Label("Floating Board", systemImage: "pip.enter")
+                }
+                .help("Show Board in Floating Window")
+                .disabled(!game.state.isPlayable)
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     showsInspector.toggle()
                 } label: {
                     Label("Game Inspector", systemImage: "sidebar.right")
@@ -1026,12 +1039,149 @@ private extension GameMoveJudgmentKind {
     }
 }
 
+struct FloatingBoardView: View {
+    @EnvironmentObject private var store: LibChessStore
+    @Environment(\.openURL) private var openURL
+
+    let gameID: String
+    let closeWindow: () -> Void
+    let showMainGame: (String) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            if let game = store.liveGame(gameID),
+               let presentation = store.boardPresentation
+            {
+                let boardExtent = min(geometry.size.width, geometry.size.height)
+
+                ChessBoardView(
+                    game: game,
+                    boardExtent: boardExtent,
+                    presentation: presentation,
+                    showsPockets: false
+                )
+                .frame(width: boardExtent, height: boardExtent)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .contextMenu {
+                    contextualGameActions(for: game)
+                }
+                .accessibilityLabel("Floating chessboard")
+            }
+        }
+        .background(Color.clear)
+        .onChange(of: store.liveGame(gameID)?.state.isPlayable) { wasPlayable, isPlayable in
+            guard wasPlayable == true, isPlayable != true else {
+                return
+            }
+            DispatchQueue.main.async {
+                closeWindow()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func contextualGameActions(for game: LiveGame) -> some View {
+        let actionsAreBusy = store.isSubmittingMove(game.id)
+            || store.isPerformingGameAction(game.id)
+
+        if game.opponentDrawOfferForPlayer {
+            Button("Accept Draw") {
+                store.performGameAction(.acceptDraw, in: game.id)
+            }
+            .disabled(actionsAreBusy)
+
+            Button("Decline Draw") {
+                store.performGameAction(.declineDraw, in: game.id)
+            }
+            .disabled(actionsAreBusy)
+        } else if game.opponentTakebackOfferForPlayer {
+            Button("Accept Takeback") {
+                store.performGameAction(.acceptTakeback, in: game.id)
+            }
+            .disabled(actionsAreBusy)
+
+            Button("Decline Takeback") {
+                store.performGameAction(.declineTakeback, in: game.id)
+            }
+            .disabled(actionsAreBusy)
+        } else {
+            Button(game.ownDrawOffer ? "Draw Offered" : "Offer Draw") {
+                store.performGameAction(.offerDraw, in: game.id)
+            }
+            .disabled(actionsAreBusy || game.ownDrawOffer)
+
+            Button(game.ownTakebackOffer ? "Takeback Requested" : "Request Takeback") {
+                store.performGameAction(.offerTakeback, in: game.id)
+            }
+            .disabled(actionsAreBusy || game.ownTakebackOffer)
+        }
+
+        if game.canClaimVictory {
+            Button("Claim Victory") {
+                store.performGameAction(.claimVictory, in: game.id)
+            }
+            .disabled(actionsAreBusy)
+        }
+
+        Button("Claim Draw") {
+            store.performGameAction(.claimDraw, in: game.id)
+        }
+        .disabled(actionsAreBusy)
+
+        if !store.isLiveStreamConnected(game.id) {
+            Button("Reconnect Live Updates") {
+                store.reconnectLiveGame(game.id)
+            }
+            .disabled(store.isLoadingLiveGame(game.id))
+        }
+
+        Divider()
+
+        Menu {
+            Button("Confirm \(game.terminationActionTitle)", role: .destructive) {
+                store.performGameAction(game.terminationAction, in: game.id)
+            }
+        } label: {
+            Label(
+                "\(game.terminationActionTitle)…",
+                systemImage: game.terminationAction == .abort ? "xmark" : "flag.fill"
+            )
+        }
+        .disabled(actionsAreBusy)
+
+        Divider()
+
+        Button {
+            showMainGame(game.id)
+        } label: {
+            Label("Show Full Game", systemImage: "macwindow")
+        }
+
+        if let url = URL(string: game.url) {
+            Button {
+                openURL(url)
+            } label: {
+                Label("Open on Lichess", systemImage: "safari")
+            }
+        }
+
+        Button {
+            DispatchQueue.main.async {
+                closeWindow()
+            }
+        } label: {
+            Label("Close Floating Board", systemImage: "xmark.circle")
+        }
+    }
+}
+
 private struct ChessBoardView: View {
     @EnvironmentObject private var store: LibChessStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
     let boardExtent: CGFloat
     let presentation: BoardPresentation
+    let showsPockets: Bool
 
     @State private var selectedSquare: String?
     @State private var selectedDrop: PieceRole?
@@ -1040,10 +1190,16 @@ private struct ChessBoardView: View {
     @State private var renderedPly: UInt32
     @Namespace private var pieceAnimation
 
-    init(game: LiveGame, boardExtent: CGFloat, presentation: BoardPresentation) {
+    init(
+        game: LiveGame,
+        boardExtent: CGFloat,
+        presentation: BoardPresentation,
+        showsPockets: Bool = true
+    ) {
         self.game = game
         self.boardExtent = boardExtent
         self.presentation = presentation
+        self.showsPockets = showsPockets
         _renderedPieces = State(
             initialValue: game.state.board.pieces.map(RenderedBoardPiece.initial)
         )
@@ -1051,27 +1207,30 @@ private struct ChessBoardView: View {
     }
 
     var body: some View {
-        VStack(spacing: 9) {
-            PocketRow(
-                pieces: pockets(for: opponentColor),
-                selectedRole: $selectedDrop,
-                selectable: false,
-                legalDropRoles: [],
-                presentation: presentation
-            )
+        Group {
+            if showsPockets {
+                VStack(spacing: 9) {
+                    PocketRow(
+                        pieces: pockets(for: opponentColor),
+                        selectedRole: $selectedDrop,
+                        selectable: false,
+                        legalDropRoles: [],
+                        presentation: presentation
+                    )
 
-            board
-                .frame(width: boardExtent, height: boardExtent)
-                .aspectRatio(1, contentMode: .fit)
-                .boardChrome(presentation)
+                    boardSurface
 
-            PocketRow(
-                pieces: pockets(for: game.playerColor),
-                selectedRole: $selectedDrop,
-                selectable: canMove,
-                legalDropRoles: legalDropRoles,
-                presentation: presentation
-            )
+                    PocketRow(
+                        pieces: pockets(for: game.playerColor),
+                        selectedRole: $selectedDrop,
+                        selectable: canMove,
+                        legalDropRoles: legalDropRoles,
+                        presentation: presentation
+                    )
+                }
+            } else {
+                boardSurface
+            }
         }
         .onChange(of: boardState.ply) { _, _ in
             clearSelection()
@@ -1102,6 +1261,13 @@ private struct ChessBoardView: View {
                 promotionMoves = []
             }
         }
+    }
+
+    private var boardSurface: some View {
+        board
+            .frame(width: boardExtent, height: boardExtent)
+            .aspectRatio(1, contentMode: .fit)
+            .boardChrome(presentation)
     }
 
     private var board: some View {
@@ -1882,27 +2048,23 @@ private struct GameInspector: View {
     }
 
     private var opponentDrawOffer: Bool {
-        game.playerColor == .white ? game.state.blackDrawOffer : game.state.whiteDrawOffer
+        game.opponentDrawOfferForPlayer
     }
 
     private var ownDrawOffer: Bool {
-        game.playerColor == .white ? game.state.whiteDrawOffer : game.state.blackDrawOffer
+        game.ownDrawOffer
     }
 
     private var opponentTakebackOffer: Bool {
-        game.playerColor == .white
-            ? game.state.blackTakebackOffer
-            : game.state.whiteTakebackOffer
+        game.opponentTakebackOfferForPlayer
     }
 
     private var ownTakebackOffer: Bool {
-        game.playerColor == .white
-            ? game.state.whiteTakebackOffer
-            : game.state.blackTakebackOffer
+        game.ownTakebackOffer
     }
 
     private var canClaimVictory: Bool {
-        game.state.opponentGone && game.state.claimWinInSeconds == 0
+        game.canClaimVictory
     }
 
     private var opponentGoneText: String {
@@ -2111,6 +2273,36 @@ private extension String {
 private extension LiveGameAction {
     var confirmationButtonTitle: String {
         self == .abort ? "Abort Game" : "Resign"
+    }
+}
+
+private extension LiveGame {
+    var opponentDrawOfferForPlayer: Bool {
+        playerColor == .white ? state.blackDrawOffer : state.whiteDrawOffer
+    }
+
+    var ownDrawOffer: Bool {
+        playerColor == .white ? state.whiteDrawOffer : state.blackDrawOffer
+    }
+
+    var opponentTakebackOfferForPlayer: Bool {
+        playerColor == .white ? state.blackTakebackOffer : state.whiteTakebackOffer
+    }
+
+    var ownTakebackOffer: Bool {
+        playerColor == .white ? state.whiteTakebackOffer : state.blackTakebackOffer
+    }
+
+    var canClaimVictory: Bool {
+        state.opponentGone && state.claimWinInSeconds == 0
+    }
+
+    var terminationAction: LiveGameAction {
+        state.board.ply < 2 ? .abort : .resign
+    }
+
+    var terminationActionTitle: String {
+        terminationAction == .abort ? "Abort Game" : "Resign"
     }
 }
 
