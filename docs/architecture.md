@@ -9,13 +9,14 @@ SwiftUI / WinUI 3 / Qt
           |
  versioned C ABI (commands in, events out)
           |
-      libchess
-       /    \
-platform    engine
-provider    provider
-   |           |
-Lichess     Stockfish
-Chess.com   future engines
+                    libchess
+              /        |        \
+      platform       engine      board
+      provider       provider   provider
+         |              |          |
+      Lichess        Stockfish   assets, palette,
+      Chess.com      future      metrics, motion,
+                     engines     zoom presets
 ```
 
 The frontend renders state and performs operating-system integration. It does
@@ -47,6 +48,33 @@ prevent an older frontend from starting.
 
 New platform adapters register a factory with `ClientBuilder`; existing native
 frontends continue to use the same command/event protocol.
+
+## Board customization is portable
+
+Board appearance is a separate provider axis; it does not belong to a chess
+platform adapter or a native frontend. A board provider advertises stable theme
+identifiers and returns one validated presentation containing piece and
+promotion assets for each player color, colors, board and marker geometry,
+piece shadows, animation curves and durations, transition behavior, and
+ordered zoom presets. The
+registry is owned by `libchess`, so installing another board provider does not
+change Lichess, a future Chess.com adapter, or an engine provider.
+
+The C ABI exposes the board-provider catalog and the selected presentation in
+the same versioned event stream as application state. Native wrappers decode
+that portable description and translate semantic values into their native
+rendering APIs—for example, SwiftUI `Color`, `Animation`, and transitions.
+They may own OS integration such as preference persistence and Reduce Motion,
+but they do not define a fallback piece set, palette, animation timing, or zoom
+catalog. WinUI 3 and Qt can therefore render exactly the same installed board
+themes without recreating customization policy. Motion curves are portable
+semantics such as `spring` and `ease_out`; each renderer maps those semantics to
+its closest native animation primitive.
+
+The built-in `libchess-board` provider currently supplies Classic and Slate.
+Its first asset kind is a tintable text glyph; the tagged asset contract can be
+extended with additional portable kinds without exposing Rust implementation
+types across the ABI.
 
 ## History, exports, and post-game analysis
 

@@ -211,24 +211,38 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func increaseBoardSize(_ sender: Any?) {
-        setBoardZoom(currentBoardZoom.larger)
+        adjustBoardZoom(by: 1)
     }
 
     @objc private func decreaseBoardSize(_ sender: Any?) {
-        setBoardZoom(currentBoardZoom.smaller)
+        adjustBoardZoom(by: -1)
     }
 
     @objc private func resetBoardSize(_ sender: Any?) {
-        setBoardZoom(.medium)
+        guard let presentation = store.boardPresentation,
+              let defaultPreset = presentation.zoom.defaultValue
+        else {
+            return
+        }
+        setBoardZoom(defaultPreset)
     }
 
-    private var currentBoardZoom: BoardZoomLevel {
-        let rawValue = UserDefaults.standard.string(forKey: BoardZoomLevel.preferenceKey)
-        return rawValue.flatMap(BoardZoomLevel.init(rawValue:)) ?? .medium
+    private func adjustBoardZoom(by offset: Int) {
+        guard let presentation = store.boardPresentation else {
+            return
+        }
+        let savedID = UserDefaults.standard.string(forKey: BoardPreferenceKey.zoomPreset) ?? ""
+        guard let current = presentation.zoom.preset(id: savedID)
+            ?? presentation.zoom.defaultValue
+            ?? presentation.zoom.presets.first
+        else {
+            return
+        }
+        setBoardZoom(presentation.zoom.adjacent(to: current, offset: offset))
     }
 
-    private func setBoardZoom(_ level: BoardZoomLevel) {
-        UserDefaults.standard.set(level.rawValue, forKey: BoardZoomLevel.preferenceKey)
+    private func setBoardZoom(_ preset: BoardZoomPreset) {
+        UserDefaults.standard.set(preset.id, forKey: BoardPreferenceKey.zoomPreset)
     }
 
     private func item(

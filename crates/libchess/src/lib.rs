@@ -2,34 +2,44 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use libchess_board::BuiltinBoardProvider;
 pub use libchess_core::{
-    AccessToken, Account, BoardPiece, BoardState, BotGame, BotGameOptions, BotGameRequest,
-    BotGameTimeControl, BotOpponent, BotOpponentId, ChessContext, ClockTimeControl,
-    ClockTimeControlOptions, ColorPreference, ErrorKind, GameExport, GameHistoryEntry,
-    GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation, GameMoveJudgment,
-    GameMoveJudgmentKind, GameOpening, GameReview, GameReviewMove, GameStatus, GameVariant,
-    GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
-    LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
+    AccessToken, Account, BoardAnimationCurve, BoardAnimationRule, BoardAsset, BoardAssetKind,
+    BoardAssets, BoardMetrics, BoardMotion, BoardPalette, BoardPiece, BoardPieceAsset,
+    BoardPresentation, BoardProvider, BoardProviderDescriptor, BoardProviderId, BoardState,
+    BoardThemeDescriptor, BoardThemeId, BoardZoomPreset, BoardZoomPresetId, BoardZoomRules,
+    BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId,
+    ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference, ErrorKind,
+    GameExport, GameHistoryEntry, GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation,
+    GameMoveJudgment, GameMoveJudgmentKind, GameOpening, GameReview, GameReviewMove, GameStatus,
+    GameVariant, GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame,
+    LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
     LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
     MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceRole,
     PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
-    PocketPiece, ProviderDescriptor, ProviderId, ensure_engine_allowed,
+    PocketPiece, ProviderDescriptor, ProviderId, RgbaColor, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
 
 pub struct ClientBuilder {
     factories: BTreeMap<ProviderId, Arc<dyn PlatformBackendFactory>>,
+    board_providers: BTreeMap<BoardProviderId, Arc<dyn BoardProvider>>,
+    default_board_provider: Option<BoardProviderId>,
 }
 
 impl ClientBuilder {
     pub fn empty() -> Self {
         Self {
             factories: BTreeMap::new(),
+            board_providers: BTreeMap::new(),
+            default_board_provider: None,
         }
     }
 
     pub fn with_builtin_providers() -> Self {
-        Self::empty().register(LichessFactory::default())
+        Self::empty()
+            .register(LichessFactory::default())
+            .register_board_provider(BuiltinBoardProvider::default())
     }
 
     pub fn register(mut self, factory: impl PlatformBackendFactory + 'static) -> Self {
@@ -38,9 +48,20 @@ impl ClientBuilder {
         self
     }
 
+    pub fn register_board_provider(mut self, provider: impl BoardProvider + 'static) -> Self {
+        let id = provider.descriptor().id.clone();
+        if self.default_board_provider.is_none() {
+            self.default_board_provider = Some(id.clone());
+        }
+        self.board_providers.insert(id, Arc::new(provider));
+        self
+    }
+
     pub fn build(self) -> Client {
         Client {
             factories: self.factories,
+            board_providers: self.board_providers,
+            default_board_provider: self.default_board_provider,
             backend: None,
             account: None,
             oauth_session: None,
@@ -56,6 +77,8 @@ impl Default for ClientBuilder {
 
 pub struct Client {
     factories: BTreeMap<ProviderId, Arc<dyn PlatformBackendFactory>>,
+    board_providers: BTreeMap<BoardProviderId, Arc<dyn BoardProvider>>,
+    default_board_provider: Option<BoardProviderId>,
     backend: Option<Arc<dyn PlatformBackend>>,
     account: Option<Account>,
     oauth_session: Option<Box<dyn PlatformOAuthSession>>,
@@ -77,6 +100,54 @@ impl Client {
             .values()
             .map(|factory| factory.descriptor().clone())
             .collect()
+    }
+
+    pub fn board_providers(&self) -> Vec<BoardProviderDescriptor> {
+        self.board_providers
+            .values()
+            .map(|provider| provider.descriptor().clone())
+            .collect()
+    }
+
+    pub fn default_board_presentation(&self) -> Result<BoardPresentation, LibChessError> {
+        let provider_id = self.default_board_provider.as_ref().ok_or_else(|| {
+            LibChessError::unsupported("no board presentation provider is installed")
+        })?;
+        let provider = self.board_providers.get(provider_id).ok_or_else(|| {
+            LibChessError::unsupported("the default board presentation provider is unavailable")
+        })?;
+        let theme = provider.descriptor().default_theme.clone();
+        self.board_presentation(provider_id.as_str(), theme.as_str())
+    }
+
+    pub fn board_presentation(
+        &self,
+        provider: &str,
+        theme: &str,
+    ) -> Result<BoardPresentation, LibChessError> {
+        let provider_id = BoardProviderId::new(provider)?;
+        let theme_id = BoardThemeId::new(theme)?;
+        let board_provider = self.board_providers.get(&provider_id).ok_or_else(|| {
+            LibChessError::unsupported(format!(
+                "board presentation provider '{provider}' is not installed"
+            ))
+        })?;
+        let descriptor = board_provider.descriptor();
+        descriptor.validate()?;
+        if !descriptor.themes.iter().any(|item| item.id == theme_id) {
+            return Err(LibChessError::unsupported(format!(
+                "board theme '{theme}' is not installed for provider '{provider}'"
+            )));
+        }
+
+        let presentation = board_provider.presentation(&theme_id)?;
+        if presentation.provider != provider_id || presentation.theme != theme_id {
+            return Err(LibChessError::invalid_input(
+                "a board provider returned a presentation for a different provider or theme",
+            ));
+        }
+        presentation.validate()?;
+        Ok(presentation)
     }
 
     pub async fn connect(
@@ -287,6 +358,16 @@ mod tests {
                 .capabilities
                 .contains(&PlatformCapability::PgnExport)
         );
+
+        let board_providers = client.board_providers();
+        assert_eq!(board_providers.len(), 1);
+        assert_eq!(board_providers[0].id.as_str(), "libchess");
+        assert_eq!(board_providers[0].themes.len(), 2);
+        let presentation = client
+            .default_board_presentation()
+            .expect("default board presentation");
+        assert_eq!(presentation.theme.as_str(), "classic");
+        assert_eq!(presentation.assets.pieces.len(), 12);
     }
 
     #[test]

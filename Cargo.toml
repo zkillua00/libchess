@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/libchess-core",
+    "crates/libchess-board",
     "crates/libchess-rules",
     "crates/libchess-lichess",
     "crates/libchess",
@@ -18,6 +19,7 @@ async-trait = "0.1"
 base64 = "0.22"
 getrandom = "0.4"
 libchess-core = { path = "crates/libchess-core" }
+libchess-board = { path = "crates/libchess-board" }
 libchess-rules = { path = "crates/libchess-rules" }
 libchess-lichess = { path = "crates/libchess-lichess" }
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "native-tls-no-alpn"] }

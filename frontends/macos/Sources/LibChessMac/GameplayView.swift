@@ -8,28 +8,17 @@ struct LiveGameplayView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
 
-    @AppStorage(BoardZoomLevel.preferenceKey) private var boardZoomRaw = BoardZoomLevel.medium.rawValue
+    @AppStorage(BoardPreferenceKey.zoomPreset) private var boardZoomID = ""
     @State private var actionToConfirm: LiveGameAction?
     @State private var showsInspector = true
 
     var body: some View {
-        GeometryReader { geometry in
-            let boardExtent = ChessBoardLayout.extent(
-                in: geometry.size,
-                zoom: boardZoomLevel,
-                verticalChrome: 140
-            )
-
-            ChessBoardView(game: game, boardExtent: boardExtent)
-                .id(game.id)
-                .frame(width: boardExtent)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .padding(28)
-                .simultaneousGesture(boardMagnificationGesture)
-                .animation(
-                    reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0),
-                    value: boardZoomRaw
-                )
+        Group {
+            if let presentation = store.boardPresentation {
+                gameplayWorkspace(presentation: presentation)
+            } else {
+                boardAppearanceLoadingView
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .inspector(isPresented: $showsInspector) {
@@ -37,29 +26,10 @@ struct LiveGameplayView: View {
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Zoom In") {
-                        setBoardZoom(boardZoomLevel.larger)
-                    }
-                    .disabled(boardZoomLevel.larger == boardZoomLevel)
-
-                    Button("Zoom Out") {
-                        setBoardZoom(boardZoomLevel.smaller)
-                    }
-                    .disabled(boardZoomLevel.smaller == boardZoomLevel)
-
-                    Divider()
-
-                    Picker("Board Size", selection: $boardZoomRaw) {
-                        ForEach(BoardZoomLevel.allCases) { level in
-                            Text(level.label).tag(level.rawValue)
-                        }
-                    }
-                } label: {
-                    Label("Board Size", systemImage: "magnifyingglass")
+            if let presentation = store.boardPresentation {
+                ToolbarItem(placement: .primaryAction) {
+                    BoardAppearanceMenu(presentation: presentation)
                 }
-                .help("Board Size: \(boardZoomLevel.label)")
             }
 
             ToolbarItem(placement: .primaryAction) {
@@ -92,27 +62,74 @@ struct LiveGameplayView: View {
         }
     }
 
+    private func gameplayWorkspace(presentation: BoardPresentation) -> some View {
+        GeometryReader { geometry in
+            let zoom = currentZoom(in: presentation)
+            let boardExtent = ChessBoardLayout.extent(
+                in: geometry.size,
+                presentation: presentation,
+                zoom: zoom,
+                verticalChrome: 140
+            )
+
+            ChessBoardView(
+                game: game,
+                boardExtent: boardExtent,
+                presentation: presentation
+            )
+            .id(game.id)
+            .frame(width: boardExtent)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(28)
+            .simultaneousGesture(boardMagnificationGesture(for: presentation))
+            .animation(
+                presentation.motion.boardResize.nativeAnimation(reduceMotion: reduceMotion),
+                value: boardZoomID
+            )
+        }
+    }
+
+    private var boardAppearanceLoadingView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Loading board appearance…")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func confirm(_ action: LiveGameAction) {
         actionToConfirm = action
     }
 
-    private var boardZoomLevel: BoardZoomLevel {
-        BoardZoomLevel(rawValue: boardZoomRaw) ?? .medium
+    private func currentZoom(in presentation: BoardPresentation) -> BoardZoomPreset {
+        presentation.zoom.preset(id: boardZoomID)
+            ?? presentation.zoom.defaultValue
+            ?? presentation.zoom.presets[0]
     }
 
-    private func setBoardZoom(_ level: BoardZoomLevel) {
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0)) {
-            boardZoomRaw = level.rawValue
+    private func setBoardZoom(_ preset: BoardZoomPreset, presentation: BoardPresentation) {
+        withAnimation(
+            presentation.motion.boardResize.nativeAnimation(reduceMotion: reduceMotion)
+        ) {
+            boardZoomID = preset.id
         }
     }
 
-    private var boardMagnificationGesture: some Gesture {
+    private func boardMagnificationGesture(for presentation: BoardPresentation) -> some Gesture {
         MagnifyGesture(minimumScaleDelta: 0.08)
             .onEnded { value in
+                let current = currentZoom(in: presentation)
                 if value.magnification > 1 {
-                    setBoardZoom(boardZoomLevel.larger)
+                    setBoardZoom(
+                        presentation.zoom.adjacent(to: current, offset: 1),
+                        presentation: presentation
+                    )
                 } else if value.magnification < 1 {
-                    setBoardZoom(boardZoomLevel.smaller)
+                    setBoardZoom(
+                        presentation.zoom.adjacent(to: current, offset: -1),
+                        presentation: presentation
+                    )
                 }
             }
     }
@@ -136,21 +153,24 @@ struct GameReviewView: View {
 
     let game: GameHistoryEntry
 
-    @AppStorage(BoardZoomLevel.preferenceKey) private var boardZoomRaw = BoardZoomLevel.medium.rawValue
+    @AppStorage(BoardPreferenceKey.zoomPreset) private var boardZoomID = ""
     @State private var selectedPly: UInt32?
     @State private var showsInspector = true
 
     var body: some View {
         Group {
-            if let review = store.gameReviews[game.id],
+            if let presentation = store.boardPresentation,
+               let review = store.gameReviews[game.id],
                let board = store.reviewBoards[game.id]
             {
-                reviewWorkspace(review: review, board: board)
-            } else if store.isLoadingGameReview(game.id) {
+                reviewWorkspace(review: review, board: board, presentation: presentation)
+            } else if store.boardPresentation == nil || store.isLoadingGameReview(game.id) {
                 VStack(spacing: 14) {
                     ProgressView()
                         .controlSize(.large)
-                    Text("Loading game review…")
+                    Text(store.boardPresentation == nil
+                        ? "Loading board appearance…"
+                        : "Loading game review…")
                         .font(.headline)
                         .foregroundStyle(.secondary)
                 }
@@ -188,23 +208,30 @@ struct GameReviewView: View {
         }
     }
 
-    private func reviewWorkspace(review: GameReview, board: BoardState) -> some View {
+    private func reviewWorkspace(
+        review: GameReview,
+        board: BoardState,
+        presentation: BoardPresentation
+    ) -> some View {
         GeometryReader { geometry in
+            let zoom = currentZoom(in: presentation)
             let boardExtent = ChessBoardLayout.extent(
                 in: geometry.size,
-                zoom: boardZoomLevel,
+                presentation: presentation,
+                zoom: zoom,
                 verticalChrome: 56
             )
 
             ReviewChessBoardView(
                 board: board,
-                perspective: game.playerColor
+                perspective: game.playerColor,
+                presentation: presentation
             )
             .id(game.id)
             .frame(width: boardExtent, height: boardExtent)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(28)
-            .simultaneousGesture(boardMagnificationGesture)
+            .simultaneousGesture(boardMagnificationGesture(for: presentation))
             .overlay(alignment: .topTrailing) {
                 if store.isLoadingReviewPosition(game.id) {
                     ProgressView()
@@ -213,8 +240,8 @@ struct GameReviewView: View {
                 }
             }
             .animation(
-                reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0),
-                value: boardZoomRaw
+                presentation.motion.boardResize.nativeAnimation(reduceMotion: reduceMotion),
+                value: boardZoomID
             )
         }
         .inspector(isPresented: $showsInspector) {
@@ -282,27 +309,11 @@ struct GameReviewView: View {
                             openURL(url)
                         }
                     }
-
-                    Divider()
-
-                    Button("Zoom In") {
-                        setBoardZoom(boardZoomLevel.larger)
-                    }
-                    .disabled(boardZoomLevel.larger == boardZoomLevel)
-
-                    Button("Zoom Out") {
-                        setBoardZoom(boardZoomLevel.smaller)
-                    }
-                    .disabled(boardZoomLevel.smaller == boardZoomLevel)
-
-                    Picker("Board Size", selection: $boardZoomRaw) {
-                        ForEach(BoardZoomLevel.allCases) { level in
-                            Text(level.label).tag(level.rawValue)
-                        }
-                    }
                 } label: {
                     Label("Review Options", systemImage: "ellipsis.circle")
                 }
+
+                BoardAppearanceMenu(presentation: presentation)
 
                 Button {
                     showsInspector.toggle()
@@ -340,25 +351,112 @@ struct GameReviewView: View {
         selectPly(UInt32(next), in: review)
     }
 
-    private var boardZoomLevel: BoardZoomLevel {
-        BoardZoomLevel(rawValue: boardZoomRaw) ?? .medium
+    private func currentZoom(in presentation: BoardPresentation) -> BoardZoomPreset {
+        presentation.zoom.preset(id: boardZoomID)
+            ?? presentation.zoom.defaultValue
+            ?? presentation.zoom.presets[0]
     }
 
-    private func setBoardZoom(_ level: BoardZoomLevel) {
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0)) {
-            boardZoomRaw = level.rawValue
+    private func setBoardZoom(_ preset: BoardZoomPreset, presentation: BoardPresentation) {
+        withAnimation(
+            presentation.motion.boardResize.nativeAnimation(reduceMotion: reduceMotion)
+        ) {
+            boardZoomID = preset.id
         }
     }
 
-    private var boardMagnificationGesture: some Gesture {
+    private func boardMagnificationGesture(for presentation: BoardPresentation) -> some Gesture {
         MagnifyGesture(minimumScaleDelta: 0.08)
             .onEnded { value in
+                let current = currentZoom(in: presentation)
                 if value.magnification > 1 {
-                    setBoardZoom(boardZoomLevel.larger)
+                    setBoardZoom(
+                        presentation.zoom.adjacent(to: current, offset: 1),
+                        presentation: presentation
+                    )
                 } else if value.magnification < 1 {
-                    setBoardZoom(boardZoomLevel.smaller)
+                    setBoardZoom(
+                        presentation.zoom.adjacent(to: current, offset: -1),
+                        presentation: presentation
+                    )
                 }
             }
+    }
+}
+
+private struct BoardAppearanceMenu: View {
+    @EnvironmentObject private var store: LibChessStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(BoardPreferenceKey.zoomPreset) private var boardZoomID = ""
+
+    let presentation: BoardPresentation
+
+    var body: some View {
+        Menu {
+            Picker("Board Theme", selection: themeSelection) {
+                ForEach(store.boardProviders) { provider in
+                    Section(provider.displayName) {
+                        ForEach(provider.themes) { theme in
+                            Text(theme.displayName)
+                                .tag("\(provider.id)/\(theme.id)")
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("Zoom In") {
+                setZoom(presentation.zoom.adjacent(to: currentZoom, offset: 1))
+            }
+            .disabled(presentation.zoom.adjacent(to: currentZoom, offset: 1) == currentZoom)
+
+            Button("Zoom Out") {
+                setZoom(presentation.zoom.adjacent(to: currentZoom, offset: -1))
+            }
+            .disabled(presentation.zoom.adjacent(to: currentZoom, offset: -1) == currentZoom)
+
+            Picker("Board Size", selection: $boardZoomID) {
+                ForEach(presentation.zoom.presets) { preset in
+                    Text(preset.displayName).tag(preset.id)
+                }
+            }
+        } label: {
+            if store.isLoadingBoardPresentation {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Label("Board Appearance", systemImage: "checkerboard.rectangle")
+            }
+        }
+        .help("\(presentation.displayName) · \(currentZoom.displayName)")
+    }
+
+    private var currentZoom: BoardZoomPreset {
+        presentation.zoom.preset(id: boardZoomID)
+            ?? presentation.zoom.defaultValue
+            ?? presentation.zoom.presets[0]
+    }
+
+    private var themeSelection: Binding<String> {
+        Binding(
+            get: { presentation.id },
+            set: { selection in
+                let parts = selection.split(separator: "/", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else {
+                    return
+                }
+                store.selectBoardPresentation(provider: parts[0], theme: parts[1])
+            }
+        )
+    }
+
+    private func setZoom(_ preset: BoardZoomPreset) {
+        withAnimation(
+            presentation.motion.boardResize.nativeAnimation(reduceMotion: reduceMotion)
+        ) {
+            boardZoomID = preset.id
+        }
     }
 }
 
@@ -367,14 +465,20 @@ private struct ReviewChessBoardView: View {
 
     let board: BoardState
     let perspective: PlayerColor
+    let presentation: BoardPresentation
 
     @State private var renderedPieces: [RenderedBoardPiece]
     @State private var renderedPly: UInt32
     @Namespace private var pieceAnimation
 
-    init(board: BoardState, perspective: PlayerColor) {
+    init(
+        board: BoardState,
+        perspective: PlayerColor,
+        presentation: BoardPresentation
+    ) {
         self.board = board
         self.perspective = perspective
+        self.presentation = presentation
         _renderedPieces = State(initialValue: board.pieces.map(RenderedBoardPiece.initial))
         _renderedPly = State(initialValue: board.ply)
     }
@@ -402,26 +506,25 @@ private struct ReviewChessBoardView: View {
                         && piece?.role == .king
                         && piece?.color == board.turn,
                     showsRank: index.isMultiple(of: 8),
-                    showsFile: index >= 56
+                    showsFile: index >= 56,
+                    presentation: presentation
                 )
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
                     if let renderedPiece = animatedPieces[square] {
-                        AnimatedPieceView(piece: renderedPiece.piece)
+                        AnimatedPieceView(
+                            piece: renderedPiece.piece,
+                            presentation: presentation
+                        )
                             .matchedGeometryEffect(id: renderedPiece.id, in: pieceAnimation)
-                            .transition(.scale(scale: 0.55).combined(with: .opacity))
+                            .transition(presentation.pieceAppearanceTransition)
                     }
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(accessibilityLabel(for: square, piece: piece))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(.black.opacity(0.25), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
+        .boardChrome(presentation)
         .onChange(of: board.pieces) { _, pieces in
             updateRenderedPieces(pieces)
         }
@@ -433,8 +536,14 @@ private struct ReviewChessBoardView: View {
             current: pieces,
             lastMove: board.lastMove
         )
-        let shouldAnimate = !reduceMotion && abs(Int(board.ply) - Int(renderedPly)) <= 1
-        withAnimation(shouldAnimate ? .snappy(duration: 0.18, extraBounce: 0) : nil) {
+        let shouldAnimate = !reduceMotion
+            && abs(Int(board.ply) - Int(renderedPly))
+                <= Int(presentation.motion.maximumAnimatedPlyDistance)
+        withAnimation(
+            shouldAnimate
+                ? presentation.motion.pieceMove.nativeAnimation(reduceMotion: false)
+                : nil
+        ) {
             renderedPieces = next
             renderedPly = board.ply
         }
@@ -859,6 +968,7 @@ private struct ChessBoardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
     let boardExtent: CGFloat
+    let presentation: BoardPresentation
 
     @State private var selectedSquare: String?
     @State private var selectedDrop: PieceRole?
@@ -867,9 +977,10 @@ private struct ChessBoardView: View {
     @State private var renderedPly: UInt32
     @Namespace private var pieceAnimation
 
-    init(game: LiveGame, boardExtent: CGFloat) {
+    init(game: LiveGame, boardExtent: CGFloat, presentation: BoardPresentation) {
         self.game = game
         self.boardExtent = boardExtent
+        self.presentation = presentation
         _renderedPieces = State(
             initialValue: game.state.board.pieces.map(RenderedBoardPiece.initial)
         )
@@ -882,24 +993,21 @@ private struct ChessBoardView: View {
                 pieces: pockets(for: opponentColor),
                 selectedRole: $selectedDrop,
                 selectable: false,
-                legalDropRoles: []
+                legalDropRoles: [],
+                presentation: presentation
             )
 
             board
                 .frame(width: boardExtent, height: boardExtent)
                 .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(.black.opacity(0.25), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
+                .boardChrome(presentation)
 
             PocketRow(
                 pieces: pockets(for: game.playerColor),
                 selectedRole: $selectedDrop,
                 selectable: canMove,
-                legalDropRoles: legalDropRoles
+                legalDropRoles: legalDropRoles,
+                presentation: presentation
             )
         }
         .onChange(of: boardState.ply) { _, _ in
@@ -960,17 +1068,21 @@ private struct ChessBoardView: View {
                             && piece?.role == .king
                             && piece?.color == boardState.turn,
                         showsRank: index.isMultiple(of: 8),
-                        showsFile: index >= 56
+                        showsFile: index >= 56,
+                        presentation: presentation
                     )
                     .aspectRatio(1, contentMode: .fit)
                     .overlay {
                         if let renderedPiece = animatedPieces[square] {
-                            AnimatedPieceView(piece: renderedPiece.piece)
+                            AnimatedPieceView(
+                                piece: renderedPiece.piece,
+                                presentation: presentation
+                            )
                                 .matchedGeometryEffect(
                                     id: renderedPiece.id,
                                     in: pieceAnimation
                                 )
-                                .transition(.scale(scale: 0.55).combined(with: .opacity))
+                                .transition(presentation.pieceAppearanceTransition)
                                 .allowsHitTesting(false)
                         }
                     }
@@ -979,8 +1091,14 @@ private struct ChessBoardView: View {
                 .accessibilityLabel(accessibilityLabel(for: square, piece: piece))
             }
         }
-        .animation(.easeOut(duration: 0.12), value: selectedSquare)
-        .animation(.easeOut(duration: 0.12), value: selectedDrop)
+        .animation(
+            presentation.motion.selection.nativeAnimation(reduceMotion: reduceMotion),
+            value: selectedSquare
+        )
+        .animation(
+            presentation.motion.selection.nativeAnimation(reduceMotion: reduceMotion),
+            value: selectedDrop
+        )
     }
 
     private var canMove: Bool {
@@ -1101,8 +1219,13 @@ private struct ChessBoardView: View {
             lastMove: boardState.lastMove
         )
         let shouldAnimate = !reduceMotion
-            && abs(Int(boardState.ply) - Int(renderedPly)) <= 1
-        withAnimation(shouldAnimate ? .snappy(duration: 0.18, extraBounce: 0) : nil) {
+            && abs(Int(boardState.ply) - Int(renderedPly))
+                <= Int(presentation.motion.maximumAnimatedPlyDistance)
+        withAnimation(
+            shouldAnimate
+                ? presentation.motion.pieceMove.nativeAnimation(reduceMotion: false)
+                : nil
+        ) {
             renderedPieces = next
             renderedPly = boardState.ply
         }
@@ -1126,6 +1249,7 @@ private struct ChessBoardView: View {
 
 private struct AnimatedPieceView: View {
     let piece: BoardPiece
+    let presentation: BoardPresentation
 
     var body: some View {
         GeometryReader { geometry in
@@ -1133,15 +1257,20 @@ private struct AnimatedPieceView: View {
             PieceGlyph(
                 role: piece.role,
                 color: piece.color,
-                size: size * 0.72
+                size: size * CGFloat(presentation.metrics.pieceScalePercent) / 100,
+                presentation: presentation
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 if piece.promoted {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: size * 0.13))
-                        .foregroundStyle(.yellow)
-                        .padding(3)
+                    Text(presentation.assets.promotedMarker.value)
+                        .font(.system(
+                            size: size
+                                * CGFloat(presentation.metrics.promotedMarkerScalePercent)
+                                / 100
+                        ))
+                        .foregroundStyle(presentation.palette.promotedMarker.color)
+                        .padding(CGFloat(presentation.metrics.promotedMarkerInset))
                 }
             }
         }
@@ -1158,53 +1287,101 @@ private struct BoardSquareView: View {
     let isCheckedKing: Bool
     let showsRank: Bool
     let showsFile: Bool
+    let presentation: BoardPresentation
 
     var body: some View {
-        ZStack {
-            (isLight ? Color.boardLight : Color.boardDark)
+        GeometryReader { geometry in
+            let size = min(geometry.size.width, geometry.size.height)
+            ZStack {
+                (isLight
+                    ? presentation.palette.lightSquare.color
+                    : presentation.palette.darkSquare.color)
 
-            if isLastMove {
-                Color.yellow.opacity(0.42)
-            }
-            if isSelected {
-                Color.accentColor.opacity(0.48)
-            }
-            if isCheckedKing {
-                RadialGradient(
-                    colors: [.red.opacity(0.78), .red.opacity(0.08)],
-                    center: .center,
-                    startRadius: 2,
-                    endRadius: 42
-                )
-            }
+                if isLastMove {
+                    presentation.palette.lastMove.color
+                }
+                if isSelected {
+                    presentation.palette.selection.color
+                }
+                if isCheckedKing {
+                    RadialGradient(
+                        colors: [
+                            presentation.palette.checkCenter.color,
+                            presentation.palette.checkEdge.color,
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: size
+                            * CGFloat(presentation.metrics.checkGradientRadiusPercent)
+                            / 100
+                    )
+                }
 
-            if isDestination {
-                if piece == nil {
-                    Circle()
-                        .fill(.black.opacity(0.28))
-                        .frame(width: 17, height: 17)
-                } else {
-                    Circle()
-                        .stroke(.black.opacity(0.33), lineWidth: 5)
-                        .padding(4)
+                if isDestination {
+                    if piece == nil {
+                        Circle()
+                            .fill(presentation.palette.legalMove.color)
+                            .frame(
+                                width: size
+                                    * CGFloat(presentation.metrics.destinationDotScalePercent)
+                                    / 100,
+                                height: size
+                                    * CGFloat(presentation.metrics.destinationDotScalePercent)
+                                    / 100
+                            )
+                    } else {
+                        Circle()
+                            .stroke(
+                                presentation.palette.legalMove.color,
+                                lineWidth: size
+                                    * CGFloat(
+                                        presentation.metrics.destinationRingWidthPercent
+                                    )
+                                    / 100
+                            )
+                            .padding(
+                                size
+                                    * CGFloat(
+                                        presentation.metrics.destinationRingInsetPercent
+                                    )
+                                    / 100
+                            )
+                    }
+                }
+
+                if showsRank {
+                    coordinateLabel(String(square.suffix(1)), size: size)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
+                }
+                if showsFile {
+                    coordinateLabel(String(square.prefix(1)), size: size)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .bottomTrailing
+                        )
                 }
             }
-
-            if showsRank {
-                Text(String(square.suffix(1)))
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(isLight ? Color.boardDark : Color.boardLight)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(3)
-            }
-            if showsFile {
-                Text(String(square.prefix(1)))
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(isLight ? Color.boardDark : Color.boardLight)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(3)
-            }
         }
+    }
+
+    private func coordinateLabel(_ text: String, size: CGFloat) -> some View {
+        Text(text)
+            .font(.system(
+                size: size * CGFloat(presentation.metrics.coordinateFontScalePercent) / 100,
+                weight: .bold,
+                design: .rounded
+            ))
+            .foregroundStyle(
+                isLight
+                    ? presentation.palette.coordinateOnLight.color
+                    : presentation.palette.coordinateOnDark.color
+            )
+            .padding(CGFloat(presentation.metrics.coordinateInset))
     }
 }
 
@@ -1284,6 +1461,7 @@ private struct PocketRow: View {
     @Binding var selectedRole: PieceRole?
     let selectable: Bool
     let legalDropRoles: Set<PieceRole>
+    let presentation: BoardPresentation
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1292,7 +1470,12 @@ private struct PocketRow: View {
                     selectedRole = selectedRole == piece.role ? nil : piece.role
                 } label: {
                     HStack(spacing: 3) {
-                        PieceGlyph(role: piece.role, color: piece.color, size: 24)
+                        PieceGlyph(
+                            role: piece.role,
+                            color: piece.color,
+                            size: 24,
+                            presentation: presentation
+                        )
                         if piece.count > 1 {
                             Text("×\(piece.count)")
                                 .font(.caption2.monospacedDigit())
@@ -1320,18 +1503,32 @@ private struct PieceGlyph: View {
     let role: PieceRole
     let color: PlayerColor
     let size: CGFloat
+    let presentation: BoardPresentation
 
     var body: some View {
-        Text(role.glyph)
-            .font(.system(size: size, weight: .regular, design: .serif))
-            .foregroundStyle(color == .white ? Color.white : Color(red: 0.09, green: 0.09, blue: 0.08))
-            .shadow(
-                color: color == .white ? .black.opacity(0.58) : .white.opacity(0.32),
-                radius: 0.7,
-                x: 0,
-                y: 0.5
-            )
-            .accessibilityHidden(true)
+        Group {
+            if let asset = presentation.pieceAsset(for: role, color: color) {
+                switch asset.kind {
+                case .textGlyph:
+                    Text(asset.value)
+                        .font(.system(size: size, weight: .regular, design: .serif))
+                }
+            }
+        }
+        .foregroundStyle(
+            color == .white
+                ? presentation.palette.whitePiece.color
+                : presentation.palette.blackPiece.color
+        )
+        .shadow(
+            color: color == .white
+                ? presentation.palette.whitePieceShadow.color
+                : presentation.palette.blackPieceShadow.color,
+            radius: CGFloat(presentation.metrics.pieceShadowRadiusTenths) / 10,
+            x: 0,
+            y: CGFloat(presentation.metrics.pieceShadowOffsetYTenths) / 10
+        )
+        .accessibilityHidden(true)
     }
 }
 
@@ -1746,17 +1943,6 @@ private struct MovePair: Identifiable {
 }
 
 private extension PieceRole {
-    var glyph: String {
-        switch self {
-        case .pawn: "♟"
-        case .knight: "♞"
-        case .bishop: "♝"
-        case .rook: "♜"
-        case .queen: "♛"
-        case .king: "♚"
-        }
-    }
-
     var displayName: String {
         switch self {
         case .pawn: "Pawn"
@@ -1817,7 +2003,62 @@ private extension UInt64 {
     }
 }
 
-private extension Color {
-    static let boardLight = Color(red: 0.83, green: 0.77, blue: 0.65)
-    static let boardDark = Color(red: 0.42, green: 0.52, blue: 0.35)
+private extension RgbaColor {
+    var color: Color {
+        Color(
+            red: Double(red) / 255,
+            green: Double(green) / 255,
+            blue: Double(blue) / 255,
+            opacity: Double(alpha) / 255
+        )
+    }
+}
+
+private extension BoardAnimationRule {
+    func nativeAnimation(reduceMotion: Bool) -> Animation? {
+        guard !reduceMotion else {
+            return nil
+        }
+
+        let duration = Double(durationMillis) / 1_000
+        switch curve {
+        case .linear:
+            return .linear(duration: duration)
+        case .easeOut:
+            return .easeOut(duration: duration)
+        case .spring:
+            return .snappy(
+                duration: duration,
+                extraBounce: Double(extraBouncePercent) / 100
+            )
+        }
+    }
+}
+
+private extension BoardPresentation {
+    var pieceAppearanceTransition: AnyTransition {
+        let scale = AnyTransition.scale(
+            scale: Double(motion.pieceAppearanceScalePercent) / 100
+        )
+        return motion.fadePieceAppearance ? scale.combined(with: .opacity) : scale
+    }
+}
+
+private extension View {
+    func boardChrome(_ presentation: BoardPresentation) -> some View {
+        let cornerRadius = CGFloat(presentation.metrics.cornerRadius)
+        return clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(
+                        presentation.palette.border.color,
+                        lineWidth: CGFloat(presentation.metrics.borderWidth)
+                    )
+            }
+            .shadow(
+                color: presentation.palette.shadow.color,
+                radius: CGFloat(presentation.metrics.shadowRadius),
+                y: CGFloat(presentation.metrics.shadowOffsetY)
+            )
+    }
 }

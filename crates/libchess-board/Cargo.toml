@@ -1,11 +1,12 @@
 [package]
-name = "libchess"
+name = "libchess-board"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
-libchess-board.workspace = true
 libchess-core.workspace = true
-libchess-lichess.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

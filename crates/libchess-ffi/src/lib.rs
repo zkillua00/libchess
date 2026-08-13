@@ -10,11 +10,11 @@ use std::{
 };
 
 use libchess::{
-    AccessToken, Account, BoardState, BotGame, BotGameRequest, BotGameTimeControl, Client,
-    ColorPreference, ErrorKind, GameExport, GameHistoryPage, GameId, GameReview, LibChessError,
-    LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameEvent,
-    LiveGameRequest, LiveGameSummary, MoveSubmission, OAuthConnection, PlayerColor,
-    ProviderDescriptor,
+    AccessToken, Account, BoardPresentation, BoardProviderDescriptor, BoardState, BotGame,
+    BotGameRequest, BotGameTimeControl, Client, ColorPreference, ErrorKind, GameExport,
+    GameHistoryPage, GameId, GameReview, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
+    LiveGameCatalogEvent, LiveGameEvent, LiveGameRequest, LiveGameSummary, MoveSubmission,
+    OAuthConnection, PlayerColor, ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -113,6 +113,11 @@ enum Command {
     LoadGameReview {
         game_id: String,
     },
+    LoadBoardPresentation {
+        provider: String,
+        theme: String,
+    },
+    ListBoardProviders,
     ListProviders,
     PerformGameAction {
         game_id: String,
@@ -167,6 +172,12 @@ enum Event {
     },
     BotGameCreated {
         game: BotGame,
+    },
+    BoardPresentationLoaded {
+        board_presentation: BoardPresentation,
+    },
+    BoardProviders {
+        board_providers: Vec<BoardProviderDescriptor>,
     },
     Error {
         error: LibChessError,
@@ -228,6 +239,9 @@ enum Event {
     },
     Ready {
         providers: Vec<ProviderDescriptor>,
+        board_providers: Vec<BoardProviderDescriptor>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        board_presentation: Option<BoardPresentation>,
     },
 }
 
@@ -257,12 +271,18 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
     let mut catalog_task: Option<tokio::task::JoinHandle<()>> = None;
     let latest_games = Arc::new(Mutex::new(BTreeMap::<String, LiveGame>::new()));
     let mut game_reviews = BTreeMap::<String, GameReview>::new();
+    let default_board_presentation = client.default_board_presentation();
     sink.emit(
         None,
         Event::Ready {
             providers: client.providers(),
+            board_providers: client.board_providers(),
+            board_presentation: default_board_presentation.as_ref().ok().cloned(),
         },
     );
+    if let Err(error) = default_board_presentation {
+        sink.emit(None, Event::Error { error });
+    }
 
     while let Some(message) = receiver.recv().await {
         match message {
@@ -372,6 +392,21 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             providers: client.providers(),
                         },
                     ),
+                    Command::ListBoardProviders => sink.emit(
+                        request_id,
+                        Event::BoardProviders {
+                            board_providers: client.board_providers(),
+                        },
+                    ),
+                    Command::LoadBoardPresentation { provider, theme } => {
+                        match client.board_presentation(&provider, &theme) {
+                            Ok(board_presentation) => sink.emit(
+                                request_id,
+                                Event::BoardPresentationLoaded { board_presentation },
+                            ),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
                     Command::ExportGame { game_id } => match GameId::new(game_id) {
                         Ok(game_id) => match client.export_game(game_id).await {
                             Ok(game_export) => {
@@ -894,6 +929,10 @@ mod tests {
         assert!(ready.contains(r#""bot_opponents""#));
         assert!(ready.contains(r#""id":"level-1""#));
         assert!(ready.contains(r#""game_review""#));
+        assert!(ready.contains(r#""board_providers""#));
+        assert!(ready.contains(r#""default_theme":"classic""#));
+        assert!(ready.contains(r#""board_presentation""#));
+        assert!(ready.contains(r#""kind":"text_glyph""#));
 
         let command = br#"{"version":1,"request_id":"providers-1","type":"list_providers"}"#;
         assert_eq!(
@@ -906,6 +945,19 @@ mod tests {
             .expect("providers event");
         assert!(providers.contains(r#""request_id":"providers-1""#));
         assert!(providers.contains(r#""type":"providers""#));
+
+        let board_command = br#"{"version":1,"request_id":"board-1","type":"load_board_presentation","provider":"libchess","theme":"slate"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, board_command.as_ptr(), board_command.len()) },
+            SEND_OK
+        );
+        let board_presentation = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("board presentation event");
+        assert!(board_presentation.contains(r#""request_id":"board-1""#));
+        assert!(board_presentation.contains(r#""type":"board_presentation_loaded""#));
+        assert!(board_presentation.contains(r#""theme":"slate""#));
+        assert!(board_presentation.contains(r#""duration_millis":260"#));
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

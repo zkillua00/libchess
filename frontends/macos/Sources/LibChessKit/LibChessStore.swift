@@ -5,6 +5,9 @@ import Foundation
 @MainActor
 public final class LibChessStore: ObservableObject {
     @Published public private(set) var providers: [ProviderDescriptor] = []
+    @Published public private(set) var boardProviders: [BoardProviderDescriptor] = []
+    @Published public private(set) var boardPresentation: BoardPresentation?
+    @Published public private(set) var isLoadingBoardPresentation = false
     @Published public private(set) var account: ChessAccount?
     @Published public private(set) var connectionState = ConnectionState.disconnected
     @Published public private(set) var savedCredentialAvailable = false
@@ -36,6 +39,7 @@ public final class LibChessStore: ObservableObject {
     private let tokenStore = KeychainTokenStore()
     private var nativeClient: NativeClient?
     private var pendingBotGameRequestID: String?
+    private var pendingBoardPresentationRequestID: String?
     private var pendingLiveGameRequests: [String: String] = [:]
     private var pendingMoveRequests: [String: PendingMove] = [:]
     private var pendingMoveRequestByGame: [String: String] = [:]
@@ -176,6 +180,30 @@ public final class LibChessStore: ObservableObject {
 
     public var botGameOptions: BotGameOptions? {
         connectedProvider?.botGameOptions
+    }
+
+    public func selectBoardPresentation(provider: String, theme: String) {
+        guard boardProviders.contains(where: {
+            $0.id == provider && $0.themes.contains(where: { $0.id == theme })
+        }) else {
+            message = "The selected board theme is not advertised by LibChess."
+            return
+        }
+
+        if boardPresentation?.provider == provider,
+           boardPresentation?.theme == theme
+        {
+            persistBoardPresentation(provider: provider, theme: theme)
+            return
+        }
+
+        let command = LoadBoardPresentationCommand(provider: provider, theme: theme)
+        pendingBoardPresentationRequestID = command.requestID
+        isLoadingBoardPresentation = true
+        if !send(command) {
+            pendingBoardPresentationRequestID = nil
+            isLoadingBoardPresentation = false
+        }
     }
 
     public var botVariants: [GameVariant] {
@@ -522,8 +550,15 @@ public final class LibChessStore: ObservableObject {
             }
 
             switch event.type {
-            case "ready", "providers":
+            case "ready":
                 providers = event.providers ?? []
+                receiveBoardCatalog(event, restorePreference: true)
+            case "providers":
+                providers = event.providers ?? []
+            case "board_providers":
+                receiveBoardCatalog(event, restorePreference: false)
+            case "board_presentation_loaded":
+                receiveBoardPresentation(event)
             case "connection_state_changed":
                 if let state = event.state {
                     connectionState = state
@@ -588,6 +623,10 @@ public final class LibChessStore: ObservableObject {
                     isCreatingBotGame = false
                     pendingBotGameRequestID = nil
                 }
+                if event.requestID == pendingBoardPresentationRequestID {
+                    pendingBoardPresentationRequestID = nil
+                    isLoadingBoardPresentation = false
+                }
                 if let requestID = event.requestID,
                    let gameID = pendingLiveGameRequests.removeValue(forKey: requestID)
                 {
@@ -645,6 +684,74 @@ public final class LibChessStore: ObservableObject {
             return
         }
         authorizationURL = url
+    }
+
+    private func receiveBoardCatalog(_ event: WireEvent, restorePreference: Bool) {
+        if let catalog = event.boardProviders {
+            boardProviders = catalog
+        }
+        if let presentation = event.boardPresentation {
+            boardPresentation = presentation
+            reconcileBoardZoomPreference(with: presentation)
+        }
+        guard restorePreference, let boardPresentation else {
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let provider = defaults.string(forKey: BoardPreferenceKey.provider)
+            ?? boardPresentation.provider
+        let theme = defaults.string(forKey: BoardPreferenceKey.theme)
+            ?? boardPresentation.theme
+        let preferenceIsValid = boardProviders.contains(where: {
+            $0.id == provider && $0.themes.contains(where: { $0.id == theme })
+        })
+        if preferenceIsValid,
+           (provider != boardPresentation.provider || theme != boardPresentation.theme)
+        {
+            selectBoardPresentation(provider: provider, theme: theme)
+        } else {
+            persistBoardPresentation(
+                provider: boardPresentation.provider,
+                theme: boardPresentation.theme
+            )
+        }
+    }
+
+    private func receiveBoardPresentation(_ event: WireEvent) {
+        guard let requestID = event.requestID,
+              requestID == pendingBoardPresentationRequestID,
+              let presentation = event.boardPresentation,
+              boardProviders.contains(where: {
+                  $0.id == presentation.provider
+                      && $0.themes.contains(where: { $0.id == presentation.theme })
+              })
+        else {
+            return
+        }
+
+        pendingBoardPresentationRequestID = nil
+        isLoadingBoardPresentation = false
+        boardPresentation = presentation
+        reconcileBoardZoomPreference(with: presentation)
+        persistBoardPresentation(provider: presentation.provider, theme: presentation.theme)
+    }
+
+    private func persistBoardPresentation(provider: String, theme: String) {
+        let defaults = UserDefaults.standard
+        defaults.set(provider, forKey: BoardPreferenceKey.provider)
+        defaults.set(theme, forKey: BoardPreferenceKey.theme)
+    }
+
+    private func reconcileBoardZoomPreference(with presentation: BoardPresentation) {
+        let defaults = UserDefaults.standard
+        let savedID = defaults.string(forKey: BoardPreferenceKey.zoomPreset) ?? ""
+        guard presentation.zoom.preset(id: savedID) == nil,
+              let fallback = presentation.zoom.defaultValue ?? presentation.zoom.presets.first
+        else {
+            return
+        }
+        defaults.set(fallback.id, forKey: BoardPreferenceKey.zoomPreset)
     }
 
     private func persistOAuthCredential(_ event: WireEvent) {
@@ -1425,6 +1532,22 @@ struct LoadGameReviewCommand: Encodable {
         case requestID = "request_id"
         case type
         case gameID = "game_id"
+    }
+}
+
+struct LoadBoardPresentationCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "load_board_presentation"
+    let provider: String
+    let theme: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case provider
+        case theme
     }
 }
 

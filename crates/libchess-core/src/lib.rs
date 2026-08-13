@@ -8,8 +8,10 @@ use thiserror::Error;
 use zeroize::Zeroize;
 
 mod live;
+mod presentation;
 
 pub use live::*;
+pub use presentation::*;
 
 /// Stable identifier used by configuration and the frontend protocol.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -146,7 +148,7 @@ pub enum ColorPreference {
     Random,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayerColor {
     White,

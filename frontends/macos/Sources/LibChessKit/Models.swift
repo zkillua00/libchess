@@ -651,6 +651,8 @@ struct WireEvent: Decodable, Sendable {
     let requestID: String?
     let type: String
     let providers: [ProviderDescriptor]?
+    let boardProviders: [BoardProviderDescriptor]?
+    let boardPresentation: BoardPresentation?
     let account: ChessAccount?
     let state: ConnectionState?
     let provider: String?
@@ -677,6 +679,8 @@ struct WireEvent: Decodable, Sendable {
         case requestID = "request_id"
         case type
         case providers
+        case boardProviders = "board_providers"
+        case boardPresentation = "board_presentation"
         case account
         case state
         case provider

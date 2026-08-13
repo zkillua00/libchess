@@ -12,6 +12,7 @@ without changing the frontend contract.
 ## Repository layout
 
 - `crates/libchess-core`: domain types, provider ports, and safety policy
+- `crates/libchess-board`: portable board assets, themes, metrics, and motion
 - `crates/libchess-rules`: provider-neutral legal positions and move generation
 - `crates/libchess-lichess`: Lichess HTTP adapter
 - `crates/libchess`: provider registry and application service
@@ -91,9 +92,13 @@ casual, so rated play is not a missing frontend option. The app enters its
 native board as soon as the game is created. It supports legal click-to-move,
 promotions, Chess960 castling, Crazyhouse pockets and drops, clocks, move
 history, draw and takeback offers, abort, resign, and disconnect recovery.
-Piece movement, captures, promotions, castling, rollbacks, board resizing, and
-game-list changes use native SwiftUI transitions that respect Reduce Motion.
-The board-size menu offers persistent Small, Medium, and Large zoom levels.
+Piece movement, captures, promotions, castling, rollbacks, and board resizing
+use rules supplied by the Rust board provider and translated into native
+SwiftUI transitions that respect Reduce Motion. The Board Appearance menu
+selects the built-in Classic or Slate theme and provider-advertised Small,
+Medium, and Large zoom levels. These assets, palettes, geometry values,
+animation rules, and zoom presets are not defined in Swift, so future WinUI 3
+and Qt frontends can consume the same customization contract.
 
 ## Recent games and analysis
 
