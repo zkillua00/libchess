@@ -10,6 +10,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 libchess = { path = "../libchess" }
+libchess-rules.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -524,6 +524,23 @@ pub trait PlatformBackend: Send + Sync {
         )))
     }
 
+    async fn live_games(&self) -> Result<Vec<LiveGameSummary>, LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not expose ongoing games",
+            self.descriptor().id
+        )))
+    }
+
+    async fn watch_live_game_catalog(
+        &self,
+        _events: LiveGameCatalogEventSink,
+    ) -> Result<(), LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "provider '{}' does not expose realtime game events",
+            self.descriptor().id
+        )))
+    }
+
     async fn play_move(&self, _submission: MoveSubmission) -> Result<(), LibChessError> {
         Err(LibChessError::unsupported(format!(
             "provider '{}' does not support live moves",

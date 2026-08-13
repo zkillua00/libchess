@@ -143,6 +143,21 @@ public enum PlayerColor: String, Codable, CaseIterable, Hashable, Sendable {
     case black
 }
 
+public enum BoardPerspective {
+    /// Board squares in native rendering order, from top-left to bottom-right.
+    public static func squares(for playerColor: PlayerColor) -> [String] {
+        let files: [Character] = playerColor == .white
+            ? Array("abcdefgh")
+            : Array("hgfedcba")
+        let ranks = playerColor == .white
+            ? Array((1 ... 8).reversed())
+            : Array(1 ... 8)
+        return ranks.flatMap { rank in
+            files.map { file in "\(file)\(rank)" }
+        }
+    }
+}
+
 public enum PieceRole: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case pawn
     case knight
@@ -277,6 +292,7 @@ public struct LiveGame: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let url: String
     public let playerColor: PlayerColor
+    public let initialFEN: String
     public let variantID: String
     public let variantName: String
     public let rated: Bool
@@ -292,6 +308,7 @@ public struct LiveGame: Codable, Equatable, Identifiable, Sendable {
         case id
         case url
         case playerColor = "player_color"
+        case initialFEN = "initial_fen"
         case variantID = "variant_id"
         case variantName = "variant_name"
         case rated
@@ -301,6 +318,56 @@ public struct LiveGame: Codable, Equatable, Identifiable, Sendable {
         case white
         case black
         case state
+    }
+}
+
+public struct LiveGameSummary: Codable, Equatable, Identifiable, Sendable {
+    public let provider: String
+    public let id: String
+    public let url: String
+    public let playerColor: PlayerColor
+    public let displayName: String
+    public let variantID: String
+    public let variantName: String
+    public let rated: Bool
+    public let speed: String
+    public let isMyTurn: Bool
+
+    public init(
+        provider: String,
+        id: String,
+        url: String,
+        playerColor: PlayerColor,
+        displayName: String,
+        variantID: String,
+        variantName: String,
+        rated: Bool,
+        speed: String,
+        isMyTurn: Bool
+    ) {
+        self.provider = provider
+        self.id = id
+        self.url = url
+        self.playerColor = playerColor
+        self.displayName = displayName
+        self.variantID = variantID
+        self.variantName = variantName
+        self.rated = rated
+        self.speed = speed
+        self.isMyTurn = isMyTurn
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case id
+        case url
+        case playerColor = "player_color"
+        case displayName = "display_name"
+        case variantID = "variant_id"
+        case variantName = "variant_name"
+        case rated
+        case speed
+        case isMyTurn = "is_my_turn"
     }
 }
 
@@ -382,6 +449,24 @@ public enum BotGameTimeControl: Codable, Equatable, Sendable {
             try container.encode(Kind.unlimited, forKey: .type)
         }
     }
+
+    public var speedName: String {
+        switch self {
+        case let .clock(initialSeconds, incrementSeconds):
+            let estimated = UInt64(initialSeconds) + UInt64(incrementSeconds) * 40
+            return switch estimated {
+            case ..<30: "ultraBullet"
+            case ..<180: "bullet"
+            case ..<480: "blitz"
+            case ..<1_500: "rapid"
+            default: "classical"
+            }
+        case .correspondence:
+            return "correspondence"
+        case .unlimited:
+            return "unlimited"
+        }
+    }
 }
 
 public struct BotGame: Codable, Equatable, Identifiable, Sendable {
@@ -434,6 +519,8 @@ struct WireEvent: Decodable, Sendable {
     let expiresInSeconds: UInt64?
     let game: BotGame?
     let liveGame: LiveGame?
+    let games: [LiveGameSummary]?
+    let board: BoardState?
     let chat: LiveChatMessage?
     let gameID: String?
     let moveID: String?
@@ -454,6 +541,8 @@ struct WireEvent: Decodable, Sendable {
         case expiresInSeconds = "expires_in_seconds"
         case game
         case liveGame = "live_game"
+        case games
+        case board
         case chat
         case gameID = "game_id"
         case moveID = "move_id"

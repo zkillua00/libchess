@@ -188,6 +188,7 @@ pub struct LiveGame {
     pub id: GameId,
     pub url: String,
     pub player_color: PlayerColor,
+    pub initial_fen: String,
     pub variant_id: GameVariantId,
     pub variant_name: String,
     pub rated: bool,
@@ -200,6 +201,28 @@ pub struct LiveGame {
     pub black: LiveGamePlayer,
     pub state: LiveGameState,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LiveGameSummary {
+    pub provider: ProviderId,
+    pub id: GameId,
+    pub url: String,
+    pub player_color: PlayerColor,
+    pub display_name: String,
+    pub variant_id: GameVariantId,
+    pub variant_name: String,
+    pub rated: bool,
+    pub speed: String,
+    pub is_my_turn: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveGameCatalogEvent {
+    Changed,
+}
+
+pub type LiveGameCatalogEventSink = Arc<dyn Fn(LiveGameCatalogEvent) + Send + Sync + 'static>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LiveChatMessage {

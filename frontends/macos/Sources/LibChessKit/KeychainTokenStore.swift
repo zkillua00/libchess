@@ -4,6 +4,25 @@ import Security
 struct KeychainTokenStore: Sendable {
     private let service = "org.libchess.macos.provider-token"
 
+    func contains(provider: String) throws -> Bool {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: provider,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        switch status {
+        case errSecSuccess, errSecInteractionNotAllowed:
+            return true
+        case errSecItemNotFound:
+            return false
+        default:
+            throw KeychainError(status: status)
+        }
+    }
+
     func load(provider: String) throws -> String? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -85,4 +104,3 @@ private enum KeychainError: LocalizedError {
         }
     }
 }
-

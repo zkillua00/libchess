@@ -7,10 +7,11 @@ pub use libchess_core::{
     BotGameTimeControl, BotOpponent, BotOpponentId, ChessContext, ClockTimeControl,
     ClockTimeControlOptions, ColorPreference, ErrorKind, GameId, GameStatus, GameVariant,
     GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
-    LiveGameClock, LiveGameEvent, LiveGameEventSink, LiveGamePlayer, LiveGameRequest,
-    LiveGameState, MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken,
-    PieceRole, PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession,
-    PlayerColor, PocketPiece, ProviderDescriptor, ProviderId, ensure_engine_allowed,
+    LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
+    LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
+    MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceRole,
+    PlatformBackend, PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
+    PocketPiece, ProviderDescriptor, ProviderId, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
 

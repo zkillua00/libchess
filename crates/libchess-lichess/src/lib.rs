@@ -72,7 +72,9 @@ impl LichessFactory {
             PlatformCapability::RealtimeEvents,
         ]);
         let bot_opponents = (1_u8..=8)
-            .map(|level| BotOpponent::new(format!("level-{level}"), format!("Level {level}")))
+            .map(|level| {
+                BotOpponent::new(format!("level-{level}"), format!("Stockfish level {level}"))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let variants = LICHESS_VARIANTS
             .iter()
@@ -477,12 +479,16 @@ impl PlatformBackend for LichessBackend {
             }
         };
 
+        // Lichess's challenge response calls the side to move `player`; it is
+        // not the authenticated user's color. Resolve random locally so the
+        // adapter knows the exact point of view before opening the game stream.
+        let (provider_color, player_color) = resolve_color(request.color)?;
         let form = LichessAiChallengeRequest {
             level,
             clock_limit,
             clock_increment,
             days,
-            color: request.color,
+            color: provider_color,
             variant: provider_variant,
             fen: request.initial_fen.as_deref(),
         };
@@ -565,7 +571,7 @@ impl PlatformBackend for LichessBackend {
             provider: self.descriptor.id.clone(),
             id: game.id,
             url: game_url.into(),
-            player_color: game.player,
+            player_color,
             opponent,
             variant: response_variant,
             time_control: request.time_control,
@@ -579,6 +585,17 @@ impl PlatformBackend for LichessBackend {
         events: libchess_core::LiveGameEventSink,
     ) -> Result<(), LibChessError> {
         live::watch(self, request, events).await
+    }
+
+    async fn live_games(&self) -> Result<Vec<libchess_core::LiveGameSummary>, LibChessError> {
+        live::list_games(self).await
+    }
+
+    async fn watch_live_game_catalog(
+        &self,
+        events: libchess_core::LiveGameCatalogEventSink,
+    ) -> Result<(), LibChessError> {
+        live::watch_catalog(self, events).await
     }
 
     async fn play_move(
@@ -626,7 +643,6 @@ struct LichessAiGame {
     id: String,
     variant: LichessVariant,
     rated: bool,
-    player: PlayerColor,
 }
 
 #[derive(Deserialize)]
@@ -696,6 +712,30 @@ fn random_urlsafe<const N: usize>() -> Result<String, LibChessError> {
         )
     })?;
     Ok(URL_SAFE_NO_PAD.encode(bytes.as_slice()))
+}
+
+fn resolve_color(
+    preference: ColorPreference,
+) -> Result<(ColorPreference, PlayerColor), LibChessError> {
+    match preference {
+        ColorPreference::White => Ok((ColorPreference::White, PlayerColor::White)),
+        ColorPreference::Black => Ok((ColorPreference::Black, PlayerColor::Black)),
+        ColorPreference::Random => {
+            let mut byte = [0_u8; 1];
+            getrandom::fill(&mut byte).map_err(|error| {
+                LibChessError::new(
+                    ErrorKind::Provider,
+                    format!("could not choose a random game color: {error}"),
+                    true,
+                )
+            })?;
+            if byte[0] & 1 == 0 {
+                Ok((ColorPreference::White, PlayerColor::White))
+            } else {
+                Ok((ColorPreference::Black, PlayerColor::Black))
+            }
+        }
+    }
 }
 
 fn validate_redirect_uri(value: &str) -> Result<Url, LibChessError> {
@@ -981,9 +1021,8 @@ mod tests {
         assert_eq!(game.provider.as_str(), "lichess");
         assert_eq!(game.id, "v8BRXYtM");
         assert_eq!(game.url, format!("{base_url}v8BRXYtM"));
-        assert_eq!(game.player_color, PlayerColor::Black);
         assert_eq!(game.opponent.id.as_str(), "level-6");
-        assert_eq!(game.opponent.display_name, "Level 6");
+        assert_eq!(game.opponent.display_name, "Stockfish level 6");
         assert_eq!(game.variant.id.as_str(), "standard");
         assert_eq!(game.time_control, BotGameTimeControl::clock(600, 5));
         assert_eq!(game.initial_fen, None);
@@ -1005,9 +1044,17 @@ mod tests {
             unique_query_value(&form, "clock.increment").expect("clock increment"),
             Some("5".to_owned())
         );
+        let resolved_color = unique_query_value(&form, "color")
+            .expect("color")
+            .expect("resolved color");
+        assert!(matches!(resolved_color.as_str(), "white" | "black"));
         assert_eq!(
-            unique_query_value(&form, "color").expect("color"),
-            Some("random".to_owned())
+            game.player_color,
+            if resolved_color == "white" {
+                PlayerColor::White
+            } else {
+                PlayerColor::Black
+            }
         );
         assert_eq!(
             unique_query_value(&form, "variant").expect("variant"),
@@ -1024,7 +1071,7 @@ mod tests {
             "variant":{"key":"atomic","name":"Atomic","short":"Atomic"},
             "speed":"correspondence",
             "rated":false,
-            "player":"white"
+            "player":"black"
         }"#;
         let (base_url, captured_request) = serve_token_once(mock_response("201 Created", body));
         let factory = LichessFactory::new(&base_url).expect("factory");
@@ -1046,6 +1093,7 @@ mod tests {
             .expect("created correspondence game");
 
         assert_eq!(game.variant.id.as_str(), "atomic");
+        assert_eq!(game.player_color, PlayerColor::White);
         assert_eq!(
             game.time_control,
             BotGameTimeControl::Correspondence { days_per_move: 7 }
@@ -1062,6 +1110,10 @@ mod tests {
             unique_query_value(&form, "variant").expect("variant"),
             Some("atomic".to_owned())
         );
+        assert_eq!(
+            unique_query_value(&form, "color").expect("color"),
+            Some("white".to_owned())
+        );
         assert!(unique_query_value(&form, "clock.limit").unwrap().is_none());
         assert!(
             unique_query_value(&form, "clock.increment")
@@ -1077,7 +1129,7 @@ mod tests {
             "variant":{"key":"fromPosition","name":"From Position","short":"From Pos."},
             "speed":"correspondence",
             "rated":false,
-            "player":"black"
+            "player":"white"
         }"#;
         let (base_url, captured_request) = serve_token_once(mock_response("201 Created", body));
         let factory = LichessFactory::new(&base_url).expect("factory");
@@ -1100,6 +1152,7 @@ mod tests {
             .expect("created unlimited custom-position game");
 
         assert_eq!(game.variant.id.as_str(), "from-position");
+        assert_eq!(game.player_color, PlayerColor::Black);
         assert_eq!(game.time_control, BotGameTimeControl::Unlimited);
         assert_eq!(game.initial_fen.as_deref(), Some(fen));
 
@@ -1113,6 +1166,10 @@ mod tests {
         assert_eq!(
             unique_query_value(&form, "fen").expect("fen"),
             Some(fen.to_owned())
+        );
+        assert_eq!(
+            unique_query_value(&form, "color").expect("color"),
+            Some("black".to_owned())
         );
         assert!(unique_query_value(&form, "clock.limit").unwrap().is_none());
         assert!(

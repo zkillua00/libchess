@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use libchess_core::{
     ErrorKind, GameId, GameStatus, GameVariantId, LibChessError, LiveChatMessage, LiveGame,
-    LiveGameAction, LiveGameClock, LiveGameEvent, LiveGameEventSink, LiveGamePlayer,
-    LiveGameRequest, LiveGameState, MoveSubmission, PlayerColor,
+    LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
+    LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
+    MoveSubmission, PlayerColor,
 };
 use reqwest::{StatusCode, header};
 use serde::Deserialize;
@@ -14,6 +15,128 @@ use super::{
 };
 
 const MAX_STREAM_LINE_BYTES: usize = 256 * 1024;
+
+pub(super) async fn list_games(
+    backend: &LichessBackend,
+) -> Result<Vec<LiveGameSummary>, LibChessError> {
+    let mut url = backend.endpoint("api/account/playing")?;
+    url.query_pairs_mut().append_pair("nb", "50");
+    let response = backend
+        .http
+        .get(url)
+        .header(header::ACCEPT, "application/json")
+        .bearer_auth(backend.token.expose())
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(map_transport_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(map_status(status));
+    }
+    let response = response
+        .json::<NowPlayingResponse>()
+        .await
+        .map_err(|error| protocol_error(format!("invalid ongoing-games response: {error}")))?;
+    response
+        .now_playing
+        .into_iter()
+        .map(|game| map_game_summary(backend, game))
+        .collect()
+}
+
+pub(super) async fn watch_catalog(
+    backend: &LichessBackend,
+    events: LiveGameCatalogEventSink,
+) -> Result<(), LibChessError> {
+    let mut response = backend
+        .http
+        .get(backend.endpoint("api/stream/event")?)
+        .header(header::ACCEPT, "application/x-ndjson")
+        .bearer_auth(backend.token.expose())
+        .send()
+        .await
+        .map_err(map_transport_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(map_status(status));
+    }
+
+    let mut buffer = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(map_transport_error)? {
+        buffer.extend_from_slice(&chunk);
+        while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
+            let mut line = buffer.drain(..=newline).collect::<Vec<_>>();
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            consume_catalog_line(&line, &events)?;
+        }
+        if buffer.len() > MAX_STREAM_LINE_BYTES {
+            return Err(protocol_error("Lichess sent an oversized account event"));
+        }
+    }
+    if !buffer.is_empty() {
+        consume_catalog_line(&buffer, &events)?;
+    }
+    Err(LibChessError::new(
+        ErrorKind::Network,
+        "the Lichess account event stream ended",
+        true,
+    ))
+}
+
+fn consume_catalog_line(
+    line: &[u8],
+    events: &LiveGameCatalogEventSink,
+) -> Result<(), LibChessError> {
+    if line.is_empty() {
+        return Ok(());
+    }
+    let event = serde_json::from_slice::<EventType>(line)
+        .map_err(|error| protocol_error(format!("invalid account event: {error}")))?;
+    if matches!(event.kind.as_str(), "gameStart" | "gameFinish") {
+        events(LiveGameCatalogEvent::Changed);
+    }
+    Ok(())
+}
+
+fn map_game_summary(
+    backend: &LichessBackend,
+    game: NowPlayingGame,
+) -> Result<LiveGameSummary, LibChessError> {
+    validate_game_id(&game.game_id)?;
+    let canonical_variant = canonical_variant_id(&game.variant.key)
+        .ok_or_else(|| protocol_error("Lichess listed an unsupported chess variant"))?;
+    let ai_level = game.opponent.ai;
+    if let Some(level) = ai_level
+        && !(1..=8).contains(&level)
+    {
+        return Err(protocol_error("Lichess listed an invalid AI level"));
+    }
+    let display_name = game
+        .opponent
+        .username
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| ai_level.map(|level| format!("Stockfish level {level}")))
+        .unwrap_or_else(|| "Anonymous".to_owned());
+    if display_name.len() > 128 {
+        return Err(protocol_error("Lichess listed an oversized opponent name"));
+    }
+    Ok(LiveGameSummary {
+        provider: backend.descriptor.id.clone(),
+        id: GameId::new(game.game_id.clone())?,
+        url: backend.endpoint(&game.game_id)?.into(),
+        player_color: game.color,
+        display_name,
+        variant_id: GameVariantId::new(canonical_variant)?,
+        variant_name: game.variant.name,
+        rated: game.rated,
+        speed: game.speed,
+        is_my_turn: game.is_my_turn,
+    })
+}
 
 pub(super) async fn watch(
     backend: &LichessBackend,
@@ -212,6 +335,7 @@ impl<'a> StreamContext<'a> {
             id: self.request.game_id.clone(),
             url: self.backend.endpoint(self.request.game_id.as_str())?.into(),
             player_color: self.request.player_color,
+            initial_fen: initial_fen.clone(),
             variant_id,
             variant_name: full.variant.name,
             rated: full.rated,
@@ -320,7 +444,11 @@ fn map_player(player: GamePlayer) -> Result<LiveGamePlayer, LibChessError> {
     let name = player
         .name
         .filter(|name| !name.trim().is_empty())
-        .or_else(|| player.ai_level.map(|_| "Lichess AI".to_owned()))
+        .or_else(|| {
+            player
+                .ai_level
+                .map(|level| format!("Stockfish level {level}"))
+        })
         .or_else(|| player.id.clone())
         .ok_or_else(|| protocol_error("Lichess streamed a player without an identity"))?;
     if name.len() > 128 {
@@ -345,6 +473,33 @@ fn protocol_error(message: impl Into<String>) -> LibChessError {
 struct EventType {
     #[serde(rename = "type")]
     kind: String,
+}
+
+#[derive(Deserialize)]
+struct NowPlayingResponse {
+    #[serde(rename = "nowPlaying")]
+    now_playing: Vec<NowPlayingGame>,
+}
+
+#[derive(Deserialize)]
+struct NowPlayingGame {
+    #[serde(rename = "gameId")]
+    game_id: String,
+    color: PlayerColor,
+    opponent: NowPlayingOpponent,
+    variant: StreamVariant,
+    rated: bool,
+    speed: String,
+    #[serde(rename = "isMyTurn")]
+    is_my_turn: bool,
+}
+
+#[derive(Deserialize)]
+struct NowPlayingOpponent {
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    ai: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -493,6 +648,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lists_every_ongoing_game_with_provider_names() {
+        let body = r#"{
+            "nbMyTurn": 1,
+            "nowPlaying": [
+                {
+                    "gameId": "rCRw1AuO",
+                    "fullId": "rCRw1AuOSECRET",
+                    "color": "black",
+                    "opponent": {"id": "philippe", "username": "Philippe", "rating": 1790},
+                    "variant": {"key": "standard", "name": "Standard"},
+                    "rated": true,
+                    "speed": "correspondence",
+                    "isMyTurn": true
+                },
+                {
+                    "gameId": "v8BRXYtM",
+                    "fullId": "v8BRXYtMSECRET",
+                    "color": "white",
+                    "opponent": {"ai": 4},
+                    "variant": {"key": "atomic", "name": "Atomic"},
+                    "rated": false,
+                    "speed": "rapid",
+                    "isMyTurn": false
+                }
+            ]
+        }"#
+        .to_owned();
+        let (base_url, captured_request) = serve_once("application/json", body);
+        let backend = make_backend(&base_url);
+
+        let games = backend.live_games().await.expect("ongoing games");
+
+        let request = captured_request.recv().expect("captured request");
+        assert!(request.starts_with("GET /api/account/playing?nb=50 HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer lio_test_token"));
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].display_name, "Philippe");
+        assert_eq!(games[0].player_color, PlayerColor::Black);
+        assert!(games[0].is_my_turn);
+        assert_eq!(games[0].speed, "correspondence");
+        assert_eq!(games[0].url, format!("{base_url}rCRw1AuO"));
+        assert!(!games[0].url.contains("SECRET"));
+        assert_eq!(games[1].display_name, "Stockfish level 4");
+        assert_eq!(games[1].variant_id.as_str(), "atomic");
+    }
+
+    #[tokio::test]
+    async fn watches_the_single_account_event_stream_for_catalog_changes() {
+        let body = concat!(
+            r#"{"type":"gameStart","game":{"id":"rCRw1AuO"}}"#,
+            "\n",
+            "\n",
+            r#"{"type":"challenge","challenge":{"id":"ignored"}}"#,
+            "\n",
+            r#"{"type":"gameFinish","game":{"id":"rCRw1AuO"}}"#,
+            "\n"
+        )
+        .to_owned();
+        let (base_url, captured_request) = serve_once("application/x-ndjson", body);
+        let backend = make_backend(&base_url);
+        let received = Arc::new(Mutex::new(Vec::<LiveGameCatalogEvent>::new()));
+        let received_for_sink = Arc::clone(&received);
+        let sink = Arc::new(move |event| {
+            received_for_sink.lock().expect("events lock").push(event);
+        });
+
+        let error = backend
+            .watch_live_game_catalog(sink)
+            .await
+            .expect_err("a finite event stream should request reconnection");
+
+        let request = captured_request.recv().expect("captured request");
+        assert!(request.starts_with("GET /api/stream/event HTTP/1.1"));
+        assert!(request.contains("accept: application/x-ndjson"));
+        assert!(error.retryable);
+        assert_eq!(
+            *received.lock().expect("events lock"),
+            vec![LiveGameCatalogEvent::Changed, LiveGameCatalogEvent::Changed]
+        );
+    }
+
+    #[tokio::test]
     async fn streams_full_game_state_chat_and_presence() {
         let body = concat!(
             r#"{"type":"gameFull","id":"v8BRXYtM","variant":{"key":"standard","name":"Standard","short":"Std"},"speed":"rapid","perf":{"name":"Rapid"},"rated":false,"createdAt":1,"clock":{"initial":600000,"increment":0},"white":{"id":"test-user","name":"TestUser","rating":1500},"black":{"aiLevel":4},"initialFen":"startpos","state":{"type":"gameState","moves":"","wtime":600000,"btime":600000,"winc":0,"binc":0,"status":"started"}}"#,
@@ -533,7 +770,7 @@ mod tests {
         };
         assert_eq!(initial.state.board.pieces.len(), 32);
         assert_eq!(initial.state.board.legal_moves.len(), 20);
-        assert_eq!(initial.black.name, "Lichess AI");
+        assert_eq!(initial.black.name, "Stockfish level 4");
         assert_eq!(initial.black.ai_level, Some(4));
         assert_eq!(
             initial.clock.map(|clock| clock.initial_millis),

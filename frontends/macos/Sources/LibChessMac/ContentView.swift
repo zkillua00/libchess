@@ -1,29 +1,50 @@
+import Combine
+import Foundation
 import LibChessKit
 import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: LibChessStore
     @Environment(\.openURL) private var openURL
+    @State private var selection: SidebarDestination? = .newGame
 
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
         } detail: {
             detail
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if let message = store.message {
+                        InlineMessageBanner(message: message) {
+                            store.message = nil
+                        }
+                    }
+                }
         }
-        .alert(
-            "LibChess",
-            isPresented: Binding(
-                get: { store.message != nil },
-                set: { if !$0 { store.message = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {
-                store.message = nil
+        .onChange(of: store.connectionState.rawValue) { previousState, state in
+            if state == ConnectionState.connected.rawValue,
+               previousState != ConnectionState.connected.rawValue
+            {
+                selection = .newGame
+            } else if state == ConnectionState.disconnected.rawValue {
+                selection = .account
             }
-        } message: {
-            Text(store.message ?? "")
+        }
+        .onChange(of: store.focusedGameID) { _, gameID in
+            if let gameID {
+                selection = .game(gameID)
+            }
+        }
+        .onChange(of: store.activeGames.map(\.id)) { _, gameIDs in
+            if case let .some(.game(gameID)) = selection, !gameIDs.contains(gameID) {
+                selection = .newGame
+            }
+        }
+        .onChange(of: selection) { _, destination in
+            if case let .some(.game(gameID)) = destination {
+                store.openLiveGame(gameID)
+            }
         }
         .onChange(of: store.authorizationURL) { _, authorizationURL in
             if let authorizationURL {
@@ -33,35 +54,42 @@ struct ContentView: View {
         .onOpenURL { callbackURL in
             _ = store.handleOpenURL(callbackURL)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .showNewGame)) { _ in
+            selection = .newGame
+        }
     }
 
     private var sidebar: some View {
-        List {
-            Section("Play providers") {
-                if store.providers.isEmpty {
-                    Label("Loading providers…", systemImage: "hourglass")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(store.providers) { provider in
-                        Label(provider.displayName, systemImage: "network")
-                    }
-                }
-            }
+        List(selection: $selection) {
+            Section("Play") {
+                Label("New Game", systemImage: "plus.square")
+                    .tag(SidebarDestination.newGame)
 
-            Section("Status") {
-                Label {
-                    Text(statusTitle)
-                        .foregroundStyle(statusColor)
-                } icon: {
-                    Image(systemName: statusSymbol)
-                        .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(statusColor)
+                ForEach(store.activeGames) { game in
+                    SidebarGameRow(game: game)
+                        .tag(SidebarDestination.game(game.id))
                 }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(.clear)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                SidebarAccountButton(
+                    account: store.account,
+                    providerName: store.connectedProvider?.displayName,
+                    connectionState: store.connectionState,
+                    isSelected: selection == .account
+                ) {
+                    selection = .account
+                }
+                .environmentObject(store)
+                .padding(8)
+            }
+            .background(.bar)
+        }
         .navigationTitle("LibChess")
     }
 
@@ -69,47 +97,169 @@ struct ContentView: View {
     private var detail: some View {
         switch store.connectionState {
         case .connected:
-            ConnectedView()
+            connectedDetail
         case .authorizing:
             AuthorizingView()
         case .connecting:
-            VStack(spacing: 14) {
-                ProgressView()
-                    .controlSize(.large)
-                Text("Finishing Lichess sign-in…")
-                    .font(.headline)
-                Text("LibChess is exchanging the one-time code and validating your account.")
-                    .foregroundStyle(.secondary)
-            }
+            ConnectingView()
         case .disconnected:
             ConnectView()
         }
     }
 
-    private var statusTitle: String {
-        switch store.connectionState {
-        case .connected: "Connected"
-        case .authorizing: "Waiting for sign-in"
-        case .connecting: "Connecting"
-        case .disconnected: "Not connected"
+    @ViewBuilder
+    private var connectedDetail: some View {
+        switch selection ?? .newGame {
+        case .newGame:
+            NewGameView()
+        case let .game(gameID):
+            if let game = store.liveGame(gameID) {
+                LiveGameplayView(game: game)
+                    .navigationTitle(
+                        store.activeGames.first(where: { $0.id == gameID })?.displayName
+                            ?? game.variantName
+                    )
+            } else if let summary = store.activeGames.first(where: { $0.id == gameID }),
+                      store.isLoadingLiveGame(gameID)
+            {
+                LiveGameLoadingView(game: summary)
+            } else if let summary = store.activeGames.first(where: { $0.id == gameID }) {
+                ContentUnavailableView {
+                    Label(summary.displayName, systemImage: "checkerboard.rectangle")
+                } description: {
+                    Text("The game stream is not connected.")
+                } actions: {
+                    Button("Open Game") {
+                        store.openLiveGame(gameID)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else {
+                NewGameView()
+            }
+        case .account:
+            AccountOverviewView()
         }
     }
+}
 
-    private var statusSymbol: String {
-        switch store.connectionState {
-        case .connected: "checkmark.circle.fill"
-        case .authorizing: "safari"
-        case .connecting: "arrow.triangle.2.circlepath"
-        case .disconnected: "circle.dashed"
+private enum SidebarDestination: Hashable {
+    case newGame
+    case game(String)
+    case account
+}
+
+private struct SidebarGameRow: View {
+    let game: LiveGameSummary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkerboard.rectangle")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(game.isMyTurn ? Color.accentColor : Color.secondary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(game.displayName)
+                    .lineLimit(1)
+                Text(game.isMyTurn ? "Your turn" : game.variantName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 2)
+
+            if game.isMyTurn {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 6, height: 6)
+                    .accessibilityLabel("Your turn")
+            }
         }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct SidebarAccountButton: View {
+    @EnvironmentObject private var store: LibChessStore
+
+    let account: ChessAccount?
+    let providerName: String?
+    let connectionState: ConnectionState
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                avatar
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(account?.displayName ?? "Sign In")
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(accountSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 6)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.18) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 7)
+        )
+        .contextMenu {
+            if connectionState == .connected {
+                Button("Refresh Account") {
+                    store.refreshAccount()
+                }
+                Button("Disconnect") {
+                    store.disconnect()
+                }
+                Divider()
+                Button("Disconnect and Remove from This Mac", role: .destructive) {
+                    store.disconnect(forgetCredential: true)
+                }
+            }
+        }
+        .help(account == nil ? "Sign in to a chess service" : "Show account overview")
     }
 
-    private var statusColor: Color {
-        switch store.connectionState {
-        case .connected: .green
-        case .authorizing: .blue
-        case .connecting: .orange
-        case .disconnected: .secondary
+    private var avatar: some View {
+        ZStack {
+            Circle()
+                .fill(account == nil ? Color.secondary.opacity(0.28) : Color.accentColor)
+            if let initial = account?.username.first {
+                Text(String(initial).uppercased())
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .accessibilityHidden(true)
+    }
+
+    private var accountSubtitle: String {
+        switch connectionState {
+        case .connected:
+            providerName ?? "Connected"
+        case .authorizing:
+            "Waiting for Lichess"
+        case .connecting:
+            "Connecting…"
+        case .disconnected:
+            "Lichess"
         }
     }
 }
@@ -118,50 +268,38 @@ private struct ConnectView: View {
     @EnvironmentObject private var store: LibChessStore
 
     var body: some View {
-        VStack {
-            Spacer()
-            VStack(alignment: .leading, spacing: 20) {
-                Image(systemName: "checkerboard.rectangle")
-                    .font(.system(size: 48, weight: .medium))
-                    .foregroundStyle(.tint)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Sign in to Lichess")
-                        .font(.largeTitle.bold())
-                    Text("LibChess opens Lichess in your browser and asks only for permission to play games on your behalf.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack {
+        VStack(spacing: 18) {
+            ContentUnavailableView {
+                Label("Sign in to Lichess", systemImage: "checkerboard.rectangle")
+            } description: {
+                Text("Connect your account to create and play games from this Mac.")
+            } actions: {
+                HStack(spacing: 10) {
                     Button("Sign in with Lichess") {
                         store.beginLichessOAuth()
                     }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
 
                     if store.savedCredentialAvailable {
                         Button("Use Saved Credential") {
                             store.connectUsingSavedCredential()
                         }
                     }
-
-                    Spacer()
                 }
-
-                Label(
-                    "Authentication stays in your browser. The resulting credential is stored in macOS Keychain after Lichess validates it.",
-                    systemImage: "lock.shield"
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
             }
-            .padding(32)
-            .frame(maxWidth: 620)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-            Spacer()
+
+            Label(
+                "Authentication opens on lichess.org. Your credential is stored in macOS Keychain.",
+                systemImage: "lock.shield"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
-        .padding(32)
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("Connect")
     }
 }
 
@@ -170,23 +308,12 @@ private struct AuthorizingView: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        VStack(spacing: 22) {
-            Spacer()
-
-            Image(systemName: "safari")
-                .font(.system(size: 58))
-                .foregroundStyle(.tint)
-
-            VStack(spacing: 8) {
-                Text("Finish signing in through Lichess")
-                    .font(.largeTitle.bold())
-                Text("Approve the board:play permission in your browser. LibChess will continue automatically when Lichess returns you here.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 520)
-            }
-
-            HStack(spacing: 12) {
+        ContentUnavailableView {
+            Label("Finish signing in", systemImage: "safari")
+        } description: {
+            Text("Approve permission in your browser. LibChess will continue when Lichess returns you here.")
+        } actions: {
+            HStack(spacing: 10) {
                 if let authorizationURL = store.authorizationURL {
                     Button("Reopen Browser") {
                         openURL(authorizationURL)
@@ -197,88 +324,174 @@ private struct AuthorizingView: View {
                 Button("Cancel", role: .cancel) {
                     store.cancelOAuth()
                 }
+                .keyboardShortcut(.cancelAction)
             }
-
-            Spacer()
         }
-        .padding(32)
+        .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("Connect")
     }
 }
 
-private struct ConnectedView: View {
+private struct ConnectingView: View {
+    var body: some View {
+        ContentUnavailableView {
+            Label("Connecting to Lichess", systemImage: "arrow.triangle.2.circlepath")
+        } description: {
+            Text("LibChess is validating your account and preparing the connection.")
+        } actions: {
+            ProgressView()
+                .controlSize(.small)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("Connect")
+    }
+}
+
+private struct NewGameView: View {
     @EnvironmentObject private var store: LibChessStore
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.title)
-                    .foregroundStyle(.green)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(store.account?.displayName ?? "Connected")
-                        .font(.headline)
-                    Text(store.connectedProvider?.displayName ?? "Chess provider")
-                        .font(.caption)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("New Game")
+                        .font(.largeTitle.bold())
+                    Text("Choose an opponent and game format.")
                         .foregroundStyle(.secondary)
                 }
 
-                Spacer()
+                Divider()
 
-                Menu("Account") {
+                if store.supportsBotGames {
+                    BotGameCreatorView()
+                } else {
+                    ContentUnavailableView {
+                        Label("Bot games unavailable", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text("The connected chess service does not provide bot-game creation.")
+                    }
+                }
+            }
+            .padding(32)
+            .frame(maxWidth: 720, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("New Game")
+    }
+}
+
+private struct AccountOverviewView: View {
+    @EnvironmentObject private var store: LibChessStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(spacing: 16) {
+                    accountAvatar
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.account?.displayName ?? "Account")
+                            .font(.largeTitle.bold())
+                        Label("Connected to \(store.connectedProvider?.displayName ?? "chess service")", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                Divider()
+
+                Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 12) {
+                    GridRow {
+                        Text("Username")
+                            .foregroundStyle(.secondary)
+                        Text(store.account?.username ?? "—")
+                            .textSelection(.enabled)
+                    }
+                    GridRow {
+                        Text("Provider")
+                            .foregroundStyle(.secondary)
+                        Text(store.connectedProvider?.displayName ?? "—")
+                    }
+                    GridRow {
+                        Text("Account ID")
+                            .foregroundStyle(.secondary)
+                        Text(store.account?.id ?? "—")
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Divider()
+
+                HStack(spacing: 10) {
                     Button("Refresh Account") {
                         store.refreshAccount()
                     }
                     Button("Disconnect") {
                         store.disconnect()
                     }
-                    Divider()
-                    Button("Disconnect and Remove from This Mac", role: .destructive) {
+                    Spacer()
+                    Button("Remove from This Mac", role: .destructive) {
                         store.disconnect(forgetCredential: true)
                     }
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 12)
-            .background(.bar)
-
-            Divider()
-
-            if let game = store.liveGame {
-                LiveGameplayView(game: game)
-            } else if store.isLoadingLiveGame {
-                LiveGameLoadingView()
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
-                        if store.supportsBotGames {
-                            BotGameCreatorView()
-                        } else {
-                            GroupBox("Play a bot") {
-                                Label(
-                                    "The connected provider does not advertise bot game creation.",
-                                    systemImage: "exclamationmark.triangle"
-                                )
-                                .foregroundStyle(.secondary)
-                                .padding(8)
-                            }
-                        }
-                    }
-                    .padding(32)
-                    .frame(maxWidth: 760)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            .padding(32)
+            .frame(maxWidth: 680, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("Account")
+    }
+
+    private var accountAvatar: some View {
+        ZStack {
+            Circle()
+                .fill(Color.accentColor)
+            Text(store.account?.username.first.map { String($0).uppercased() } ?? "?")
+                .font(.title.bold())
+                .foregroundStyle(.white)
+        }
+        .frame(width: 64, height: 64)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct InlineMessageBanner: View {
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
     }
 }
 
 private struct LiveGameLoadingView: View {
     @EnvironmentObject private var store: LibChessStore
+    let game: LiveGameSummary
 
     var body: some View {
         VStack(spacing: 16) {
@@ -286,17 +499,18 @@ private struct LiveGameLoadingView: View {
                 .controlSize(.large)
             Text("Preparing the native board…")
                 .font(.title2.bold())
-            if let game = store.createdBotGame {
-                Text("Connecting to \(game.opponent.displayName) · \(game.variant.displayName)")
-                    .foregroundStyle(.secondary)
-            }
+            Text("Connecting to \(game.displayName) · \(game.variantName)")
+                .foregroundStyle(.secondary)
 
             Button("Cancel", role: .cancel) {
-                store.leaveLiveGame()
+                store.stopObservingLiveGame(game.id)
+                NotificationCenter.default.post(name: .showNewGame, object: nil)
             }
+            .keyboardShortcut(.cancelAction)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle(game.displayName)
     }
 }
 
@@ -313,18 +527,56 @@ private struct BotGameCreatorView: View {
     @State private var initialFEN = ""
 
     var body: some View {
-        GroupBox("Play a bot") {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("Create a casual game against a bot from \(store.connectedProvider?.displayName ?? "the connected provider"). Every choice below is advertised by LibChess for the active provider.")
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Play a Bot")
+                    .font(.title2.bold())
+                Text("Create a casual game against \(store.connectedProvider?.displayName ?? "the connected service") AI.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
 
-                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 14) {
+            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 14) {
+                GridRow {
+                    Text("Opponent")
+                    Picker("Opponent", selection: opponentSelection) {
+                        ForEach(store.botOpponents) { opponent in
+                            Text(opponent.displayName).tag(opponent.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GridRow {
+                    Text("Variant")
+                    Picker("Variant", selection: variantSelection) {
+                        ForEach(store.botVariants) { variant in
+                            Text(variant.displayName).tag(variant.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GridRow {
+                    Text("Time control")
+                    Picker("Time control", selection: timeControlModeSelection) {
+                        ForEach(availableTimeControlModes) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if selectedTimeControlMode == .clock, let clockOptions {
                     GridRow {
-                        Text("Opponent")
-                        Picker("Opponent", selection: opponentSelection) {
-                            ForEach(store.botOpponents) { opponent in
-                                Text(opponent.displayName).tag(opponent.id)
+                        Text("Initial time")
+                        Picker("Initial time", selection: initialSecondsSelection) {
+                            ForEach(clockOptions.initialSeconds, id: \.self) { seconds in
+                                Text(seconds.initialTimeLabel).tag(seconds)
                             }
                         }
                         .labelsHidden()
@@ -332,140 +584,106 @@ private struct BotGameCreatorView: View {
                     }
 
                     GridRow {
-                        Text("Variant")
-                        Picker("Variant", selection: variantSelection) {
-                            ForEach(store.botVariants) { variant in
-                                Text(variant.displayName).tag(variant.id)
+                        Text("Increment")
+                        Picker("Increment", selection: incrementSecondsSelection) {
+                            ForEach(clockOptions.incrementSeconds, id: \.self) { seconds in
+                                Text(seconds.incrementLabel).tag(seconds)
                             }
                         }
                         .labelsHidden()
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    GridRow {
-                        Text("Time control")
-                        Picker("Time control", selection: timeControlModeSelection) {
-                            ForEach(availableTimeControlModes) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    if selectedTimeControlMode == .clock, let clockOptions {
-                        GridRow {
-                            Text("Initial time")
-                            Picker("Initial time", selection: initialSecondsSelection) {
-                                ForEach(clockOptions.initialSeconds, id: \.self) { seconds in
-                                    Text(seconds.initialTimeLabel).tag(seconds)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-
-                        GridRow {
-                            Text("Increment")
-                            Picker("Increment", selection: incrementSecondsSelection) {
-                                ForEach(clockOptions.incrementSeconds, id: \.self) { seconds in
-                                    Text(seconds.incrementLabel).tag(seconds)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-
-                    if selectedTimeControlMode == .correspondence {
-                        GridRow {
-                            Text("Per move")
-                            Picker("Days per move", selection: correspondenceDaysSelection) {
-                                ForEach(correspondenceDayOptions, id: \.self) { days in
-                                    Text(days == 1 ? "1 day" : "\(days) days").tag(days)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-
-                    GridRow {
-                        Text("Play as")
-                        Picker("Play as", selection: colorSelection) {
-                            ForEach(advertisedColors) { option in
-                                Label(option.label, systemImage: option.systemImage)
-                                    .tag(option)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
                     }
                 }
 
-                if let variant = selectedVariant, variant.supportsCustomPosition {
-                    Divider()
-
-                    if variant.requiresCustomPosition {
-                        Label("This variant requires a custom initial position.", systemImage: "square.grid.3x3")
-                            .font(.callout)
-                    } else {
-                        Toggle("Use a custom initial position", isOn: $useCustomPosition)
-                    }
-
-                    if customPositionEnabled {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text("Initial position (X-FEN)")
-                                .font(.callout.weight(.medium))
-                            TextField("X-FEN", text: $initialFEN)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(.body, design: .monospaced))
-                            Text("A single printable ASCII line, up to 1,024 bytes. The provider validates the chess position.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if selectedTimeControlMode == .correspondence {
+                    GridRow {
+                        Text("Per move")
+                        Picker("Days per move", selection: correspondenceDaysSelection) {
+                            ForEach(correspondenceDayOptions, id: \.self) { days in
+                                Text(days == 1 ? "1 day" : "\(days) days").tag(days)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
 
-                HStack {
-                    if let validationMessage {
-                        Label(validationMessage, systemImage: "exclamationmark.triangle")
-                            .font(.callout)
-                            .foregroundStyle(.red)
-                    } else {
-                        Label(summaryLabel, systemImage: "checkmark.shield")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Button {
-                        guard let requestedTimeControl else {
-                            return
-                        }
-                        store.createBotGame(
-                            opponentID: selectedOpponentID,
-                            variantID: selectedVariantID,
-                            timeControl: requestedTimeControl,
-                            color: selectedColor,
-                            initialFEN: customPositionEnabled ? initialFEN : nil
-                        )
-                    } label: {
-                        HStack(spacing: 7) {
-                            if store.isCreatingBotGame {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Text(store.isCreatingBotGame ? "Creating…" : "Create Game")
+                GridRow {
+                    Text("Play as")
+                    Picker("Play as", selection: colorSelection) {
+                        ForEach(advertisedColors) { option in
+                            Label(option.label, systemImage: option.systemImage)
+                                .tag(option)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.isCreatingBotGame || validationMessage != nil)
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
             }
-            .padding(10)
+
+            if let variant = selectedVariant, variant.supportsCustomPosition {
+                Divider()
+
+                if variant.requiresCustomPosition {
+                    Label("This variant requires a custom initial position.", systemImage: "square.grid.3x3")
+                        .font(.callout)
+                } else {
+                    Toggle("Use a custom initial position", isOn: $useCustomPosition)
+                }
+
+                if customPositionEnabled {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Initial position (X-FEN)")
+                            .font(.callout.weight(.medium))
+                        TextField("X-FEN", text: $initialFEN)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                        Text("A single printable ASCII line, up to 1,024 bytes. The provider validates the chess position.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack {
+                if let validationMessage {
+                    Label(validationMessage, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                } else {
+                    Label(summaryLabel, systemImage: "checkmark.shield")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    guard let requestedTimeControl else {
+                        return
+                    }
+                    store.createBotGame(
+                        opponentID: selectedOpponentID,
+                        variantID: selectedVariantID,
+                        timeControl: requestedTimeControl,
+                        color: selectedColor,
+                        initialFEN: customPositionEnabled ? initialFEN : nil
+                    )
+                } label: {
+                    HStack(spacing: 7) {
+                        if store.isCreatingBotGame {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(store.isCreatingBotGame ? "Creating…" : "Create Game")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(store.isCreatingBotGame || validationMessage != nil)
+            }
         }
     }
 

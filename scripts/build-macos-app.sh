@@ -36,8 +36,15 @@ cp "$repository_root/target/release/liblibchess_ffi.dylib" \
 cp "$repository_root/frontends/macos/Resources/Info.plist" \
     "$contents_directory/Info.plist"
 
+# SwiftPM needs this path while linking the development executable, but a
+# packaged app must resolve the Rust library from its own Frameworks folder.
+# Leaving a path into ~/Documents in the signed binary can make Finder-launched
+# builds wait on macOS privacy checks before AppKit starts.
+install_name_tool -delete_rpath \
+    "$repository_root/target/release" \
+    "$macos_directory/LibChessMac"
+
 codesign --force --sign - "$frameworks_directory/liblibchess_ffi.dylib"
 codesign --force --deep --sign - "$app_directory"
 
 echo "$app_directory"
-

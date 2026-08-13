@@ -499,6 +499,7 @@ name = "libchess-ffi"
 version = "0.1.0"
 dependencies = [
  "libchess",
+ "libchess-rules",
  "serde",
  "serde_json",
  "tokio",

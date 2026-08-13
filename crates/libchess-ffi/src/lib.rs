@@ -1,17 +1,19 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::{
+    collections::BTreeMap,
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr, slice,
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
 
 use libchess::{
-    AccessToken, Account, BotGame, BotGameRequest, BotGameTimeControl, Client, ColorPreference,
-    GameId, LibChessError, LiveChatMessage, LiveGame, LiveGameAction, LiveGameEvent,
-    LiveGameRequest, MoveSubmission, OAuthConnection, PlayerColor, ProviderDescriptor,
+    AccessToken, Account, BoardState, BotGame, BotGameRequest, BotGameTimeControl, Client,
+    ColorPreference, ErrorKind, GameId, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
+    LiveGameCatalogEvent, LiveGameEvent, LiveGameRequest, LiveGameSummary, MoveSubmission,
+    OAuthConnection, PlayerColor, ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -116,11 +118,15 @@ enum Command {
         offer_draw: bool,
     },
     RefreshAccount,
+    RefreshLiveGames,
     StartLiveGame {
         game_id: String,
         player_color: PlayerColor,
     },
-    StopLiveGame,
+    StopLiveGame {
+        game_id: String,
+    },
+    WatchLiveGames,
 }
 
 #[derive(Serialize)]
@@ -161,6 +167,15 @@ enum Event {
     },
     LiveGameUpdated {
         live_game: Box<LiveGame>,
+    },
+    LiveGamesChanged,
+    LiveGamesUpdated {
+        games: Vec<LiveGameSummary>,
+    },
+    MovePredicted {
+        game_id: String,
+        move_id: String,
+        board: BoardState,
     },
     MoveSubmitted {
         game_id: String,
@@ -206,7 +221,9 @@ impl Serialize for SerializableAccessToken {
 
 async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: EventSink) {
     let mut client = Client::new();
-    let mut live_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut live_tasks = BTreeMap::<String, tokio::task::JoinHandle<()>>::new();
+    let mut catalog_task: Option<tokio::task::JoinHandle<()>> = None;
+    let latest_games = Arc::new(Mutex::new(BTreeMap::<String, LiveGame>::new()));
     sink.emit(
         None,
         Event::Ready {
@@ -217,7 +234,8 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
     while let Some(message) = receiver.recv().await {
         match message {
             WorkerMessage::Shutdown => {
-                stop_live_task(&mut live_task).await;
+                stop_all_live_tasks(&mut live_tasks).await;
+                stop_task(&mut catalog_task).await;
                 break;
             }
             WorkerMessage::Command(envelope) => {
@@ -389,18 +407,26 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         game_id,
                         player_color,
                     } => {
-                        stop_live_task(&mut live_task).await;
+                        stop_live_task(&mut live_tasks, &game_id).await;
                         let request = LiveGameRequest::new(game_id.clone(), player_color);
                         match (request, client.connected_backend()) {
                             (Ok(request), Ok(backend)) => {
                                 let event_sink = sink.clone();
                                 let stream_sink = sink.clone();
                                 let stream_request_id = envelope.request_id.clone();
-                                let ended_game_id = game_id;
-                                live_task = Some(tokio::spawn(async move {
+                                let ended_game_id = game_id.clone();
+                                let stream_games = Arc::clone(&latest_games);
+                                let task = tokio::spawn(async move {
                                     let events = Arc::new(move |event| match event {
-                                        LiveGameEvent::GameUpdated { game } => event_sink
-                                            .emit(None, Event::LiveGameUpdated { live_game: game }),
+                                        LiveGameEvent::GameUpdated { game } => {
+                                            if let Ok(mut games) = stream_games.lock() {
+                                                games.insert(game.id.to_string(), (*game).clone());
+                                            }
+                                            event_sink.emit(
+                                                None,
+                                                Event::LiveGameUpdated { live_game: game },
+                                            );
+                                        }
                                         LiveGameEvent::ChatMessage { message } => event_sink
                                             .emit(None, Event::LiveGameChat { chat: message }),
                                     });
@@ -416,24 +442,42 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                                             Event::Error { error },
                                         ),
                                     }
-                                }));
+                                });
+                                live_tasks.insert(game_id, task);
                             }
                             (Err(error), _) | (_, Err(error)) => {
                                 sink.emit(request_id, Event::Error { error });
                             }
                         }
                     }
-                    Command::StopLiveGame => {
-                        stop_live_task(&mut live_task).await;
+                    Command::StopLiveGame { game_id } => {
+                        stop_live_task(&mut live_tasks, &game_id).await;
+                        if let Ok(mut games) = latest_games.lock() {
+                            games.remove(&game_id);
+                        }
                     }
                     Command::PlayMove {
                         game_id,
                         move_id,
                         offer_draw,
                     } => match MoveSubmission::new(&game_id, &move_id, offer_draw) {
-                        Ok(submission) => match client.play_move(submission).await {
-                            Ok(()) => {
-                                sink.emit(request_id, Event::MoveSubmitted { game_id, move_id })
+                        Ok(submission) => match predict_move(&latest_games, &game_id, &move_id) {
+                            Ok(board) => {
+                                sink.emit(
+                                    request_id,
+                                    Event::MovePredicted {
+                                        game_id: game_id.clone(),
+                                        move_id: move_id.clone(),
+                                        board,
+                                    },
+                                );
+                                match client.play_move(submission).await {
+                                    Ok(()) => sink.emit(
+                                        request_id,
+                                        Event::MoveSubmitted { game_id, move_id },
+                                    ),
+                                    Err(error) => sink.emit(request_id, Event::Error { error }),
+                                }
                             }
                             Err(error) => sink.emit(request_id, Event::Error { error }),
                         },
@@ -457,8 +501,45 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         }
                         Err(error) => sink.emit(request_id, Event::Error { error }),
                     },
+                    Command::RefreshLiveGames => match client.connected_backend() {
+                        Ok(backend) => match backend.live_games().await {
+                            Ok(games) => sink.emit(request_id, Event::LiveGamesUpdated { games }),
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        },
+                        Err(error) => sink.emit(request_id, Event::Error { error }),
+                    },
+                    Command::WatchLiveGames => {
+                        stop_task(&mut catalog_task).await;
+                        match client.connected_backend() {
+                            Ok(backend) => {
+                                let event_sink = sink.clone();
+                                let stream_sink = sink.clone();
+                                let stream_request_id = envelope.request_id.clone();
+                                catalog_task = Some(tokio::spawn(async move {
+                                    let events = Arc::new(move |event| match event {
+                                        LiveGameCatalogEvent::Changed => {
+                                            event_sink.emit(None, Event::LiveGamesChanged)
+                                        }
+                                    });
+                                    if let Err(error) =
+                                        backend.watch_live_game_catalog(events).await
+                                    {
+                                        stream_sink.emit(
+                                            stream_request_id.as_deref(),
+                                            Event::Error { error },
+                                        );
+                                    }
+                                }));
+                            }
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                        }
+                    }
                     Command::Disconnect => {
-                        stop_live_task(&mut live_task).await;
+                        stop_all_live_tasks(&mut live_tasks).await;
+                        stop_task(&mut catalog_task).await;
+                        if let Ok(mut games) = latest_games.lock() {
+                            games.clear();
+                        }
                         client.disconnect();
                         sink.emit(
                             request_id,
@@ -473,10 +554,62 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
         }
     }
 
-    stop_live_task(&mut live_task).await;
+    stop_all_live_tasks(&mut live_tasks).await;
+    stop_task(&mut catalog_task).await;
 }
 
-async fn stop_live_task(task: &mut Option<tokio::task::JoinHandle<()>>) {
+fn predict_move(
+    latest_games: &Mutex<BTreeMap<String, LiveGame>>,
+    game_id: &str,
+    move_id: &str,
+) -> Result<BoardState, LibChessError> {
+    let game = latest_games
+        .lock()
+        .map_err(|_| {
+            LibChessError::new(ErrorKind::Provider, "live-game state is unavailable", true)
+        })?
+        .get(game_id)
+        .cloned()
+        .ok_or_else(|| LibChessError::invalid_input("the live game has not loaded yet"))?;
+    if !game
+        .state
+        .board
+        .legal_moves
+        .iter()
+        .any(|legal_move| legal_move.id == move_id)
+    {
+        return Err(LibChessError::invalid_input(
+            "the move is not legal in the current position",
+        ));
+    }
+    let mut moves = game.state.board.moves.clone();
+    moves.push(move_id.to_owned());
+    libchess_rules::reconstruct(game.variant_id.as_str(), &game.initial_fen, &moves).map_err(
+        |error| {
+            LibChessError::new(
+                ErrorKind::Provider,
+                format!("could not predict the legal move: {error}"),
+                false,
+            )
+        },
+    )
+}
+
+async fn stop_live_task(tasks: &mut BTreeMap<String, tokio::task::JoinHandle<()>>, game_id: &str) {
+    if let Some(task) = tasks.remove(game_id) {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn stop_all_live_tasks(tasks: &mut BTreeMap<String, tokio::task::JoinHandle<()>>) {
+    for (_, task) in std::mem::take(tasks) {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn stop_task(task: &mut Option<tokio::task::JoinHandle<()>>) {
     if let Some(task) = task.take() {
         task.abort();
         let _ = task.await;
@@ -742,6 +875,54 @@ mod tests {
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };
         drop(sender);
+    }
+
+    #[test]
+    fn predicts_a_legal_move_from_the_authoritative_snapshot() {
+        let game: LiveGame = serde_json::from_value(serde_json::json!({
+            "provider": "lichess",
+            "id": "v8BRXYtM",
+            "url": "https://lichess.org/v8BRXYtM",
+            "player_color": "white",
+            "initial_fen": "startpos",
+            "variant_id": "standard",
+            "variant_name": "Standard",
+            "rated": false,
+            "speed": "rapid",
+            "white": {"name": "TestUser", "provisional": false},
+            "black": {"name": "Stockfish level 4", "provisional": false, "ai_level": 4},
+            "state": {
+                "board": {
+                    "pieces": [],
+                    "pockets": [],
+                    "turn": "white",
+                    "ply": 0,
+                    "moves": [],
+                    "legal_moves": [{"id": "e2e4", "from": "e2", "to": "e4"}],
+                    "in_check": false
+                },
+                "status": "started",
+                "white_draw_offer": false,
+                "black_draw_offer": false,
+                "white_takeback_offer": false,
+                "black_takeback_offer": false,
+                "opponent_gone": false
+            }
+        }))
+        .expect("live game fixture");
+        let games = Mutex::new(BTreeMap::from([(game.id.to_string(), game)]));
+
+        let predicted = predict_move(&games, "v8BRXYtM", "e2e4").expect("legal prediction");
+
+        assert_eq!(predicted.moves, ["e2e4"]);
+        assert_eq!(predicted.turn, PlayerColor::Black);
+        assert_eq!(predicted.ply, 1);
+        assert!(predicted.pieces.iter().any(|piece| piece.square == "e4"));
+        assert!(!predicted.pieces.iter().any(|piece| piece.square == "e2"));
+
+        let error = predict_move(&games, "v8BRXYtM", "e2e5")
+            .expect_err("an illegal move must not be predicted");
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
     }
 
     #[test]

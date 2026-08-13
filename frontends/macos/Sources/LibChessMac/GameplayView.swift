@@ -7,27 +7,32 @@ struct LiveGameplayView: View {
     let game: LiveGame
 
     @State private var actionToConfirm: LiveGameAction?
+    @State private var showsInspector = true
 
     var body: some View {
         GeometryReader { geometry in
-            if geometry.size.width >= 780 {
-                HStack(alignment: .top, spacing: 22) {
-                    ChessBoardView(game: game)
-                        .frame(maxWidth: 680, maxHeight: .infinity)
+            let availableWidth = max(160, geometry.size.width - 56)
+            let availableHeight = max(160, geometry.size.height - 140)
+            let boardSize = min(760, availableWidth, availableHeight)
 
-                    GameSidebar(game: game, requestConfirmation: confirm)
-                        .frame(width: 280)
+            ChessBoardView(game: game)
+                .frame(width: boardSize)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .padding(28)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .inspector(isPresented: $showsInspector) {
+            GameInspector(game: game, requestConfirmation: confirm)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showsInspector.toggle()
+                } label: {
+                    Label("Game Inspector", systemImage: "sidebar.right")
                 }
-                .padding(22)
-            } else {
-                ScrollView {
-                    VStack(spacing: 20) {
-                        ChessBoardView(game: game)
-                            .frame(maxWidth: 620)
-                        GameSidebar(game: game, requestConfirmation: confirm)
-                    }
-                    .padding(20)
-                }
+                .help(showsInspector ? "Hide Game Inspector" : "Show Game Inspector")
             }
         }
         .alert(
@@ -39,7 +44,7 @@ struct LiveGameplayView: View {
         ) {
             if let actionToConfirm {
                 Button(actionToConfirm.confirmationButtonTitle, role: .destructive) {
-                    store.performGameAction(actionToConfirm)
+                    store.performGameAction(actionToConfirm, in: game.id)
                     self.actionToConfirm = nil
                 }
             }
@@ -100,7 +105,7 @@ private struct ChessBoardView: View {
                 legalDropRoles: legalDropRoles
             )
         }
-        .onChange(of: game.state.board.ply) { _, _ in
+        .onChange(of: boardState.ply) { _, _ in
             clearSelection()
         }
         .onChange(of: game.state.status) { _, _ in
@@ -118,7 +123,7 @@ private struct ChessBoardView: View {
         ) {
             ForEach(sortedPromotionMoves) { move in
                 Button(move.promotion?.displayName ?? "Promote") {
-                    store.playMove(move)
+                    store.playMove(move, in: game.id)
                     clearSelection()
                 }
             }
@@ -131,7 +136,7 @@ private struct ChessBoardView: View {
     private var board: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 8)
         let boardPieces = Dictionary(
-            uniqueKeysWithValues: game.state.board.pieces.map { ($0.square, $0) }
+            uniqueKeysWithValues: boardState.pieces.map { ($0.square, $0) }
         )
         let destinations = legalDestinations
 
@@ -148,9 +153,9 @@ private struct ChessBoardView: View {
                         isSelected: selectedSquare == square,
                         isDestination: destinations.contains(square),
                         isLastMove: lastMoveSquares.contains(square),
-                        isCheckedKing: game.state.board.inCheck
+                        isCheckedKing: boardState.inCheck
                             && piece?.role == .king
-                            && piece?.color == game.state.board.turn,
+                            && piece?.color == boardState.turn,
                         showsRank: index.isMultiple(of: 8),
                         showsFile: index >= 56
                     )
@@ -164,9 +169,13 @@ private struct ChessBoardView: View {
 
     private var canMove: Bool {
         game.state.isPlayable
-            && game.state.board.turn == game.playerColor
-            && !store.isSubmittingMove
-            && !store.isPerformingGameAction
+            && boardState.turn == game.playerColor
+            && !store.isSubmittingMove(game.id)
+            && !store.isPerformingGameAction(game.id)
+    }
+
+    private var boardState: BoardState {
+        store.displayedBoard(for: game)
     }
 
     private var opponentColor: PlayerColor {
@@ -174,37 +183,29 @@ private struct ChessBoardView: View {
     }
 
     private var orientedSquares: [String] {
-        let files: [Character] = game.playerColor == .white
-            ? Array("abcdefgh")
-            : Array("hgfedcba")
-        let ranks = game.playerColor == .white
-            ? Array((1 ... 8).reversed())
-            : Array(1 ... 8)
-        return ranks.flatMap { rank in
-            files.map { file in "\(file)\(rank)" }
-        }
+        BoardPerspective.squares(for: game.playerColor)
     }
 
     private var legalDestinations: Set<String> {
         if let selectedDrop {
-            return Set(game.state.board.legalMoves.compactMap { move in
+            return Set(boardState.legalMoves.compactMap { move in
                 move.drop == selectedDrop ? move.to : nil
             })
         }
         guard let selectedSquare else {
             return []
         }
-        return Set(game.state.board.legalMoves.compactMap { move in
+        return Set(boardState.legalMoves.compactMap { move in
             move.from == selectedSquare ? move.to : nil
         })
     }
 
     private var legalDropRoles: Set<PieceRole> {
-        Set(game.state.board.legalMoves.compactMap(\.drop))
+        Set(boardState.legalMoves.compactMap(\.drop))
     }
 
     private var lastMoveSquares: Set<String> {
-        guard let lastMove = game.state.board.lastMove else {
+        guard let lastMove = boardState.lastMove else {
             return []
         }
         return Set([lastMove.from, lastMove.to].compactMap { $0 })
@@ -217,7 +218,7 @@ private struct ChessBoardView: View {
     }
 
     private func pockets(for color: PlayerColor) -> [PocketPiece] {
-        game.state.board.pockets.filter { $0.color == color }
+        boardState.pockets.filter { $0.color == color }
     }
 
     private func handleTap(_ square: String, piece: BoardPiece?) {
@@ -226,10 +227,10 @@ private struct ChessBoardView: View {
         }
 
         if let selectedDrop {
-            if let move = game.state.board.legalMoves.first(where: {
+            if let move = boardState.legalMoves.first(where: {
                 $0.drop == selectedDrop && $0.to == square
             }) {
-                store.playMove(move)
+                store.playMove(move, in: game.id)
                 clearSelection()
             } else if piece?.color == game.playerColor {
                 self.selectedDrop = nil
@@ -239,11 +240,11 @@ private struct ChessBoardView: View {
         }
 
         if let selectedSquare {
-            let candidates = game.state.board.legalMoves.filter {
+            let candidates = boardState.legalMoves.filter {
                 $0.from == selectedSquare && $0.to == square
             }
             if candidates.count == 1, let move = candidates.first {
-                store.playMove(move)
+                store.playMove(move, in: game.id)
                 clearSelection()
                 return
             }
@@ -267,7 +268,7 @@ private struct ChessBoardView: View {
     }
 
     private func select(_ square: String) {
-        let hasLegalMove = game.state.board.legalMoves.contains { $0.from == square }
+        let hasLegalMove = boardState.legalMoves.contains { $0.from == square }
         selectedSquare = hasLegalMove ? square : nil
     }
 
@@ -428,40 +429,56 @@ private struct PieceGlyph: View {
     }
 }
 
-private struct GameSidebar: View {
+private struct GameInspector: View {
     @EnvironmentObject private var store: LibChessStore
     let game: LiveGame
     let requestConfirmation: (LiveGameAction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PlayerClockCard(
+        VStack(alignment: .leading, spacing: 0) {
+            PlayerClockRow(
                 player: opponent,
                 color: opponentColor,
                 game: game,
-                receivedAt: store.liveGameReceivedAt,
+                board: boardState,
+                receivedAt: store.liveGameReceivedAt(game.id),
                 isYou: false
             )
 
+            Divider()
+
             gameSummary
+                .padding(14)
+
+            Divider()
 
             moveHistory
+                .frame(maxHeight: .infinity)
 
-            if game.state.isPlayable {
-                actionControls
-            } else {
-                finishedControls
+            Divider()
+
+            Group {
+                if game.state.isPlayable {
+                    actionControls
+                } else {
+                    finishedControls
+                }
             }
+            .padding(14)
 
-            PlayerClockCard(
+            Divider()
+
+            PlayerClockRow(
                 player: player,
                 color: game.playerColor,
                 game: game,
-                receivedAt: store.liveGameReceivedAt,
+                board: boardState,
+                receivedAt: store.liveGameReceivedAt(game.id),
                 isYou: true
             )
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private var gameSummary: some View {
@@ -487,26 +504,30 @@ private struct GameSidebar: View {
                     .foregroundStyle(.orange)
             }
 
-            if game.state.isPlayable && !store.isLiveStreamConnected {
+            if game.state.isPlayable && !store.isLiveStreamConnected(game.id) {
                 HStack {
                     Label("Live updates disconnected", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
                         .font(.caption)
                         .foregroundStyle(.orange)
                     Spacer()
-                    Button(store.isLoadingLiveGame ? "Connecting…" : "Reconnect") {
-                        store.reconnectLiveGame()
+                    Button(store.isLoadingLiveGame(game.id) ? "Connecting…" : "Reconnect") {
+                        store.reconnectLiveGame(game.id)
                     }
                     .controlSize(.small)
-                    .disabled(store.isLoadingLiveGame)
+                    .disabled(store.isLoadingLiveGame(game.id))
                 }
             }
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var moveHistory: some View {
-        GroupBox("Moves") {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Moves")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 5) {
@@ -528,10 +549,11 @@ private struct GameSidebar: View {
                             .id(pair.id)
                         }
                     }
-                    .padding(6)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
                 }
-                .frame(minHeight: 90, maxHeight: 180)
-                .onChange(of: game.state.board.ply) { _, _ in
+                .frame(minHeight: 110)
+                .onChange(of: boardState.ply) { _, _ in
                     if let last = movePairs.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
@@ -546,27 +568,27 @@ private struct GameSidebar: View {
                 Text("Your opponent offered a draw.")
                     .font(.callout.weight(.medium))
                 HStack {
-                    Button("Accept") { store.performGameAction(.acceptDraw) }
+                    Button("Accept") { store.performGameAction(.acceptDraw, in: game.id) }
                         .buttonStyle(.borderedProminent)
-                    Button("Decline") { store.performGameAction(.declineDraw) }
+                    Button("Decline") { store.performGameAction(.declineDraw, in: game.id) }
                 }
             } else if opponentTakebackOffer {
                 Text("Your opponent requested a takeback.")
                     .font(.callout.weight(.medium))
                 HStack {
-                    Button("Accept") { store.performGameAction(.acceptTakeback) }
+                    Button("Accept") { store.performGameAction(.acceptTakeback, in: game.id) }
                         .buttonStyle(.borderedProminent)
-                    Button("Decline") { store.performGameAction(.declineTakeback) }
+                    Button("Decline") { store.performGameAction(.declineTakeback, in: game.id) }
                 }
             } else {
                 HStack {
                     Button(ownDrawOffer ? "Draw offered" : "Offer draw") {
-                        store.performGameAction(.offerDraw)
+                        store.performGameAction(.offerDraw, in: game.id)
                     }
                     .disabled(ownDrawOffer)
 
                     Button(ownTakebackOffer ? "Takeback requested" : "Takeback") {
-                        store.performGameAction(.offerTakeback)
+                        store.performGameAction(.offerTakeback, in: game.id)
                     }
                     .disabled(ownTakebackOffer)
                 }
@@ -575,18 +597,18 @@ private struct GameSidebar: View {
             HStack {
                 if canClaimVictory {
                     Button("Claim victory") {
-                        store.performGameAction(.claimVictory)
+                        store.performGameAction(.claimVictory, in: game.id)
                     }
                     .buttonStyle(.borderedProminent)
                 }
 
-                Button(game.state.board.ply < 2 ? "Abort" : "Resign", role: .destructive) {
-                    requestConfirmation(game.state.board.ply < 2 ? .abort : .resign)
+                Button(boardState.ply < 2 ? "Abort" : "Resign", role: .destructive) {
+                    requestConfirmation(boardState.ply < 2 ? .abort : .resign)
                 }
 
                 Menu {
                     Button("Claim draw") {
-                        store.performGameAction(.claimDraw)
+                        store.performGameAction(.claimDraw, in: game.id)
                     }
                     if let url = URL(string: game.url) {
                         Link("Open on Lichess", destination: url)
@@ -596,13 +618,13 @@ private struct GameSidebar: View {
                 }
                 .menuStyle(.borderlessButton)
             }
-            .disabled(store.isSubmittingMove || store.isPerformingGameAction)
+            .disabled(store.isSubmittingMove(game.id) || store.isPerformingGameAction(game.id))
 
-            if store.isSubmittingMove {
-                Label("Submitting move…", systemImage: "arrow.up.circle")
+            if store.isSubmittingMove(game.id) {
+                Label("Move pending server confirmation", systemImage: "arrow.up.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if store.isPerformingGameAction {
+            } else if store.isPerformingGameAction(game.id) {
                 Label("Updating game…", systemImage: "arrow.triangle.2.circlepath")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -616,7 +638,8 @@ private struct GameSidebar: View {
                 .font(.headline)
             HStack {
                 Button("New game") {
-                    store.leaveLiveGame()
+                    store.stopObservingLiveGame(game.id)
+                    NotificationCenter.default.post(name: .showNewGame, object: nil)
                 }
                 .buttonStyle(.borderedProminent)
                 if let url = URL(string: game.url) {
@@ -624,8 +647,6 @@ private struct GameSidebar: View {
                 }
             }
         }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var player: LiveGamePlayer {
@@ -687,22 +708,27 @@ private struct GameSidebar: View {
     }
 
     private var movePairs: [MovePair] {
-        stride(from: 0, to: game.state.board.moves.count, by: 2).map { index in
+        stride(from: 0, to: boardState.moves.count, by: 2).map { index in
             MovePair(
                 number: index / 2 + 1,
-                white: game.state.board.moves[index],
-                black: game.state.board.moves.indices.contains(index + 1)
-                    ? game.state.board.moves[index + 1]
+                white: boardState.moves[index],
+                black: boardState.moves.indices.contains(index + 1)
+                    ? boardState.moves[index + 1]
                     : nil
             )
         }
     }
+
+    private var boardState: BoardState {
+        store.displayedBoard(for: game)
+    }
 }
 
-private struct PlayerClockCard: View {
+private struct PlayerClockRow: View {
     let player: LiveGamePlayer
     let color: PlayerColor
     let game: LiveGame
+    let board: BoardState
     let receivedAt: Date?
     let isYou: Bool
 
@@ -748,19 +774,19 @@ private struct PlayerClockCard: View {
             .font(.system(size: 24, weight: .semibold, design: .monospaced))
             .contentTransition(.numericText())
         }
-        .padding(11)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(
-            game.state.board.turn == color && game.state.isPlayable
-                ? Color.accentColor.opacity(0.14)
-                : Color.primary.opacity(0.055),
-            in: RoundedRectangle(cornerRadius: 10)
+            board.turn == color && game.state.isPlayable
+                ? Color.accentColor.opacity(0.12)
+                : Color.clear
         )
     }
 
     private var clockIsRunning: Bool {
         game.clock != nil
             && game.state.status == "started"
-            && game.state.board.turn == color
+            && board.turn == color
     }
 
     private var clockRefreshInterval: TimeInterval {
@@ -785,7 +811,7 @@ private struct PlayerClockCard: View {
         }
 
         if game.state.status == "started",
-           game.state.board.turn == color,
+           board.turn == color,
            let receivedAt
         {
             let elapsed = UInt64(max(0, date.timeIntervalSince(receivedAt)) * 1_000)

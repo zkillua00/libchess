@@ -9,35 +9,58 @@ public final class LibChessStore: ObservableObject {
     @Published public private(set) var connectionState = ConnectionState.disconnected
     @Published public private(set) var savedCredentialAvailable = false
     @Published public private(set) var authorizationURL: URL?
-    @Published public private(set) var createdBotGame: BotGame?
+    @Published public private(set) var createdBotGames: [String: BotGame] = [:]
     @Published public private(set) var isCreatingBotGame = false
-    @Published public private(set) var liveGame: LiveGame?
-    @Published public private(set) var liveGameReceivedAt: Date?
-    @Published public private(set) var liveChatMessages: [LiveChatMessage] = []
-    @Published public private(set) var isLoadingLiveGame = false
-    @Published public private(set) var isLiveStreamConnected = false
-    @Published public private(set) var isSubmittingMove = false
-    @Published public private(set) var isPerformingGameAction = false
+    @Published public private(set) var activeGames: [LiveGameSummary] = []
+    @Published public private(set) var liveGames: [String: LiveGame] = [:]
+    @Published public private(set) var focusedGameID: String?
+    @Published public private(set) var predictedBoards: [String: BoardState] = [:]
+    @Published private var liveGameReceivedDates: [String: Date] = [:]
+    @Published private var chatMessagesByGame: [String: [LiveChatMessage]] = [:]
+    @Published private var loadingGameIDs: Set<String> = []
+    @Published private var connectedGameIDs: Set<String> = []
+    @Published private var submittingMoveGameIDs: Set<String> = []
+    @Published private var performingActionGameIDs: Set<String> = []
     @Published public var message: String?
 
     private let decoder: JSONDecoder
     private let tokenStore = KeychainTokenStore()
     private var nativeClient: NativeClient?
     private var pendingBotGameRequestID: String?
-    private var pendingLiveGameRequestID: String?
-    private var pendingMoveRequestID: String?
-    private var pendingGameActionRequestID: String?
+    private var pendingLiveGameRequests: [String: String] = [:]
+    private var pendingMoveRequests: [String: PendingMove] = [:]
+    private var pendingMoveRequestByGame: [String: String] = [:]
+    private var pendingGameActionRequests: [String: String] = [:]
+    private var pendingGameActionRequestByGame: [String: String] = [:]
+    private var predictions: [String: MovePrediction] = [:]
+    private var catalogWatchStarted = false
+    private var catalogWatchRequestID: String?
+    private var liveGamesRefreshTask: Task<Void, Never>?
+    private var catalogReconnectTask: Task<Void, Never>?
 
     public init() {
         decoder = JSONDecoder()
 
         do {
-            savedCredentialAvailable = try tokenStore.load(provider: "lichess") != nil
             nativeClient = try NativeClient { [weak self] data in
                 self?.receive(data)
             }
         } catch {
             message = error.localizedDescription
+        }
+    }
+
+    public func refreshSavedCredentialAvailability() {
+        let tokenStore = tokenStore
+        Task { [weak self] in
+            do {
+                let isAvailable = try await Task.detached(priority: .utility) {
+                    try tokenStore.contains(provider: "lichess")
+                }.value
+                self?.savedCredentialAvailable = isAvailable
+            } catch {
+                self?.message = error.localizedDescription
+            }
         }
     }
 
@@ -119,6 +142,56 @@ public final class LibChessStore: ObservableObject {
         botGameOptions?.variants ?? []
     }
 
+    public func liveGame(_ gameID: String) -> LiveGame? {
+        liveGames[gameID]
+    }
+
+    public func displayedBoard(for game: LiveGame) -> BoardState {
+        predictedBoards[game.id] ?? game.state.board
+    }
+
+    public func liveGameReceivedAt(_ gameID: String) -> Date? {
+        liveGameReceivedDates[gameID]
+    }
+
+    public func liveChatMessages(_ gameID: String) -> [LiveChatMessage] {
+        chatMessagesByGame[gameID] ?? []
+    }
+
+    public func isLoadingLiveGame(_ gameID: String) -> Bool {
+        loadingGameIDs.contains(gameID)
+    }
+
+    public func isLiveStreamConnected(_ gameID: String) -> Bool {
+        connectedGameIDs.contains(gameID)
+    }
+
+    public func isSubmittingMove(_ gameID: String) -> Bool {
+        submittingMoveGameIDs.contains(gameID)
+    }
+
+    public func isPerformingGameAction(_ gameID: String) -> Bool {
+        performingActionGameIDs.contains(gameID)
+    }
+
+    public func openLiveGame(_ gameID: String) {
+        guard let summary = activeGames.first(where: { $0.id == gameID }) else {
+            return
+        }
+        focusedGameID = gameID
+        guard !connectedGameIDs.contains(gameID), !loadingGameIDs.contains(gameID) else {
+            return
+        }
+        startLiveGame(summary, preservingSnapshot: liveGames[gameID] != nil)
+    }
+
+    public func refreshLiveGames() {
+        guard connectionState == .connected else {
+            return
+        }
+        send(BasicCommand(type: "refresh_live_games"))
+    }
+
     public func createBotGame(
         opponentID: String,
         variantID: String,
@@ -144,8 +217,6 @@ public final class LibChessStore: ObservableObject {
         }
 
         message = nil
-        createdBotGame = nil
-        leaveLiveGame()
         isCreatingBotGame = true
         let command = CreateBotGameCommand(
             opponentID: opponentID,
@@ -162,13 +233,13 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    public func playMove(_ move: LegalMove, offerDraw: Bool = false) {
-        guard let game = liveGame,
+    public func playMove(_ move: LegalMove, in gameID: String, offerDraw: Bool = false) {
+        guard let game = liveGames[gameID],
               game.state.isPlayable,
-              game.state.board.turn == game.playerColor,
-              game.state.board.legalMoves.contains(move),
-              !isSubmittingMove,
-              !isPerformingGameAction
+              displayedBoard(for: game).turn == game.playerColor,
+              displayedBoard(for: game).legalMoves.contains(move),
+              !submittingMoveGameIDs.contains(gameID),
+              !performingActionGameIDs.contains(gameID)
         else {
             return
         }
@@ -177,73 +248,97 @@ public final class LibChessStore: ObservableObject {
             moveID: move.id,
             offerDraw: offerDraw
         )
-        pendingMoveRequestID = command.requestID
-        isSubmittingMove = true
+        let pending = PendingMove(
+            requestID: command.requestID,
+            gameID: gameID,
+            moveID: move.id,
+            baseMoves: game.state.board.moves
+        )
+        pendingMoveRequests[command.requestID] = pending
+        pendingMoveRequestByGame[gameID] = command.requestID
+        submittingMoveGameIDs.insert(gameID)
         message = nil
         if !send(command) {
-            pendingMoveRequestID = nil
-            isSubmittingMove = false
+            clearPendingMove(requestID: command.requestID, rollback: true)
         }
     }
 
-    public func performGameAction(_ action: LiveGameAction) {
-        guard let game = liveGame,
+    public func performGameAction(_ action: LiveGameAction, in gameID: String) {
+        guard let game = liveGames[gameID],
               game.state.isPlayable,
-              !isSubmittingMove,
-              !isPerformingGameAction
+              !submittingMoveGameIDs.contains(gameID),
+              !performingActionGameIDs.contains(gameID)
         else {
             return
         }
         let command = PerformGameActionCommand(gameID: game.id, action: action)
-        pendingGameActionRequestID = command.requestID
-        isPerformingGameAction = true
+        pendingGameActionRequests[command.requestID] = gameID
+        pendingGameActionRequestByGame[gameID] = command.requestID
+        performingActionGameIDs.insert(gameID)
         message = nil
         if !send(command) {
-            pendingGameActionRequestID = nil
-            isPerformingGameAction = false
+            clearPendingGameAction(requestID: command.requestID)
         }
     }
 
-    public func reconnectLiveGame() {
-        guard let createdBotGame, let liveGame, liveGame.state.isPlayable else {
+    public func reconnectLiveGame(_ gameID: String) {
+        guard let summary = activeGames.first(where: { $0.id == gameID }),
+              let game = liveGames[gameID],
+              game.state.isPlayable
+        else {
             return
         }
-        startLiveGame(createdBotGame, preservingSnapshot: true)
+        startLiveGame(summary, preservingSnapshot: true)
     }
 
-    public func leaveLiveGame() {
-        if liveGame != nil || isLoadingLiveGame {
-            send(BasicCommand(type: "stop_live_game"))
+    public func stopObservingLiveGame(_ gameID: String) {
+        if liveGames[gameID] != nil || loadingGameIDs.contains(gameID) {
+            send(StopLiveGameCommand(gameID: gameID))
         }
-        liveGame = nil
-        liveGameReceivedAt = nil
-        liveChatMessages = []
-        isLoadingLiveGame = false
-        isLiveStreamConnected = false
-        isSubmittingMove = false
-        isPerformingGameAction = false
-        pendingLiveGameRequestID = nil
-        pendingMoveRequestID = nil
-        pendingGameActionRequestID = nil
+        liveGames.removeValue(forKey: gameID)
+        liveGameReceivedDates.removeValue(forKey: gameID)
+        chatMessagesByGame.removeValue(forKey: gameID)
+        loadingGameIDs.remove(gameID)
+        connectedGameIDs.remove(gameID)
+        rollbackPrediction(for: gameID)
+        if let requestID = pendingMoveRequestByGame[gameID] {
+            clearPendingMove(requestID: requestID, rollback: true)
+        }
+        if let requestID = pendingGameActionRequestByGame[gameID] {
+            clearPendingGameAction(requestID: requestID)
+        }
+        pendingLiveGameRequests = pendingLiveGameRequests.filter { $0.value != gameID }
     }
 
     public func disconnect(forgetCredential: Bool = false) {
         send(BasicCommand(type: "disconnect"))
         account = nil
         authorizationURL = nil
-        createdBotGame = nil
-        liveGame = nil
-        liveGameReceivedAt = nil
-        liveChatMessages = []
-        isLoadingLiveGame = false
-        isLiveStreamConnected = false
-        isSubmittingMove = false
-        isPerformingGameAction = false
+        createdBotGames = [:]
+        activeGames = []
+        liveGames = [:]
+        focusedGameID = nil
+        predictedBoards = [:]
+        liveGameReceivedDates = [:]
+        chatMessagesByGame = [:]
+        loadingGameIDs = []
+        connectedGameIDs = []
+        submittingMoveGameIDs = []
+        performingActionGameIDs = []
         isCreatingBotGame = false
         pendingBotGameRequestID = nil
-        pendingLiveGameRequestID = nil
-        pendingMoveRequestID = nil
-        pendingGameActionRequestID = nil
+        pendingLiveGameRequests = [:]
+        pendingMoveRequests = [:]
+        pendingMoveRequestByGame = [:]
+        pendingGameActionRequests = [:]
+        pendingGameActionRequestByGame = [:]
+        predictions = [:]
+        catalogWatchStarted = false
+        catalogWatchRequestID = nil
+        liveGamesRefreshTask?.cancel()
+        liveGamesRefreshTask = nil
+        catalogReconnectTask?.cancel()
+        catalogReconnectTask = nil
 
         guard forgetCredential else {
             return
@@ -287,9 +382,13 @@ public final class LibChessStore: ObservableObject {
                 if let state = event.state {
                     connectionState = state
                 }
+                if event.state == .connected {
+                    beginLiveGameSynchronization()
+                }
                 if event.state == .disconnected {
                     account = nil
                     authorizationURL = nil
+                    catalogWatchStarted = false
                 }
             case "account_updated":
                 account = event.account
@@ -301,41 +400,60 @@ public final class LibChessStore: ObservableObject {
                 receiveBotGame(event.game, requestID: event.requestID)
             case "live_game_updated":
                 receiveLiveGame(event.liveGame)
+            case "live_games_updated":
+                receiveLiveGames(event.games)
+            case "live_games_changed":
+                scheduleLiveGamesRefresh()
             case "live_game_chat":
                 receiveChat(event.chat)
             case "live_game_stream_ended":
-                if event.gameID == liveGame?.id || event.gameID == createdBotGame?.id {
-                    isLoadingLiveGame = false
-                    isLiveStreamConnected = false
-                    pendingLiveGameRequestID = nil
+                if let gameID = event.gameID {
+                    loadingGameIDs.remove(gameID)
+                    connectedGameIDs.remove(gameID)
+                    pendingLiveGameRequests = pendingLiveGameRequests.filter { $0.value != gameID }
+                    refreshLiveGames()
                 }
+            case "move_predicted":
+                receiveMovePrediction(event)
             case "move_submitted":
-                if event.requestID == pendingMoveRequestID {
-                    pendingMoveRequestID = nil
-                    isSubmittingMove = false
+                if let requestID = event.requestID,
+                   let pending = pendingMoveRequests[requestID],
+                   pending.gameID == event.gameID,
+                   pending.moveID == event.moveID
+                {
+                    clearPendingMove(requestID: requestID, rollback: false)
                 }
             case "game_action_completed":
-                if event.requestID == pendingGameActionRequestID {
-                    pendingGameActionRequestID = nil
-                    isPerformingGameAction = false
+                if let requestID = event.requestID,
+                   pendingGameActionRequests[requestID] == event.gameID
+                {
+                    clearPendingGameAction(requestID: requestID)
                 }
             case "error":
                 if event.requestID == pendingBotGameRequestID {
                     isCreatingBotGame = false
                     pendingBotGameRequestID = nil
                 }
-                if event.requestID == pendingLiveGameRequestID {
-                    isLoadingLiveGame = false
-                    isLiveStreamConnected = false
-                    pendingLiveGameRequestID = nil
+                if let requestID = event.requestID,
+                   let gameID = pendingLiveGameRequests.removeValue(forKey: requestID)
+                {
+                    loadingGameIDs.remove(gameID)
+                    connectedGameIDs.remove(gameID)
                 }
-                if event.requestID == pendingMoveRequestID {
-                    isSubmittingMove = false
-                    pendingMoveRequestID = nil
+                if let requestID = event.requestID,
+                   pendingMoveRequests[requestID] != nil
+                {
+                    clearPendingMove(requestID: requestID, rollback: true)
                 }
-                if event.requestID == pendingGameActionRequestID {
-                    isPerformingGameAction = false
-                    pendingGameActionRequestID = nil
+                if let requestID = event.requestID,
+                   pendingGameActionRequests[requestID] != nil
+                {
+                    clearPendingGameAction(requestID: requestID)
+                }
+                if event.requestID == catalogWatchRequestID {
+                    catalogWatchStarted = false
+                    catalogWatchRequestID = nil
+                    scheduleCatalogReconnect()
                 }
                 message = event.error?.message ?? "LibChess reported an unknown error."
             default:
@@ -413,74 +531,299 @@ public final class LibChessStore: ObservableObject {
         }
 
         isCreatingBotGame = false
-        createdBotGame = game
-        startLiveGame(game, preservingSnapshot: false)
+        createdBotGames[game.id] = game
+        let summary = LiveGameSummary(
+            provider: game.provider,
+            id: game.id,
+            url: game.url,
+            playerColor: game.playerColor,
+            displayName: game.opponent.displayName,
+            variantID: game.variant.id,
+            variantName: game.variant.displayName,
+            rated: false,
+            speed: game.timeControl.speedName,
+            isMyTurn: game.playerColor == .white
+        )
+        upsertActiveGame(summary, atFront: true)
+        focusedGameID = game.id
+        startLiveGame(summary, preservingSnapshot: false)
+        refreshLiveGames()
     }
 
-    private func startLiveGame(_ game: BotGame, preservingSnapshot: Bool) {
+    private func startLiveGame(_ game: LiveGameSummary, preservingSnapshot: Bool) {
         let command = StartLiveGameCommand(
             gameID: game.id,
             playerColor: game.playerColor
         )
         if !preservingSnapshot {
-            liveGame = nil
-            liveGameReceivedAt = nil
-            liveChatMessages = []
+            liveGames.removeValue(forKey: game.id)
+            liveGameReceivedDates.removeValue(forKey: game.id)
+            chatMessagesByGame[game.id] = []
         }
-        isLoadingLiveGame = true
-        isLiveStreamConnected = false
-        pendingLiveGameRequestID = command.requestID
+        loadingGameIDs.insert(game.id)
+        connectedGameIDs.remove(game.id)
+        pendingLiveGameRequests[command.requestID] = game.id
         if !send(command) {
-            isLoadingLiveGame = false
-            pendingLiveGameRequestID = nil
+            loadingGameIDs.remove(game.id)
+            pendingLiveGameRequests.removeValue(forKey: command.requestID)
         }
     }
 
     private func receiveLiveGame(_ game: LiveGame?) {
         guard let game,
-              let createdBotGame,
-              game.id == createdBotGame.id,
-              game.provider == createdBotGame.provider,
-              game.playerColor == createdBotGame.playerColor,
+              let provider = connectedProvider,
+              game.provider == provider.id,
+              activeGames.contains(where: {
+                  $0.id == game.id && $0.playerColor == game.playerColor
+              }) || createdBotGames[game.id]?.playerColor == game.playerColor,
               liveGameIsValid(game)
         else {
-            isLoadingLiveGame = false
+            if let gameID = game?.id {
+                loadingGameIDs.remove(gameID)
+            }
             message = "LibChess returned an invalid live-game position."
             return
         }
-        liveGame = game
-        liveGameReceivedAt = Date()
-        isLoadingLiveGame = false
-        isLiveStreamConnected = true
+
+        reconcilePrediction(with: game)
+        liveGames[game.id] = game
+        liveGameReceivedDates[game.id] = Date()
+        loadingGameIDs.remove(game.id)
+        connectedGameIDs.insert(game.id)
+        pendingLiveGameRequests = pendingLiveGameRequests.filter { $0.value != game.id }
+        upsertActiveGame(summary(for: game), atFront: false)
         if !game.state.isPlayable {
-            isSubmittingMove = false
-            isPerformingGameAction = false
-            pendingMoveRequestID = nil
-            pendingGameActionRequestID = nil
+            rollbackPrediction(for: game.id)
+            if let requestID = pendingMoveRequestByGame[game.id] {
+                clearPendingMove(requestID: requestID, rollback: true)
+            }
+            if let requestID = pendingGameActionRequestByGame[game.id] {
+                clearPendingGameAction(requestID: requestID)
+            }
         }
     }
 
     private func receiveChat(_ chat: LiveChatMessage?) {
-        guard let chat, chat.gameID == liveGame?.id else {
+        guard let chat, liveGames[chat.gameID] != nil else {
             return
         }
-        liveChatMessages.append(chat)
-        if liveChatMessages.count > 100 {
-            liveChatMessages.removeFirst(liveChatMessages.count - 100)
+        var messages = chatMessagesByGame[chat.gameID] ?? []
+        messages.append(chat)
+        if messages.count > 100 {
+            messages.removeFirst(messages.count - 100)
+        }
+        chatMessagesByGame[chat.gameID] = messages
+    }
+
+    private func beginLiveGameSynchronization() {
+        refreshLiveGames()
+        guard !catalogWatchStarted else {
+            return
+        }
+        let command = BasicCommand(type: "watch_live_games")
+        if send(command) {
+            catalogWatchStarted = true
+            catalogWatchRequestID = command.requestID
         }
     }
 
+    private func scheduleLiveGamesRefresh() {
+        liveGamesRefreshTask?.cancel()
+        liveGamesRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.refreshLiveGames()
+        }
+    }
+
+    private func scheduleCatalogReconnect() {
+        catalogReconnectTask?.cancel()
+        catalogReconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, self?.connectionState == .connected else {
+                return
+            }
+            self?.beginLiveGameSynchronization()
+        }
+    }
+
+    private func receiveLiveGames(_ games: [LiveGameSummary]?) {
+        guard let games, games.allSatisfy(liveGameSummaryIsValid) else {
+            message = "LibChess returned an invalid ongoing-game list."
+            return
+        }
+
+        var merged = games
+        let listedIDs = Set(games.map(\.id))
+        for game in liveGames.values where game.state.isPlayable && !listedIDs.contains(game.id) {
+            merged.append(summary(for: game))
+        }
+        for game in createdBotGames.values where !listedIDs.contains(game.id)
+            && !merged.contains(where: { $0.id == game.id })
+        {
+            merged.append(
+                LiveGameSummary(
+                    provider: game.provider,
+                    id: game.id,
+                    url: game.url,
+                    playerColor: game.playerColor,
+                    displayName: game.opponent.displayName,
+                    variantID: game.variant.id,
+                    variantName: game.variant.displayName,
+                    rated: false,
+                    speed: game.timeControl.speedName,
+                    isMyTurn: game.playerColor == .white
+                )
+            )
+        }
+        activeGames = merged
+    }
+
+    private func receiveMovePrediction(_ event: WireEvent) {
+        guard let requestID = event.requestID,
+              let pending = pendingMoveRequests[requestID],
+              pending.gameID == event.gameID,
+              pending.moveID == event.moveID,
+              let board = event.board,
+              board.moves == pending.baseMoves + [pending.moveID],
+              board.ply == UInt32(pending.baseMoves.count + 1),
+              boardStateIsValid(board)
+        else {
+            return
+        }
+        predictions[pending.gameID] = MovePrediction(
+            requestID: requestID,
+            moveID: pending.moveID,
+            baseMoves: pending.baseMoves
+        )
+        predictedBoards[pending.gameID] = board
+    }
+
+    private func reconcilePrediction(with game: LiveGame) {
+        guard let prediction = predictions[game.id] else {
+            return
+        }
+        let authoritativeMoves = game.state.board.moves
+        guard authoritativeMoves.count > prediction.baseMoves.count || !game.state.isPlayable else {
+            return
+        }
+        rollbackPrediction(for: game.id)
+    }
+
+    private func rollbackPrediction(for gameID: String) {
+        predictions.removeValue(forKey: gameID)
+        predictedBoards.removeValue(forKey: gameID)
+    }
+
+    private func clearPendingMove(requestID: String, rollback: Bool) {
+        guard let pending = pendingMoveRequests.removeValue(forKey: requestID) else {
+            return
+        }
+        if pendingMoveRequestByGame[pending.gameID] == requestID {
+            pendingMoveRequestByGame.removeValue(forKey: pending.gameID)
+            submittingMoveGameIDs.remove(pending.gameID)
+        }
+        if rollback {
+            rollbackPrediction(for: pending.gameID)
+        }
+    }
+
+    private func clearPendingGameAction(requestID: String) {
+        guard let gameID = pendingGameActionRequests.removeValue(forKey: requestID) else {
+            return
+        }
+        if pendingGameActionRequestByGame[gameID] == requestID {
+            pendingGameActionRequestByGame.removeValue(forKey: gameID)
+            performingActionGameIDs.remove(gameID)
+        }
+    }
+
+    private func upsertActiveGame(_ game: LiveGameSummary, atFront: Bool) {
+        activeGames.removeAll(where: { $0.id == game.id })
+        if atFront {
+            activeGames.insert(game, at: 0)
+        } else {
+            activeGames.append(game)
+        }
+    }
+
+    private func summary(for game: LiveGame) -> LiveGameSummary {
+        let opponent = game.playerColor == .white ? game.black : game.white
+        return LiveGameSummary(
+            provider: game.provider,
+            id: game.id,
+            url: game.url,
+            playerColor: game.playerColor,
+            displayName: opponent.displayName,
+            variantID: game.variantID,
+            variantName: game.variantName,
+            rated: game.rated,
+            speed: game.speed,
+            isMyTurn: game.state.board.turn == game.playerColor && game.state.isPlayable
+        )
+    }
+
     private func liveGameIsValid(_ game: LiveGame) -> Bool {
-        let pieces = game.state.board.pieces
+        guard boardStateIsValid(game.state.board),
+              !game.initialFEN.isEmpty,
+              game.initialFEN.utf8.count <= 4_096,
+              game.initialFEN.unicodeScalars.allSatisfy({ (32 ... 126).contains($0.value) }),
+              let provider = connectedProvider,
+              let providerWebURL = provider.webURL,
+              Self.providerURL(game.url, belongsTo: providerWebURL)
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func boardStateIsValid(_ board: BoardState) -> Bool {
+        let pieces = board.pieces
         let occupiedSquares = Set(pieces.map(\.square))
         guard occupiedSquares.count == pieces.count,
               pieces.allSatisfy({ Self.isBoardSquare($0.square) }),
-              game.state.board.legalMoves.allSatisfy({ move in
+              board.legalMoves.allSatisfy({ move in
                   Self.isBoardSquare(move.to)
                       && (move.from.map(Self.isBoardSquare) ?? true)
                       && !move.id.isEmpty
                       && move.id.utf8.count <= 16
               })
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func liveGameSummaryIsValid(_ game: LiveGameSummary) -> Bool {
+        guard let provider = connectedProvider, let providerWebURL = provider.webURL else {
+            return false
+        }
+        return game.provider == provider.id
+            && game.id.utf8.count <= 128
+            && !game.id.isEmpty
+            && game.id.utf8.allSatisfy {
+                (48 ... 57).contains($0)
+                    || (65 ... 90).contains($0)
+                    || (97 ... 122).contains($0)
+                    || $0 == 45
+                    || $0 == 95
+            }
+            && !game.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && game.displayName.utf8.count <= 128
+            && Self.providerURL(game.url, belongsTo: providerWebURL)
+    }
+
+    private static func providerURL(_ value: String, belongsTo providerValue: String) -> Bool {
+        guard let url = URL(string: value),
+              let providerURL = URL(string: providerValue),
+              providerURL.scheme?.lowercased() == "https",
+              url.scheme?.lowercased() == providerURL.scheme?.lowercased(),
+              url.host?.lowercased() == providerURL.host?.lowercased(),
+              url.port == providerURL.port,
+              url.user == nil,
+              url.password == nil
         else {
             return false
         }
@@ -526,6 +869,19 @@ public final class LibChessStore: ObservableObject {
             && fen.utf8.count <= 1_024
             && fen.unicodeScalars.allSatisfy { (32 ... 126).contains($0.value) }
     }
+}
+
+private struct PendingMove {
+    let requestID: String
+    let gameID: String
+    let moveID: String
+    let baseMoves: [String]
+}
+
+private struct MovePrediction {
+    let requestID: String
+    let moveID: String
+    let baseMoves: [String]
 }
 
 private extension String {
@@ -651,6 +1007,20 @@ struct StartLiveGameCommand: Encodable {
         case type
         case gameID = "game_id"
         case playerColor = "player_color"
+    }
+}
+
+struct StopLiveGameCommand: Encodable {
+    let version = LIBCHESS_API_VERSION
+    let requestID = UUID().uuidString
+    let type = "stop_live_game"
+    let gameID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+        case type
+        case gameID = "game_id"
     }
 }
 

@@ -2,6 +2,10 @@ import AppKit
 import LibChessKit
 import SwiftUI
 
+extension Notification.Name {
+    static let showNewGame = Notification.Name("org.libchess.macos.show-new-game")
+}
+
 @main
 @MainActor
 enum LibChessMacApp {
@@ -26,23 +30,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         application.mainMenu = makeMainMenu(for: application)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 1_120, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "LibChess"
-        window.contentMinSize = NSSize(width: 920, height: 640)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
+        window.contentMinSize = NSSize(width: 760, height: 520)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(
             rootView: ContentView()
                 .environmentObject(store)
-                .frame(minWidth: 920, minHeight: 640)
+                .frame(minWidth: 760, minHeight: 520)
         )
         window.center()
         window.makeKeyAndOrderFront(nil)
         application.activate(ignoringOtherApps: true)
         self.window = window
+        store.refreshSavedCredentialAvailability()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -99,6 +107,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(
+            item(
+                "New Game",
+                action: #selector(showNewGame(_:)),
+                key: "n",
+                target: self
+            )
+        )
+        fileMenu.addItem(.separator())
         fileMenu.addItem(
             item("Close Window", action: #selector(NSWindow.performClose(_:)), key: "w")
         )
@@ -162,14 +179,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return mainMenu
     }
 
+    @objc private func showNewGame(_ sender: Any?) {
+        NotificationCenter.default.post(name: .showNewGame, object: nil)
+        window?.makeKeyAndOrderFront(sender)
+    }
+
     private func item(
         _ title: String,
         action: Selector,
         key: String = "",
-        modifiers: NSEvent.ModifierFlags = [.command]
+        modifiers: NSEvent.ModifierFlags = [.command],
+        target: AnyObject? = nil
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.keyEquivalentModifierMask = modifiers
+        item.target = target
         return item
     }
 }
