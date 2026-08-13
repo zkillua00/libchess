@@ -25,6 +25,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = LibChessStore()
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
+    private var settingsWindowCoordinator: SettingsWindowCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let application = notification.object as? NSApplication ?? NSApplication.shared
@@ -222,21 +223,29 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
             let settingsWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 900, height: 660),
-                styleMask: [.titled, .closable, .resizable],
+                contentRect: NSRect(x: 0, y: 0, width: 920, height: 700),
+                styleMask: [
+                    .titled,
+                    .closable,
+                    .miniaturizable,
+                    .resizable,
+                    .fullSizeContentView,
+                ],
                 backing: .buffered,
                 defer: false
             )
             settingsWindow.title = "LibChess Settings"
-            settingsWindow.toolbarStyle = .preference
-            settingsWindow.contentMinSize = NSSize(width: 640, height: 500)
+            settingsWindow.titleVisibility = .hidden
+            settingsWindow.titlebarAppearsTransparent = true
+            settingsWindow.titlebarSeparatorStyle = .none
+            settingsWindow.toolbarStyle = .unified
             settingsWindow.isReleasedWhenClosed = false
-            settingsWindow.contentView = NSHostingView(
-                rootView: SettingsView()
-                    .environmentObject(store)
-                    .frame(minWidth: 640, minHeight: 500)
-            )
+            let coordinator = SettingsWindowCoordinator(store: store)
+            settingsWindow.contentView = coordinator.contentView
+            settingsWindow.setContentSize(NSSize(width: 920, height: 700))
+            settingsWindow.minSize = NSSize(width: 720, height: 520)
             settingsWindow.center()
+            settingsWindowCoordinator = coordinator
             self.settingsWindow = settingsWindow
         }
         settingsWindow?.makeKeyAndOrderFront(sender)

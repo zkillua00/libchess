@@ -2,26 +2,49 @@ import AppKit
 import LibChessKit
 import SwiftUI
 
-struct SettingsView: View {
+@MainActor
+final class SettingsWindowCoordinator {
+    let contentView: NSView
+
+    private let selection: SettingsSelectionModel
+
+    init(store: LibChessStore) {
+        let selection = SettingsSelectionModel()
+        let hostingView = NSHostingView(
+            rootView: SettingsRootView(selection: selection)
+                .environmentObject(store)
+        )
+        hostingView.sizingOptions = []
+        hostingView.autoresizingMask = [.width, .height]
+
+        self.selection = selection
+        contentView = hostingView
+        contentView.setAccessibilityIdentifier("settings-root")
+    }
+}
+
+@MainActor
+private final class SettingsSelectionModel: ObservableObject {
+    @Published var section = SettingsSection.boards
+}
+
+private struct SettingsRootView: View {
     @EnvironmentObject private var store: LibChessStore
-    @State private var selection = SettingsSection.boards
+    @ObservedObject var selection: SettingsSelectionModel
 
     var body: some View {
-        NavigationSplitView {
-            List(SettingsSection.allCases, selection: $selection) { section in
-                Label(section.title, systemImage: section.symbol)
-                    .tag(section)
-            }
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
-        } detail: {
-            switch selection {
-            case .boards:
-                BoardThemeSettingsView()
-            case .pieces:
-                PieceThemeSettingsView()
-            }
+        HStack(spacing: 0) {
+            settingsSidebar
+                .frame(width: 220)
+
+            Divider()
+
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
         }
-        .frame(minWidth: 640, minHeight: 500)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         .alert("LibChess", isPresented: errorIsPresented) {
             Button("OK") {
                 store.message = nil
@@ -29,6 +52,70 @@ struct SettingsView: View {
         } message: {
             Text(store.message ?? "An unknown error occurred.")
         }
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Appearance")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 2)
+
+            ForEach(SettingsSection.allCases) { section in
+                Button {
+                    NSApplication.shared.keyWindow?.makeFirstResponder(nil)
+                    selection.section = section
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: section.symbol)
+                            .symbolRenderingMode(.monochrome)
+                            .foregroundStyle(
+                                selection.section == section ? Color.accentColor : .secondary
+                            )
+                            .frame(width: 18)
+
+                        Text(section.title)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                    .background {
+                        if selection.section == section {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.accentColor.opacity(0.18))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    selection.section == section ? [.isSelected] : []
+                )
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .background(.regularMaterial)
+        .accessibilityLabel("Settings Sections")
+    }
+
+    private var detail: some View {
+        ZStack {
+            BoardThemeSettingsView()
+                .opacity(selection.section == .boards ? 1 : 0)
+                .allowsHitTesting(selection.section == .boards)
+                .accessibilityHidden(selection.section != .boards)
+
+            PieceThemeSettingsView()
+                .opacity(selection.section == .pieces ? 1 : 0)
+                .allowsHitTesting(selection.section == .pieces)
+                .accessibilityHidden(selection.section != .pieces)
+        }
+        .animation(.easeInOut(duration: 0.16), value: selection.section)
     }
 
     private var errorIsPresented: Binding<Bool> {
@@ -625,7 +712,6 @@ private struct ThemeEditorLayout<Controls: View, Editor: View>: View {
             editor
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle(title)
     }
 }
 
