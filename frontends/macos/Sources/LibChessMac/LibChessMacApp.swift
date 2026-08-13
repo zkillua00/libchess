@@ -151,6 +151,32 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 modifiers: [.command, .control]
             )
         )
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            item(
+                "Increase Board Size",
+                action: #selector(increaseBoardSize(_:)),
+                key: "+",
+                target: self
+            )
+        )
+        viewMenu.addItem(
+            item(
+                "Decrease Board Size",
+                action: #selector(decreaseBoardSize(_:)),
+                key: "-",
+                target: self
+            )
+        )
+        viewMenu.addItem(
+            item(
+                "Default Board Size",
+                action: #selector(resetBoardSize(_:)),
+                key: "0",
+                target: self
+            )
+        )
+        viewMenu.addItem(.separator())
         viewMenu.addItem(
             item(
                 "Enter Full Screen",
@@ -182,6 +208,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showNewGame(_ sender: Any?) {
         NotificationCenter.default.post(name: .showNewGame, object: nil)
         window?.makeKeyAndOrderFront(sender)
+    }
+
+    @objc private func increaseBoardSize(_ sender: Any?) {
+        setBoardZoom(currentBoardZoom.larger)
+    }
+
+    @objc private func decreaseBoardSize(_ sender: Any?) {
+        setBoardZoom(currentBoardZoom.smaller)
+    }
+
+    @objc private func resetBoardSize(_ sender: Any?) {
+        setBoardZoom(.medium)
+    }
+
+    private var currentBoardZoom: BoardZoomLevel {
+        let rawValue = UserDefaults.standard.string(forKey: BoardZoomLevel.preferenceKey)
+        return rawValue.flatMap(BoardZoomLevel.init(rawValue:)) ?? .medium
+    }
+
+    private func setBoardZoom(_ level: BoardZoomLevel) {
+        UserDefaults.standard.set(level.rawValue, forKey: BoardZoomLevel.preferenceKey)
     }
 
     private func item(

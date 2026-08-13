@@ -3,68 +3,29 @@ import Charts
 import Foundation
 import SwiftUI
 
-private enum BoardZoomLevel: String, CaseIterable, Identifiable {
-    case small
-    case medium
-    case large
-
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .small: "Small"
-        case .medium: "Medium"
-        case .large: "Large"
-        }
-    }
-
-    var scale: CGFloat {
-        switch self {
-        case .small: 0.70
-        case .medium: 0.85
-        case .large: 1
-        }
-    }
-
-    var larger: Self {
-        switch self {
-        case .small: .medium
-        case .medium, .large: .large
-        }
-    }
-
-    var smaller: Self {
-        switch self {
-        case .small, .medium: .small
-        case .large: .medium
-        }
-    }
-}
-
 struct LiveGameplayView: View {
     @EnvironmentObject private var store: LibChessStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
 
-    @AppStorage("org.libchess.macos.boardZoom") private var boardZoomRaw = BoardZoomLevel.medium.rawValue
+    @AppStorage(BoardZoomLevel.preferenceKey) private var boardZoomRaw = BoardZoomLevel.medium.rawValue
     @State private var actionToConfirm: LiveGameAction?
     @State private var showsInspector = true
 
     var body: some View {
         GeometryReader { geometry in
-            let availableWidth = max(160, geometry.size.width - 56)
-            let availableHeight = max(160, geometry.size.height - 140)
-            let fittedBoardSize = min(900, availableWidth, availableHeight)
-            let boardSize = min(
-                fittedBoardSize,
-                max(240, fittedBoardSize * boardZoomLevel.scale)
+            let boardExtent = ChessBoardLayout.extent(
+                in: geometry.size,
+                zoom: boardZoomLevel,
+                verticalChrome: 140
             )
 
-            ChessBoardView(game: game)
+            ChessBoardView(game: game, boardExtent: boardExtent)
                 .id(game.id)
-                .frame(width: boardSize)
+                .frame(width: boardExtent)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .padding(28)
+                .simultaneousGesture(boardMagnificationGesture)
                 .animation(
                     reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0),
                     value: boardZoomRaw
@@ -81,13 +42,11 @@ struct LiveGameplayView: View {
                     Button("Zoom In") {
                         setBoardZoom(boardZoomLevel.larger)
                     }
-                    .keyboardShortcut("+", modifiers: .command)
                     .disabled(boardZoomLevel.larger == boardZoomLevel)
 
                     Button("Zoom Out") {
                         setBoardZoom(boardZoomLevel.smaller)
                     }
-                    .keyboardShortcut("-", modifiers: .command)
                     .disabled(boardZoomLevel.smaller == boardZoomLevel)
 
                     Divider()
@@ -147,6 +106,17 @@ struct LiveGameplayView: View {
         }
     }
 
+    private var boardMagnificationGesture: some Gesture {
+        MagnifyGesture(minimumScaleDelta: 0.08)
+            .onEnded { value in
+                if value.magnification > 1 {
+                    setBoardZoom(boardZoomLevel.larger)
+                } else if value.magnification < 1 {
+                    setBoardZoom(boardZoomLevel.smaller)
+                }
+            }
+    }
+
     private var confirmationTitle: String {
         actionToConfirm == .abort ? "Abort this game?" : "Resign this game?"
     }
@@ -166,7 +136,7 @@ struct GameReviewView: View {
 
     let game: GameHistoryEntry
 
-    @AppStorage("org.libchess.macos.boardZoom") private var boardZoomRaw = BoardZoomLevel.medium.rawValue
+    @AppStorage(BoardZoomLevel.preferenceKey) private var boardZoomRaw = BoardZoomLevel.medium.rawValue
     @State private var selectedPly: UInt32?
     @State private var showsInspector = true
 
@@ -220,12 +190,10 @@ struct GameReviewView: View {
 
     private func reviewWorkspace(review: GameReview, board: BoardState) -> some View {
         GeometryReader { geometry in
-            let availableWidth = max(160, geometry.size.width - 56)
-            let availableHeight = max(160, geometry.size.height - 140)
-            let fittedBoardSize = min(900, availableWidth, availableHeight)
-            let boardSize = min(
-                fittedBoardSize,
-                max(240, fittedBoardSize * boardZoomLevel.scale)
+            let boardExtent = ChessBoardLayout.extent(
+                in: geometry.size,
+                zoom: boardZoomLevel,
+                verticalChrome: 56
             )
 
             ReviewChessBoardView(
@@ -233,9 +201,10 @@ struct GameReviewView: View {
                 perspective: game.playerColor
             )
             .id(game.id)
-            .frame(width: boardSize)
+            .frame(width: boardExtent, height: boardExtent)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(28)
+            .simultaneousGesture(boardMagnificationGesture)
             .overlay(alignment: .topTrailing) {
                 if store.isLoadingReviewPosition(game.id) {
                     ProgressView()
@@ -379,6 +348,17 @@ struct GameReviewView: View {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.26, extraBounce: 0)) {
             boardZoomRaw = level.rawValue
         }
+    }
+
+    private var boardMagnificationGesture: some Gesture {
+        MagnifyGesture(minimumScaleDelta: 0.08)
+            .onEnded { value in
+                if value.magnification > 1 {
+                    setBoardZoom(boardZoomLevel.larger)
+                } else if value.magnification < 1 {
+                    setBoardZoom(boardZoomLevel.smaller)
+                }
+            }
     }
 }
 
@@ -878,6 +858,7 @@ private struct ChessBoardView: View {
     @EnvironmentObject private var store: LibChessStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: LiveGame
+    let boardExtent: CGFloat
 
     @State private var selectedSquare: String?
     @State private var selectedDrop: PieceRole?
@@ -886,8 +867,9 @@ private struct ChessBoardView: View {
     @State private var renderedPly: UInt32
     @Namespace private var pieceAnimation
 
-    init(game: LiveGame) {
+    init(game: LiveGame, boardExtent: CGFloat) {
         self.game = game
+        self.boardExtent = boardExtent
         _renderedPieces = State(
             initialValue: game.state.board.pieces.map(RenderedBoardPiece.initial)
         )
@@ -904,6 +886,7 @@ private struct ChessBoardView: View {
             )
 
             board
+                .frame(width: boardExtent, height: boardExtent)
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay {
