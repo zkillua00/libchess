@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var exportDocument: PGNDocument?
     @State private var exportFilename = "game.pgn"
     @State private var showsFileExporter = false
+    @State private var showsAccountPopover = false
 
     var body: some View {
         NavigationSplitView {
@@ -32,7 +33,7 @@ struct ContentView: View {
             {
                 selection = .newGame
             } else if state == ConnectionState.disconnected.rawValue {
-                selection = .account
+                showsAccountPopover = false
             }
         }
         .onChange(of: store.focusedGameID) { _, gameID in
@@ -120,11 +121,20 @@ struct ContentView: View {
                     account: store.account,
                     providerName: store.connectedProvider?.displayName,
                     connectionState: store.connectionState,
-                    isSelected: selection == .account
+                    isPresented: showsAccountPopover
                 ) {
-                    selection = .account
+                    showsAccountPopover.toggle()
                 }
-                .environmentObject(store)
+                .popover(
+                    isPresented: $showsAccountPopover,
+                    attachmentAnchor: .point(.topTrailing),
+                    arrowEdge: .top
+                ) {
+                    AccountPopoverView {
+                        showsAccountPopover = false
+                    }
+                    .environmentObject(store)
+                }
                 .padding(8)
             }
             .background(.bar)
@@ -201,8 +211,6 @@ struct ContentView: View {
                     selection = .review(selectedGameID)
                 }
             }
-        case .account:
-            AccountOverviewView()
         }
     }
 }
@@ -212,7 +220,6 @@ private enum SidebarDestination: Hashable {
     case game(String)
     case history
     case review(String)
-    case account
 }
 
 private struct SidebarGameRow: View {
@@ -247,12 +254,10 @@ private struct SidebarGameRow: View {
 }
 
 private struct SidebarAccountButton: View {
-    @EnvironmentObject private var store: LibChessStore
-
     let account: ChessAccount?
     let providerName: String?
     let connectionState: ConnectionState
-    let isSelected: Bool
+    let isPresented: Bool
     let action: () -> Void
 
     var body: some View {
@@ -278,24 +283,10 @@ private struct SidebarAccountButton: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 6)
         .background(
-            isSelected ? Color.accentColor.opacity(0.18) : Color.clear,
+            isPresented ? Color.accentColor.opacity(0.18) : Color.clear,
             in: RoundedRectangle(cornerRadius: 7)
         )
-        .contextMenu {
-            if connectionState == .connected {
-                Button("Refresh Account") {
-                    store.refreshAccount()
-                }
-                Button("Disconnect") {
-                    store.disconnect()
-                }
-                Divider()
-                Button("Disconnect and Remove from This Mac", role: .destructive) {
-                    store.disconnect(forgetCredential: true)
-                }
-            }
-        }
-        .help(account == nil ? "Sign in to a chess service" : "Show account overview")
+        .help(account == nil ? "Show sign-in options" : "Show account menu")
     }
 
     private var avatar: some View {
@@ -685,25 +676,19 @@ private struct NewGameView: View {
     }
 }
 
-private struct AccountOverviewView: View {
+private struct AccountPopoverView: View {
     @EnvironmentObject private var store: LibChessStore
+    @Environment(\.openURL) private var openURL
+    @State private var confirmsCredentialRemoval = false
+
+    let dismiss: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 16) {
-                    accountAvatar
+        VStack(alignment: .leading, spacing: 16) {
+            accountHeader
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(store.account?.displayName ?? "Account")
-                            .font(.largeTitle.bold())
-                        Label("Connected to \(store.connectedProvider?.displayName ?? "chess service")", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                }
-
-                Divider()
-
+            switch store.connectionState {
+            case .connected:
                 Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 12) {
                     GridRow {
                         Text("Username")
@@ -720,44 +705,161 @@ private struct AccountOverviewView: View {
                         Text("Account ID")
                             .foregroundStyle(.secondary)
                         Text(store.account?.id ?? "—")
-                            .font(.system(.body, design: .monospaced))
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
                     }
                 }
 
                 Divider()
 
-                HStack(spacing: 10) {
-                    Button("Refresh Account") {
+                HStack {
+                    Button("Refresh") {
                         store.refreshAccount()
                     }
+
+                    Spacer()
+
                     Button("Disconnect") {
                         store.disconnect()
-                    }
-                    Spacer()
-                    Button("Remove from This Mac", role: .destructive) {
-                        store.disconnect(forgetCredential: true)
+                        dismiss()
                     }
                 }
+
+                Button("Remove Saved Credential…", role: .destructive) {
+                    confirmsCredentialRemoval = true
+                }
+
+            case .authorizing:
+                statusRow("Waiting for approval in your browser")
+
+                HStack {
+                    if let authorizationURL = store.authorizationURL {
+                        Button("Reopen Browser") {
+                            openURL(authorizationURL)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button("Cancel", role: .cancel) {
+                        store.cancelOAuth()
+                        dismiss()
+                    }
+                }
+
+            case .connecting:
+                statusRow("Validating your account…")
+
+            case .disconnected:
+                Button("Sign in with Lichess") {
+                    store.beginLichessOAuth()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+
+                if store.savedCredentialAvailable {
+                    Button {
+                        store.connectUsingSavedCredential()
+                        dismiss()
+                    } label: {
+                        if store.isLoadingSavedCredential {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Use Saved Credential")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled(store.isLoadingSavedCredential)
+                }
+
+                Label(
+                    "Credentials are stored in macOS Keychain without password prompts.",
+                    systemImage: "lock.shield"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .padding(32)
-            .frame(maxWidth: 680, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("Account")
+        .padding(18)
+        .frame(width: 360)
+        .alert("Remove Saved Credential?", isPresented: $confirmsCredentialRemoval) {
+            Button("Remove", role: .destructive) {
+                store.disconnect(forgetCredential: true)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("LibChess will disconnect and remove the Lichess credential from this Mac.")
+        }
+    }
+
+    private var accountHeader: some View {
+        HStack(spacing: 12) {
+            accountAvatar
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(accountTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(accountSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
     }
 
     private var accountAvatar: some View {
         ZStack {
             Circle()
-                .fill(Color.accentColor)
-            Text(store.account?.username.first.map { String($0).uppercased() } ?? "?")
-                .font(.title.bold())
-                .foregroundStyle(.white)
+                .fill(store.account == nil ? Color.secondary.opacity(0.22) : Color.accentColor)
+
+            if let initial = store.account?.username.first {
+                Text(String(initial).uppercased())
+                    .font(.title3.bold())
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "person.fill")
+                    .foregroundStyle(.secondary)
+            }
         }
-        .frame(width: 64, height: 64)
+        .frame(width: 44, height: 44)
         .accessibilityHidden(true)
+    }
+
+    private var accountTitle: String {
+        store.account?.displayName ?? "Lichess Account"
+    }
+
+    private var accountSubtitle: String {
+        switch store.connectionState {
+        case .connected:
+            "Connected"
+        case .authorizing:
+            "Finish signing in"
+        case .connecting:
+            "Connecting…"
+        case .disconnected:
+            "Not signed in"
+        }
+    }
+
+    private func statusRow(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text(text)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
     }
 }
 
