@@ -41,6 +41,7 @@ public final class LibChessStore: ObservableObject {
     private let decoder: JSONDecoder
     private let tokenStore = KeychainTokenStore()
     private var nativeClient: NativeClient?
+    private let commandSink: ((Data) throws -> Void)?
     private var pendingBotGameRequestID: String?
     private var pendingBoardPresentationRequestID: String?
     private var pendingBoardCustomizationRequestID: String?
@@ -64,6 +65,7 @@ public final class LibChessStore: ObservableObject {
 
     public init() {
         decoder = JSONDecoder()
+        commandSink = nil
 
         do {
             nativeClient = try NativeClient { [weak self] data in
@@ -72,6 +74,11 @@ public final class LibChessStore: ObservableObject {
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    init(commandSink: @escaping (Data) throws -> Void) {
+        decoder = JSONDecoder()
+        self.commandSink = commandSink
     }
 
     public func refreshSavedCredentialAvailability() {
@@ -620,6 +627,10 @@ public final class LibChessStore: ObservableObject {
     @discardableResult
     private func send<Command: Encodable>(_ command: Command) -> Bool {
         do {
+            if let commandSink {
+                try commandSink(JSONEncoder().encode(command))
+                return true
+            }
             guard let nativeClient else {
                 throw NativeClientError.couldNotCreate
             }
@@ -649,7 +660,7 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    private func receive(_ data: Data) {
+    func receive(_ data: Data) {
         do {
             let event = try decoder.decode(WireEvent.self, from: data)
             guard event.version == LIBCHESS_API_VERSION else {
@@ -1130,6 +1141,7 @@ public final class LibChessStore: ObservableObject {
         }
         loadingGameIDs.insert(game.id)
         connectedGameIDs.remove(game.id)
+        pendingLiveGameRequests = pendingLiveGameRequests.filter { $0.value != game.id }
         pendingLiveGameRequests[command.requestID] = game.id
         if !send(command) {
             loadingGameIDs.remove(game.id)
@@ -1158,7 +1170,8 @@ public final class LibChessStore: ObservableObject {
         liveGameReceivedDates[game.id] = Date()
         loadingGameIDs.remove(game.id)
         connectedGameIDs.insert(game.id)
-        pendingLiveGameRequests = pendingLiveGameRequests.filter { $0.value != game.id }
+        // Stream errors carry the originating request ID, so preserve this
+        // correlation until the stream actually ends or fails.
         if game.state.isPlayable {
             upsertActiveGame(summary(for: game), atFront: false)
         } else {

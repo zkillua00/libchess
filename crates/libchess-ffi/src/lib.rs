@@ -12,10 +12,10 @@ use std::{
 use libchess::{
     AccessToken, Account, BoardCustomizationState, BoardPresentation, BoardProviderDescriptor,
     BoardState, BotGame, BotGameRequest, BotGameTimeControl, Client, ColorPreference,
-    CustomBoardTheme, CustomPieceTheme, ErrorKind, GameExport, GameHistoryPage, GameId, GameReview,
-    LibChessError, LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameEvent,
-    LiveGameRequest, LiveGameSummary, MoveSubmission, OAuthConnection, PlayerColor,
-    ProviderDescriptor,
+    CustomBoardTheme, CustomPieceTheme, ErrorKind, GameExport, GameHistoryPage, GameHistoryRequest,
+    GameId, GameReview, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
+    LiveGameCatalogEvent, LiveGameEvent, LiveGameRequest, LiveGameSummary, MoveSubmission,
+    OAuthConnection, PlayerColor, ProviderDescriptor,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::mpsc;
@@ -306,12 +306,20 @@ impl Serialize for SerializableAccessToken {
     }
 }
 
-async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: EventSink) {
-    let mut client = Client::new();
+async fn run_worker(receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: EventSink) {
+    run_worker_with_client(receiver, sink, Client::new()).await;
+}
+
+async fn run_worker_with_client(
+    mut receiver: mpsc::UnboundedReceiver<WorkerMessage>,
+    sink: EventSink,
+    mut client: Client,
+) {
     let mut live_tasks = BTreeMap::<String, tokio::task::JoinHandle<()>>::new();
     let mut catalog_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut independent_tasks = Vec::<tokio::task::JoinHandle<()>>::new();
     let latest_games = Arc::new(Mutex::new(BTreeMap::<String, LiveGame>::new()));
-    let mut game_reviews = BTreeMap::<String, GameReview>::new();
+    let game_reviews = Arc::new(Mutex::new(BTreeMap::<String, GameReview>::new()));
     let default_board_presentation = client.default_board_presentation();
     sink.emit(
         None,
@@ -328,8 +336,10 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
     }
 
     while let Some(message) = receiver.recv().await {
+        independent_tasks.retain(|task| !task.is_finished());
         match message {
             WorkerMessage::Shutdown => {
+                stop_independent_tasks(&mut independent_tasks).await;
                 stop_all_live_tasks(&mut live_tasks).await;
                 stop_task(&mut catalog_task).await;
                 break;
@@ -382,12 +392,15 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         );
                     }
                     Command::ClearBackendSelection => {
+                        stop_independent_tasks(&mut independent_tasks).await;
                         stop_all_live_tasks(&mut live_tasks).await;
                         stop_task(&mut catalog_task).await;
                         if let Ok(mut games) = latest_games.lock() {
                             games.clear();
                         }
-                        game_reviews.clear();
+                        if let Ok(mut reviews) = game_reviews.lock() {
+                            reviews.clear();
+                        }
                         client.clear_backend_selection();
                         sink.emit(request_id, Event::BackendSelectionChanged { backend: None });
                         sink.emit(
@@ -399,6 +412,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         );
                     }
                     Command::CompleteOauth { callback_url } => {
+                        stop_independent_tasks(&mut independent_tasks).await;
                         sink.emit(
                             request_id,
                             Event::ConnectionStateChanged {
@@ -546,35 +560,71 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         ),
                         Err(error) => sink.emit(request_id, Event::Error { error }),
                     },
-                    Command::ExportGame { game_id } => match GameId::new(game_id) {
-                        Ok(game_id) => match client.export_game(game_id).await {
-                            Ok(game_export) => {
-                                sink.emit(request_id, Event::GameExported { game_export });
+                    Command::ExportGame { game_id } => {
+                        match (GameId::new(game_id), client.connected_backend()) {
+                            (Ok(game_id), Ok(backend)) => {
+                                let task_sink = sink.clone();
+                                let task_request_id = envelope.request_id.clone();
+                                independent_tasks.push(tokio::spawn(async move {
+                                    match backend.export_game(game_id).await {
+                                        Ok(game_export) => task_sink.emit(
+                                            task_request_id.as_deref(),
+                                            Event::GameExported { game_export },
+                                        ),
+                                        Err(error) => task_sink.emit(
+                                            task_request_id.as_deref(),
+                                            Event::Error { error },
+                                        ),
+                                    }
+                                }));
                             }
-                            Err(error) => sink.emit(request_id, Event::Error { error }),
-                        },
-                        Err(error) => sink.emit(request_id, Event::Error { error }),
-                    },
-                    Command::LoadGameReview { game_id } => match GameId::new(&game_id) {
-                        Ok(valid_game_id) => match client.review_game(valid_game_id).await {
-                            Ok(review) => match review_position(&review, review.moves.len()) {
-                                Ok(board) => {
-                                    game_reviews.insert(game_id, review.clone());
-                                    sink.emit(
-                                        request_id,
-                                        Event::GameReviewLoaded { review, board },
-                                    );
-                                }
-                                Err(error) => sink.emit(request_id, Event::Error { error }),
-                            },
-                            Err(error) => sink.emit(request_id, Event::Error { error }),
-                        },
-                        Err(error) => sink.emit(request_id, Event::Error { error }),
-                    },
+                            (Err(error), _) | (_, Err(error)) => {
+                                sink.emit(request_id, Event::Error { error });
+                            }
+                        }
+                    }
+                    Command::LoadGameReview { game_id } => {
+                        match (GameId::new(&game_id), client.connected_backend()) {
+                            (Ok(valid_game_id), Ok(backend)) => {
+                                let task_sink = sink.clone();
+                                let task_request_id = envelope.request_id.clone();
+                                let task_reviews = Arc::clone(&game_reviews);
+                                independent_tasks.push(tokio::spawn(async move {
+                                    match backend.review_game(valid_game_id).await {
+                                        Ok(review) => {
+                                            match review_position(&review, review.moves.len()) {
+                                                Ok(board) => {
+                                                    if let Ok(mut reviews) = task_reviews.lock() {
+                                                        reviews.insert(game_id, review.clone());
+                                                    }
+                                                    task_sink.emit(
+                                                        task_request_id.as_deref(),
+                                                        Event::GameReviewLoaded { review, board },
+                                                    );
+                                                }
+                                                Err(error) => task_sink.emit(
+                                                    task_request_id.as_deref(),
+                                                    Event::Error { error },
+                                                ),
+                                            }
+                                        }
+                                        Err(error) => task_sink.emit(
+                                            task_request_id.as_deref(),
+                                            Event::Error { error },
+                                        ),
+                                    }
+                                }));
+                            }
+                            (Err(error), _) | (_, Err(error)) => {
+                                sink.emit(request_id, Event::Error { error });
+                            }
+                        }
+                    }
                     Command::Connect {
                         provider,
                         access_token,
                     } => {
+                        stop_independent_tasks(&mut independent_tasks).await;
                         sink.emit(
                             request_id,
                             Event::ConnectionStateChanged {
@@ -612,6 +662,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         }
                     }
                     Command::SelectBackend { backend } => {
+                        stop_independent_tasks(&mut independent_tasks).await;
                         match client.select_backend(&backend).await {
                             Ok(selection) => {
                                 stop_all_live_tasks(&mut live_tasks).await;
@@ -619,7 +670,9 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                                 if let Ok(mut games) = latest_games.lock() {
                                     games.clear();
                                 }
-                                game_reviews.clear();
+                                if let Ok(mut reviews) = game_reviews.lock() {
+                                    reviews.clear();
+                                }
                                 sink.emit(
                                     request_id,
                                     Event::BackendSelectionChanged {
@@ -787,11 +840,37 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         limit,
                     } => {
                         let append = before_millis.is_some();
-                        match client.game_history(limit, before_millis).await {
-                            Ok(page) => {
-                                sink.emit(request_id, Event::GameHistoryUpdated { page, append })
+                        let request = client
+                            .account()
+                            .ok_or_else(|| LibChessError::invalid_input("no provider is connected"))
+                            .and_then(|account| {
+                                GameHistoryRequest::new(
+                                    account.id.clone(),
+                                    account.username.clone(),
+                                    limit,
+                                    before_millis,
+                                )
+                            });
+                        match (request, client.connected_backend()) {
+                            (Ok(request), Ok(backend)) => {
+                                let task_sink = sink.clone();
+                                let task_request_id = envelope.request_id.clone();
+                                independent_tasks.push(tokio::spawn(async move {
+                                    match backend.game_history(request).await {
+                                        Ok(page) => task_sink.emit(
+                                            task_request_id.as_deref(),
+                                            Event::GameHistoryUpdated { page, append },
+                                        ),
+                                        Err(error) => task_sink.emit(
+                                            task_request_id.as_deref(),
+                                            Event::Error { error },
+                                        ),
+                                    }
+                                }));
                             }
-                            Err(error) => sink.emit(request_id, Event::Error { error }),
+                            (Err(error), _) | (_, Err(error)) => {
+                                sink.emit(request_id, Event::Error { error });
+                            }
                         }
                     }
                     Command::RefreshLiveGames => match client.connected_backend() {
@@ -802,7 +881,11 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         Err(error) => sink.emit(request_id, Event::Error { error }),
                     },
                     Command::ShowGameReviewPosition { game_id, ply } => {
-                        match game_reviews.get(&game_id) {
+                        let review = game_reviews
+                            .lock()
+                            .ok()
+                            .and_then(|reviews| reviews.get(&game_id).cloned());
+                        match review.as_ref() {
                             Some(review) => match usize::try_from(ply)
                                 .ok()
                                 .filter(|ply| *ply <= review.moves.len())
@@ -864,12 +947,15 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         }
                     }
                     Command::Disconnect => {
+                        stop_independent_tasks(&mut independent_tasks).await;
                         stop_all_live_tasks(&mut live_tasks).await;
                         stop_task(&mut catalog_task).await;
                         if let Ok(mut games) = latest_games.lock() {
                             games.clear();
                         }
-                        game_reviews.clear();
+                        if let Ok(mut reviews) = game_reviews.lock() {
+                            reviews.clear();
+                        }
                         client.disconnect();
                         sink.emit(
                             request_id,
@@ -884,6 +970,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
         }
     }
 
+    stop_independent_tasks(&mut independent_tasks).await;
     stop_all_live_tasks(&mut live_tasks).await;
     stop_task(&mut catalog_task).await;
 }
@@ -966,6 +1053,13 @@ fn predict_move(
             )
         },
     )
+}
+
+async fn stop_independent_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
+    for task in std::mem::take(tasks) {
+        task.abort();
+        let _ = task.await;
+    }
 }
 
 async fn stop_live_task(tasks: &mut BTreeMap<String, tokio::task::JoinHandle<()>>, game_id: &str) {
@@ -1110,7 +1204,14 @@ pub unsafe extern "C" fn libchess_client_destroy(client: *mut LibChessClient) {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc as std_mpsc, time::Duration};
+    use std::{collections::BTreeSet, sync::mpsc as std_mpsc, time::Duration};
+
+    use async_trait::async_trait;
+    use libchess::{
+        BackendConnection, BackendIcon, BackendKind, ClientBuilder, PlatformBackend,
+        PlatformBackendFactory, PlatformCapability, ProviderId,
+    };
+    use tokio::sync::oneshot;
 
     use super::*;
 
@@ -1122,6 +1223,177 @@ mod tests {
         sender
             .send(String::from_utf8(bytes.to_vec()).expect("UTF-8 event"))
             .expect("collect event");
+    }
+
+    extern "C" fn discard_event(_: *mut c_void, _: *const u8, _: usize) {}
+
+    struct SlowExportBackend {
+        descriptor: ProviderDescriptor,
+        export_started: Mutex<Option<std_mpsc::Sender<()>>>,
+        export_release: Mutex<Option<oneshot::Receiver<()>>>,
+        action_called: Mutex<Option<std_mpsc::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl PlatformBackend for SlowExportBackend {
+        fn descriptor(&self) -> &ProviderDescriptor {
+            &self.descriptor
+        }
+
+        async fn account(&self) -> Result<Account, LibChessError> {
+            Ok(Account {
+                provider: self.descriptor.id.clone(),
+                id: "responsive-worker".to_owned(),
+                username: "Responsive Worker".to_owned(),
+                title: None,
+            })
+        }
+
+        async fn export_game(&self, _game_id: GameId) -> Result<GameExport, LibChessError> {
+            let release = self
+                .export_release
+                .lock()
+                .expect("export release lock")
+                .take()
+                .expect("export release receiver");
+            self.export_started
+                .lock()
+                .expect("export-started lock")
+                .take()
+                .expect("export-started sender")
+                .send(())
+                .expect("signal export start");
+            let _ = release.await;
+            Err(LibChessError::new(
+                ErrorKind::Provider,
+                "test export released",
+                true,
+            ))
+        }
+
+        async fn perform_game_action(
+            &self,
+            _game_id: GameId,
+            _action: LiveGameAction,
+        ) -> Result<(), LibChessError> {
+            self.action_called
+                .lock()
+                .expect("action-called lock")
+                .take()
+                .expect("action-called sender")
+                .send(())
+                .expect("signal game action");
+            Ok(())
+        }
+    }
+
+    struct SlowExportFactory {
+        backend: Arc<SlowExportBackend>,
+    }
+
+    impl PlatformBackendFactory for SlowExportFactory {
+        fn descriptor(&self) -> &ProviderDescriptor {
+            self.backend.descriptor()
+        }
+
+        fn create(&self, _token: AccessToken) -> Result<Arc<dyn PlatformBackend>, LibChessError> {
+            Ok(self.backend.clone())
+        }
+
+        fn create_local(&self) -> Result<Arc<dyn PlatformBackend>, LibChessError> {
+            Ok(self.backend.clone())
+        }
+    }
+
+    #[test]
+    fn slow_export_does_not_block_an_independent_game_action() {
+        let descriptor = ProviderDescriptor {
+            id: ProviderId::new("responsive-test").expect("test provider ID"),
+            kind: BackendKind::LocalEngine,
+            display_name: "Responsive Test".to_owned(),
+            subtitle: "Test backend".to_owned(),
+            description: "Exercises worker scheduling.".to_owned(),
+            icon: BackendIcon::Processor,
+            action_title: "Use Test Backend".to_owned(),
+            web_url: None,
+            connection: BackendConnection::Local,
+            available: true,
+            unavailable_reason: None,
+            capabilities: BTreeSet::from([
+                PlatformCapability::Account,
+                PlatformCapability::LiveGames,
+                PlatformCapability::PgnExport,
+            ]),
+            bot_opponents: Vec::new(),
+            bot_game_options: None,
+        };
+        let (export_started_sender, export_started_receiver) = std_mpsc::channel();
+        let (export_release_sender, export_release_receiver) = oneshot::channel();
+        let (action_called_sender, action_called_receiver) = std_mpsc::channel();
+        let backend = Arc::new(SlowExportBackend {
+            descriptor,
+            export_started: Mutex::new(Some(export_started_sender)),
+            export_release: Mutex::new(Some(export_release_receiver)),
+            action_called: Mutex::new(Some(action_called_sender)),
+        });
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let worker = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async move {
+                let mut client = ClientBuilder::empty()
+                    .register(SlowExportFactory { backend })
+                    .build();
+                client
+                    .select_backend("responsive-test")
+                    .await
+                    .expect("select test backend");
+                run_worker_with_client(
+                    receiver,
+                    EventSink {
+                        callback: discard_event,
+                        context_address: 0,
+                    },
+                    client,
+                )
+                .await;
+            });
+        });
+
+        sender
+            .send(WorkerMessage::Command(Box::new(CommandEnvelope {
+                version: API_VERSION,
+                request_id: Some("slow-export".to_owned()),
+                command: Command::ExportGame {
+                    game_id: "game-1".to_owned(),
+                },
+            })))
+            .expect("queue slow export");
+        export_started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("slow export started");
+
+        sender
+            .send(WorkerMessage::Command(Box::new(CommandEnvelope {
+                version: API_VERSION,
+                request_id: Some("urgent-action".to_owned()),
+                command: Command::PerformGameAction {
+                    game_id: "game-1".to_owned(),
+                    action: LiveGameAction::Resign,
+                },
+            })))
+            .expect("queue game action");
+        let action_result = action_called_receiver.recv_timeout(Duration::from_secs(2));
+
+        let _ = export_release_sender.send(());
+        sender
+            .send(WorkerMessage::Shutdown)
+            .expect("stop test worker");
+        worker.join().expect("test worker joined");
+
+        action_result.expect("game action ran while export remained pending");
     }
 
     #[test]
