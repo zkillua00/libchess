@@ -383,6 +383,12 @@ first authoritative move before creation completes. Its normalized game result
 does not contain a web URL, and the frontend consequently omits external-provider
 actions without special-casing Stockfish.
 
+Bot descriptors may also advertise a bounded reply-delay range, step, and
+default. Stockfish advertises 0–2,000 milliseconds in 100-millisecond steps with
+a 500-millisecond default; Lichess does not advertise this option. The native
+creator renders the option only when present and sends the selected value through
+the common `create_bot_game` request, without identifying the provider.
+
 After connection, the app loads the backend's ongoing-game catalog. Games are
 identified and labeled using normalized provider summaries rather than a single
 "current game" slot. A long-lived account event stream signals catalog changes;
@@ -430,9 +436,12 @@ selected backend move submission
 
 For Stockfish, the blocking UCI search runs off the Tokio executor. The local
 backend validates the predicted player move, asks the persistent engine for its
-reply, validates that reply, then publishes the authoritative one- or two-ply
-state. This keeps selection and movement immediate while preserving rollback on
-engine or rules errors.
+reply, validates that reply, and waits only for the remainder of the configured
+minimum reply time before publishing the authoritative one- or two-ply state.
+Engine thinking therefore occurs inside the default 500-millisecond response
+window instead of being added after it. Initial engine moves for Black games are
+not artificially delayed. This keeps selection and movement immediate while
+preserving rollback on engine or rules errors.
 
 Only one pending move is allowed per game, while different games may progress
 independently. A prediction never changes the authoritative Rust snapshot. Game

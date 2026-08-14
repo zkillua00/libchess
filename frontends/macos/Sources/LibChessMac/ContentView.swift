@@ -897,6 +897,7 @@ private struct BotGameCreatorView: View {
     @State private var incrementSeconds: UInt32?
     @State private var correspondenceDays: UInt8?
     @State private var color: GameColorPreference?
+    @State private var replyDelayMillis: UInt32?
     @State private var useCustomPosition = false
     @State private var initialFEN = ""
 
@@ -993,6 +994,25 @@ private struct BotGameCreatorView: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                 }
+
+                if let replyDelayOptions {
+                    GridRow {
+                        Text("Reply delay")
+                        HStack(spacing: 12) {
+                            Slider(
+                                value: replyDelaySelection,
+                                in: Double(replyDelayOptions.minimumMillis)
+                                    ... Double(replyDelayOptions.maximumMillis),
+                                step: Double(replyDelayOptions.stepMillis)
+                            )
+                            Text(replyDelayLabel)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .frame(width: 58, alignment: .trailing)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
             }
 
             if let variant = selectedVariant, variant.supportsCustomPosition {
@@ -1043,7 +1063,10 @@ private struct BotGameCreatorView: View {
                         variantID: selectedVariantID,
                         timeControl: requestedTimeControl,
                         color: selectedColor,
-                        initialFEN: customPositionEnabled ? initialFEN : nil
+                        initialFEN: customPositionEnabled ? initialFEN : nil,
+                        replyDelayMillis: replyDelayOptions == nil
+                            ? nil
+                            : selectedReplyDelayMillis
                     )
                 } label: {
                     HStack(spacing: 7) {
@@ -1230,6 +1253,46 @@ private struct BotGameCreatorView: View {
             get: { selectedColor },
             set: { color = $0 }
         )
+    }
+
+    private var replyDelayOptions: BotReplyDelayOptions? {
+        guard let options = store.botGameOptions?.replyDelay,
+              options.minimumMillis <= options.maximumMillis,
+              options.stepMillis > 0,
+              options.supports(options.maximumMillis),
+              options.supports(options.defaultMillis)
+        else {
+            return nil
+        }
+        return options
+    }
+
+    private var selectedReplyDelayMillis: UInt32 {
+        guard let options = replyDelayOptions else {
+            return 0
+        }
+        if let replyDelayMillis, options.supports(replyDelayMillis) {
+            return replyDelayMillis
+        }
+        return options.defaultMillis
+    }
+
+    private var replyDelaySelection: Binding<Double> {
+        Binding(
+            get: { Double(selectedReplyDelayMillis) },
+            set: { replyDelayMillis = UInt32($0.rounded()) }
+        )
+    }
+
+    private var replyDelayLabel: String {
+        let value = selectedReplyDelayMillis
+        if value == 0 {
+            return "None"
+        }
+        if value.isMultiple(of: 1_000) {
+            return "\(value / 1_000) s"
+        }
+        return String(format: "%.1f s", Double(value) / 1_000)
     }
 
     private var customPositionEnabled: Bool {

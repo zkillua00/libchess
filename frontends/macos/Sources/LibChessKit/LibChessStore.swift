@@ -431,7 +431,8 @@ public final class LibChessStore: ObservableObject {
         variantID: String,
         timeControl: BotGameTimeControl,
         color: GameColorPreference,
-        initialFEN: String?
+        initialFEN: String?,
+        replyDelayMillis: UInt32? = nil
     ) {
         guard !isCreatingBotGame else {
             return
@@ -444,6 +445,7 @@ public final class LibChessStore: ObservableObject {
               let variant = options.variants.first(where: { $0.id == variantID }),
               options.colors.contains(color),
               supports(timeControl, using: options),
+              supports(replyDelayMillis, using: options),
               customPositionIsValid(normalizedFEN, for: variant)
         else {
             message = "Choose settings advertised by the connected chess provider."
@@ -457,7 +459,8 @@ public final class LibChessStore: ObservableObject {
             variantID: variantID,
             timeControl: timeControl,
             color: color,
-            initialFEN: normalizedFEN
+            initialFEN: normalizedFEN,
+            replyDelayMillis: replyDelayMillis
         )
         pendingBotGameRequestID = command.requestID
         let sent = send(command)
@@ -1604,6 +1607,17 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
+    private func supports(_ replyDelayMillis: UInt32?, using options: BotGameOptions) -> Bool {
+        switch (options.replyDelay, replyDelayMillis) {
+        case (nil, nil), (.some, nil):
+            return true
+        case let (.some(replyDelay), .some(value)):
+            return replyDelay.supports(value)
+        case (nil, .some):
+            return false
+        }
+    }
+
     private func customPositionIsValid(_ fen: String?, for variant: GameVariant) -> Bool {
         if variant.requiresCustomPosition && fen == nil {
             return false
@@ -1719,6 +1733,7 @@ struct CreateBotGameCommand: Encodable {
     let timeControl: BotGameTimeControl
     let color: GameColorPreference
     let initialFEN: String?
+    let replyDelayMillis: UInt32?
 
     init(
         requestID: String = UUID().uuidString,
@@ -1726,7 +1741,8 @@ struct CreateBotGameCommand: Encodable {
         variantID: String,
         timeControl: BotGameTimeControl,
         color: GameColorPreference,
-        initialFEN: String?
+        initialFEN: String?,
+        replyDelayMillis: UInt32? = nil
     ) {
         self.requestID = requestID
         self.opponentID = opponentID
@@ -1734,6 +1750,7 @@ struct CreateBotGameCommand: Encodable {
         self.timeControl = timeControl
         self.color = color
         self.initialFEN = initialFEN
+        self.replyDelayMillis = replyDelayMillis
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1745,6 +1762,7 @@ struct CreateBotGameCommand: Encodable {
         case timeControl = "time_control"
         case color
         case initialFEN = "initial_fen"
+        case replyDelayMillis = "reply_delay_millis"
     }
 }
 

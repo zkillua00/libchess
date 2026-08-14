@@ -123,12 +123,34 @@ public struct ClockTimeControlOptions: Codable, Hashable, Sendable {
     }
 }
 
+public struct BotReplyDelayOptions: Codable, Hashable, Sendable {
+    public let minimumMillis: UInt32
+    public let maximumMillis: UInt32
+    public let stepMillis: UInt32
+    public let defaultMillis: UInt32
+
+    public func supports(_ value: UInt32) -> Bool {
+        value >= minimumMillis
+            && value <= maximumMillis
+            && stepMillis > 0
+            && (value - minimumMillis).isMultiple(of: stepMillis)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case minimumMillis = "minimum_millis"
+        case maximumMillis = "maximum_millis"
+        case stepMillis = "step_millis"
+        case defaultMillis = "default_millis"
+    }
+}
+
 public struct BotGameOptions: Codable, Hashable, Sendable {
     public let variants: [GameVariant]
     public let colors: Set<GameColorPreference>
     public let clock: ClockTimeControlOptions?
     public let correspondenceDays: [UInt8]
     public let unlimited: Bool
+    public let replyDelay: BotReplyDelayOptions?
     public let defaultOpponentID: String
     public let defaultVariantID: String
     public let defaultTimeControl: BotGameTimeControl
@@ -140,6 +162,7 @@ public struct BotGameOptions: Codable, Hashable, Sendable {
         case clock
         case correspondenceDays = "correspondence_days"
         case unlimited
+        case replyDelay = "reply_delay"
         case defaultOpponentID = "default_opponent_id"
         case defaultVariantID = "default_variant_id"
         case defaultTimeControl = "default_time_control"

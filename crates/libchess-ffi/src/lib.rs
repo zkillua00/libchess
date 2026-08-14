@@ -110,6 +110,8 @@ enum Command {
         color: ColorPreference,
         #[serde(default)]
         initial_fen: Option<String>,
+        #[serde(default)]
+        reply_delay_millis: Option<u32>,
     },
     Disconnect,
     ExportGame {
@@ -655,6 +657,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         time_control,
                         color,
                         initial_fen,
+                        reply_delay_millis,
                     } => {
                         let request = BotGameRequest::new(
                             opponent_id,
@@ -662,7 +665,11 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             time_control,
                             color,
                             initial_fen,
-                        );
+                        )
+                        .and_then(|request| match reply_delay_millis {
+                            Some(value) => request.with_reply_delay_millis(value),
+                            None => Ok(request),
+                        });
                         match request {
                             Ok(request) => match client.create_bot_game(request).await {
                                 Ok(game) => {
@@ -1263,7 +1270,7 @@ mod tests {
             .expect("local connection event");
         assert!(connected.contains(r#""state":"connected""#));
 
-        let create = br#"{"version":1,"request_id":"create-local","type":"create_bot_game","opponent_id":"skill-0","variant_id":"standard","time_control":{"type":"unlimited"},"color":"white"}"#;
+        let create = br#"{"version":1,"request_id":"create-local","type":"create_bot_game","opponent_id":"skill-0","variant_id":"standard","time_control":{"type":"unlimited"},"color":"white","reply_delay_millis":0}"#;
         assert_eq!(
             unsafe { libchess_client_send(client, create.as_ptr(), create.len()) },
             SEND_OK

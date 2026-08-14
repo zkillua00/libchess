@@ -28,7 +28,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesStableOAuthCapabilityName() throws {
         let data = Data(
-            #"{"version":1,"type":"ready","providers":[{"id":"lichess","kind":"platform","display_name":"Lichess","subtitle":"Online chess service","description":"Play online.","icon":"network","action_title":"Use Lichess","web_url":"https://lichess.org/","connection":{"type":"oauth_pkce","client_id":"org.libchess.macos","redirect_uri":"org.libchess.macos://oauth/lichess","authorization_origin":"https://lichess.org"},"available":true,"capabilities":["account","bot_games","oauth_pkce","future_capability"],"bot_opponents":[{"id":"level-1","display_name":"Level 1"}],"bot_game_options":{"variants":[{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false},{"id":"from-position","display_name":"From Position","supports_custom_position":true,"requires_custom_position":true}],"colors":["white","black","random"],"clock":{"initial_seconds":[0,15,30,45,60,90,120,10800],"increment_seconds":[0,1,2,3,60],"minimum_estimated_duration_seconds":180},"correspondence_days":[1,2,3,5,7,10,14],"unlimited":true,"default_opponent_id":"level-1","default_variant_id":"standard","default_time_control":{"type":"clock","initial_seconds":600,"increment_seconds":0},"default_color":"random"}}]}"#.utf8
+            #"{"version":1,"type":"ready","providers":[{"id":"lichess","kind":"platform","display_name":"Lichess","subtitle":"Online chess service","description":"Play online.","icon":"network","action_title":"Use Lichess","web_url":"https://lichess.org/","connection":{"type":"oauth_pkce","client_id":"org.libchess.macos","redirect_uri":"org.libchess.macos://oauth/lichess","authorization_origin":"https://lichess.org"},"available":true,"capabilities":["account","bot_games","oauth_pkce","future_capability"],"bot_opponents":[{"id":"level-1","display_name":"Level 1"}],"bot_game_options":{"variants":[{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false},{"id":"from-position","display_name":"From Position","supports_custom_position":true,"requires_custom_position":true}],"colors":["white","black","random"],"clock":{"initial_seconds":[0,15,30,45,60,90,120,10800],"increment_seconds":[0,1,2,3,60],"minimum_estimated_duration_seconds":180},"correspondence_days":[1,2,3,5,7,10,14],"unlimited":true,"reply_delay":{"minimum_millis":0,"maximum_millis":2000,"step_millis":100,"default_millis":500},"default_opponent_id":"level-1","default_variant_id":"standard","default_time_control":{"type":"clock","initial_seconds":600,"increment_seconds":0},"default_color":"random"}}]}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
@@ -60,6 +60,10 @@ final class WireProtocolTests: XCTestCase {
             [1, 2, 3, 5, 7, 10, 14]
         )
         XCTAssertEqual(event.providers?.first?.botGameOptions?.unlimited, true)
+        XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.minimumMillis, 0)
+        XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.maximumMillis, 2_000)
+        XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.stepMillis, 100)
+        XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.defaultMillis, 500)
     }
 
     func testDecodesOAuthCredentialEventWithExplicitWireKeys() throws {
@@ -137,7 +141,8 @@ final class WireProtocolTests: XCTestCase {
             variantID: "standard",
             timeControl: .clock(initialSeconds: 600, incrementSeconds: 5),
             color: .random,
-            initialFEN: nil
+            initialFEN: nil,
+            replyDelayMillis: 500
         )
         let correspondence = CreateBotGameCommand(
             opponentID: "level-8",
@@ -167,6 +172,7 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(clockControl["initial_seconds"] as? Int, 600)
         XCTAssertEqual(clockControl["increment_seconds"] as? Int, 5)
         XCTAssertNil(clockObject["initial_fen"])
+        XCTAssertEqual(clockObject["reply_delay_millis"] as? Int, 500)
         XCTAssertNotNil(clockObject["request_id"])
 
         let correspondenceControl = try XCTUnwrap(

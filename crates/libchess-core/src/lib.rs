@@ -339,6 +339,48 @@ impl ClockTimeControlOptions {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BotReplyDelayOptions {
+    pub minimum_millis: u32,
+    pub maximum_millis: u32,
+    pub step_millis: u32,
+    pub default_millis: u32,
+}
+
+impl BotReplyDelayOptions {
+    pub fn new(
+        minimum_millis: u32,
+        maximum_millis: u32,
+        step_millis: u32,
+        default_millis: u32,
+    ) -> Result<Self, LibChessError> {
+        let options = Self {
+            minimum_millis,
+            maximum_millis,
+            step_millis,
+            default_millis,
+        };
+        if maximum_millis > 60_000
+            || maximum_millis < minimum_millis
+            || step_millis == 0
+            || !options.supports(maximum_millis)
+            || !options.supports(default_millis)
+        {
+            return Err(LibChessError::invalid_input(
+                "bot reply-delay options are invalid",
+            ));
+        }
+        Ok(options)
+    }
+
+    pub fn supports(&self, delay_millis: u32) -> bool {
+        delay_millis >= self.minimum_millis
+            && delay_millis <= self.maximum_millis
+            && self.step_millis > 0
+            && (delay_millis - self.minimum_millis).is_multiple_of(self.step_millis)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BotGameOptions {
     pub variants: Vec<GameVariant>,
     pub colors: BTreeSet<ColorPreference>,
@@ -347,6 +389,8 @@ pub struct BotGameOptions {
     #[serde(default)]
     pub correspondence_days: Vec<u8>,
     pub unlimited: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_delay: Option<BotReplyDelayOptions>,
     pub default_opponent_id: BotOpponentId,
     pub default_variant_id: GameVariantId,
     pub default_time_control: BotGameTimeControl,
@@ -361,6 +405,8 @@ pub struct BotGameRequest {
     pub color: ColorPreference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_fen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_delay_millis: Option<u32>,
 }
 
 impl BotGameRequest {
@@ -391,7 +437,21 @@ impl BotGameRequest {
             time_control,
             color,
             initial_fen,
+            reply_delay_millis: None,
         })
+    }
+
+    pub fn with_reply_delay_millis(
+        mut self,
+        reply_delay_millis: u32,
+    ) -> Result<Self, LibChessError> {
+        if reply_delay_millis > 60_000 {
+            return Err(LibChessError::invalid_input(
+                "bot reply delay cannot exceed 60 seconds",
+            ));
+        }
+        self.reply_delay_millis = Some(reply_delay_millis);
+        Ok(self)
     }
 }
 
@@ -762,6 +822,38 @@ mod tests {
         assert!(!options.supports(75, 5));
         assert!(!options.supports(10_801, 0));
         assert!(!options.supports(300, 61));
+    }
+
+    #[test]
+    fn bot_reply_delay_options_use_a_bounded_step_grid() {
+        let options =
+            BotReplyDelayOptions::new(0, 2_000, 100, 500).expect("valid bot reply-delay options");
+
+        assert!(options.supports(0));
+        assert!(options.supports(500));
+        assert!(options.supports(2_000));
+        assert!(!options.supports(550));
+        assert!(!options.supports(2_100));
+        assert!(BotReplyDelayOptions::new(0, 2_000, 0, 500).is_err());
+        assert!(BotReplyDelayOptions::new(0, 2_000, 100, 550).is_err());
+        assert!(BotReplyDelayOptions::new(0, 2_050, 100, 500).is_err());
+        assert!(BotReplyDelayOptions::new(2_000, 1_000, 100, 1_500).is_err());
+    }
+
+    #[test]
+    fn bot_game_request_accepts_a_bounded_reply_delay() {
+        let request = BotGameRequest::new(
+            "level-1",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            None,
+        )
+        .and_then(|request| request.with_reply_delay_millis(500))
+        .expect("valid bot reply delay");
+
+        assert_eq!(request.reply_delay_millis, Some(500));
+        assert!(request.with_reply_delay_millis(60_001).is_err());
     }
 
     #[test]

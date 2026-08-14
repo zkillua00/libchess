@@ -110,6 +110,7 @@ impl LichessFactory {
             }),
             correspondence_days: vec![1, 2, 3, 5, 7, 10, 14],
             unlimited: true,
+            reply_delay: None,
             default_opponent_id: BotOpponentId::new("level-4")?,
             default_variant_id: GameVariantId::new("standard")?,
             default_time_control: BotGameTimeControl::clock(600, 0),
@@ -434,6 +435,11 @@ impl PlatformBackend for LichessBackend {
         if !options.colors.contains(&request.color) {
             return Err(LibChessError::invalid_input(
                 "Lichess does not advertise the requested player color",
+            ));
+        }
+        if request.reply_delay_millis.is_some() {
+            return Err(LibChessError::invalid_input(
+                "Lichess does not advertise a configurable bot reply delay",
             ));
         }
         let requested_variant = options
@@ -1320,6 +1326,23 @@ mod tests {
 
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert!(error.message.contains("advertised values"));
+
+        let delayed = BotGameRequest::new(
+            "level-4",
+            "standard",
+            BotGameTimeControl::clock(600, 0),
+            ColorPreference::White,
+            None,
+        )
+        .and_then(|request| request.with_reply_delay_millis(500))
+        .expect("provider-neutral delayed request");
+        let error = backend
+            .create_bot_game(delayed)
+            .await
+            .expect_err("Lichess does not advertise a reply-delay option");
+
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("reply delay"));
     }
 
     #[tokio::test]

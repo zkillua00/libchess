@@ -10,13 +10,13 @@ use std::{
 use async_trait::async_trait;
 use libchess_core::{
     AccessToken, Account, BackendConnection, BackendIcon, BackendKind, BotGame, BotGameOptions,
-    BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId, ColorPreference, ErrorKind,
-    GameExport, GameHistoryEntry, GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation,
-    GameReview, GameReviewMove, GameStatus, GameVariant, GameVariantId, LibChessError, LiveGame,
-    LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameEvent,
-    LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
-    MoveSubmission, PlatformBackend, PlatformBackendFactory, PlatformCapability, PlayerColor,
-    ProviderDescriptor, ProviderId,
+    BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId, BotReplyDelayOptions,
+    ColorPreference, ErrorKind, GameExport, GameHistoryEntry, GameHistoryPage, GameHistoryRequest,
+    GameId, GameMoveEvaluation, GameReview, GameReviewMove, GameStatus, GameVariant, GameVariantId,
+    LibChessError, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink,
+    LiveGameEvent, LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState,
+    LiveGameSummary, MoveSubmission, PlatformBackend, PlatformBackendFactory, PlatformCapability,
+    PlayerColor, ProviderDescriptor, ProviderId,
 };
 use tokio::sync::watch;
 
@@ -26,6 +26,9 @@ use uci::{EngineAnalysis, EngineProbe, UciEngine, locate_and_probe};
 
 const ENGINE_MOVE_TIME: Duration = Duration::from_millis(180);
 const REVIEW_MOVE_TIME: Duration = Duration::from_millis(30);
+const DEFAULT_REPLY_DELAY_MILLIS: u32 = 500;
+const MAXIMUM_REPLY_DELAY_MILLIS: u32 = 2_000;
+const REPLY_DELAY_STEP_MILLIS: u32 = 100;
 const LOCAL_ACCOUNT_ID: &str = "local-player";
 const LOCAL_ACCOUNT_NAME: &str = "Local Player";
 
@@ -123,6 +126,15 @@ fn descriptor(engine_name: String, unavailable_reason: Option<String>) -> Provid
             clock: None,
             correspondence_days: Vec::new(),
             unlimited: true,
+            reply_delay: Some(
+                BotReplyDelayOptions::new(
+                    0,
+                    MAXIMUM_REPLY_DELAY_MILLIS,
+                    REPLY_DELAY_STEP_MILLIS,
+                    DEFAULT_REPLY_DELAY_MILLIS,
+                )
+                .expect("the built-in reply-delay options are valid"),
+            ),
             default_opponent_id: BotOpponentId::new("skill-10")
                 .expect("the built-in Stockfish skill is valid"),
             default_variant_id: GameVariantId::new("standard")
@@ -356,6 +368,7 @@ struct LocalGame {
     skill: u8,
     created_at_millis: u64,
     last_move_at_millis: u64,
+    reply_delay: Duration,
     engine: UciEngine,
     updates: watch::Sender<LiveGame>,
 }
@@ -390,6 +403,16 @@ impl LocalGame {
             .cloned()
             .ok_or_else(|| LibChessError::invalid_input("unsupported local-game variant"))?;
         let player_color = resolve_color(request.color)?;
+        let reply_delay = descriptor
+            .bot_game_options
+            .as_ref()
+            .and_then(|options| options.reply_delay.as_ref())
+            .map(|options| {
+                Duration::from_millis(u64::from(
+                    request.reply_delay_millis.unwrap_or(options.default_millis),
+                ))
+            })
+            .unwrap_or_default();
         let initial_fen = request
             .initial_fen
             .clone()
@@ -459,11 +482,12 @@ impl LocalGame {
             skill,
             created_at_millis: now,
             last_move_at_millis: now,
+            reply_delay,
             engine,
             updates,
         };
         game.update_terminal()?;
-        game.play_engine_if_needed()?;
+        game.play_engine_if_needed(Duration::ZERO)?;
         game.updates.send_replace(game.live.clone());
 
         Ok(CreatedGame {
@@ -562,7 +586,7 @@ impl LocalGame {
                 self.finish("draw", None)?;
             } else {
                 self.update_terminal()?;
-                self.play_engine_if_needed()?;
+                self.play_engine_if_needed(self.reply_delay)?;
             }
             Ok(())
         })();
@@ -574,11 +598,12 @@ impl LocalGame {
         Ok(())
     }
 
-    fn play_engine_if_needed(&mut self) -> Result<(), LibChessError> {
+    fn play_engine_if_needed(&mut self, minimum_reply_time: Duration) -> Result<(), LibChessError> {
         let engine_color = opposite(self.live.player_color);
         if !self.live.state.status.is_playable() || self.live.state.board.turn != engine_color {
             return Ok(());
         }
+        let reply_started_at = std::time::Instant::now();
         let analysis = self.engine.analyse(
             &self.live.initial_fen,
             &self.live.state.board.moves,
@@ -603,6 +628,7 @@ impl LocalGame {
                 true,
             ));
         }
+        std::thread::sleep(minimum_reply_time.saturating_sub(reply_started_at.elapsed()));
         let mut moves = self.live.state.board.moves.clone();
         moves.push(best_move);
         self.replace_moves(moves)?;
@@ -663,7 +689,7 @@ impl LocalGame {
                 self.live.state.status = GameStatus::new("started")?;
                 self.live.state.winner = None;
                 self.replace_moves(moves)?;
-                self.play_engine_if_needed()?;
+                self.play_engine_if_needed(Duration::ZERO)?;
             }
             LiveGameAction::DeclineDraw | LiveGameAction::DeclineTakeback => {}
             LiveGameAction::ClaimVictory => {
@@ -708,6 +734,19 @@ fn validate_request(
         return Err(LibChessError::invalid_input(
             "the local engine currently advertises unlimited games only",
         ));
+    }
+    match (&options.reply_delay, request.reply_delay_millis) {
+        (Some(reply_delay), Some(value)) if !reply_delay.supports(value) => {
+            return Err(LibChessError::invalid_input(
+                "the local engine reply delay is outside the advertised range",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(LibChessError::invalid_input(
+                "the local engine does not advertise a configurable reply delay",
+            ));
+        }
+        _ => {}
     }
     if variant.requires_custom_position && request.initial_fen.is_none() {
         return Err(LibChessError::invalid_input(
@@ -941,7 +980,32 @@ mod tests {
                 .len(),
             2
         );
+        let reply_delay = descriptor
+            .bot_game_options
+            .as_ref()
+            .and_then(|options| options.reply_delay.as_ref())
+            .expect("reply-delay options");
+        assert_eq!(reply_delay.default_millis, 500);
+        assert!(reply_delay.supports(0));
+        assert!(reply_delay.supports(2_000));
+        assert!(!reply_delay.supports(550));
         assert!(matches!(descriptor.connection, BackendConnection::Local));
+    }
+
+    #[test]
+    fn rejects_reply_delays_outside_the_advertised_grid() {
+        let descriptor = descriptor("Stockfish 18".to_owned(), None);
+        let request = BotGameRequest::new(
+            "skill-0",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            None,
+        )
+        .and_then(|request| request.with_reply_delay_millis(550))
+        .expect("globally bounded reply delay");
+
+        assert!(validate_request(&descriptor, &request).is_err());
     }
 
     #[test]
@@ -1023,10 +1087,12 @@ mod tests {
             .create_bot_game(request)
             .await
             .expect("create local game");
+        let reply_started_at = std::time::Instant::now();
         backend
             .play_move(MoveSubmission::new(&created.id, "e2e4", false).expect("legal player move"))
             .await
             .expect("play local turn");
+        assert!(reply_started_at.elapsed() >= Duration::from_millis(450));
 
         {
             let game = backend
