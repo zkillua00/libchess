@@ -659,14 +659,31 @@ impl LocalGame {
     }
 
     fn update_terminal(&mut self) -> Result<(), LibChessError> {
-        if !self.live.state.board.legal_moves.is_empty() {
-            return Ok(());
-        }
-        if self.live.state.board.in_check {
-            self.finish("mate", Some(opposite(self.live.state.board.turn)))
+        if self.live.state.board.legal_moves.is_empty() {
+            if self.live.state.board.in_check {
+                self.finish("mate", Some(opposite(self.live.state.board.turn)))
+            } else {
+                self.finish("stalemate", None)
+            }
+        } else if self.has_insufficient_material()? {
+            self.finish("draw", None)
         } else {
-            self.finish("stalemate", None)
+            Ok(())
         }
+    }
+
+    fn has_insufficient_material(&self) -> Result<bool, LibChessError> {
+        libchess_rules::is_insufficient_material(
+            self.live.variant_id.as_str(),
+            &self.live.initial_fen,
+            &self.live.state.board.moves,
+        )
+        .map_err(|error| {
+            engine_error(
+                format!("could not evaluate the local draw state: {error}"),
+                false,
+            )
+        })
     }
 
     fn finish(&mut self, status: &str, winner: Option<PlayerColor>) -> Result<(), LibChessError> {
@@ -686,8 +703,14 @@ impl LocalGame {
             LiveGameAction::Resign => {
                 self.finish("resign", Some(opposite(self.live.player_color)))?
             }
-            LiveGameAction::OfferDraw | LiveGameAction::AcceptDraw | LiveGameAction::ClaimDraw => {
-                self.finish("draw", None)?
+            LiveGameAction::OfferDraw | LiveGameAction::AcceptDraw => self.finish("draw", None)?,
+            LiveGameAction::ClaimDraw => {
+                if !self.has_insufficient_material()? {
+                    return Err(LibChessError::invalid_input(
+                        "there is no claimable draw in the current position",
+                    ));
+                }
+                self.finish("draw", None)?;
             }
             LiveGameAction::OfferTakeback | LiveGameAction::AcceptTakeback => {
                 let mut moves = self.live.state.board.moves.clone();
@@ -986,6 +1009,8 @@ fn engine_error(message: impl Into<String>, retryable: bool) -> LibChessError {
 mod tests {
     use super::*;
 
+    const KINGS_ONLY_FEN: &str = "8/5k2/8/8/8/8/3K4/8 w - - 0 1";
+
     fn game_snapshot(status: &str) -> GameSnapshot {
         let descriptor = descriptor("Stockfish 18".to_owned(), None);
         let board = libchess_rules::reconstruct(
@@ -1221,6 +1246,102 @@ mod tests {
             .await
             .expect("finished-game review");
         assert!(review.moves.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn automatically_adjudicates_a_dead_position() {
+        let Ok(probe) = locate_and_probe() else {
+            return;
+        };
+        let descriptor = descriptor(probe.name, None);
+        let backend = StockfishBackend::new(descriptor, probe.path);
+        let request = BotGameRequest::new(
+            "skill-0",
+            "from-position",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            Some(KINGS_ONLY_FEN.to_owned()),
+        )
+        .expect("kings-only local game");
+        let created = backend
+            .create_bot_game(request)
+            .await
+            .expect("create kings-only local game");
+        let game = backend
+            .game(&GameId::new(created.id).expect("game id"))
+            .expect("stored game");
+        let game = lock(&game).expect("game state");
+
+        assert!(!game.live.state.board.legal_moves.is_empty());
+        assert_eq!(game.live.state.status.as_str(), "draw");
+        assert_eq!(game.live.state.winner, None);
+        assert!(game.engine.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejects_a_draw_claim_in_a_normal_playable_position() {
+        let Ok(probe) = locate_and_probe() else {
+            return;
+        };
+        let descriptor = descriptor(probe.name, None);
+        let backend = StockfishBackend::new(descriptor, probe.path);
+        let request = BotGameRequest::new(
+            "skill-0",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            None,
+        )
+        .expect("normal local game");
+        let created = backend
+            .create_bot_game(request)
+            .await
+            .expect("create normal local game");
+        let game_id = GameId::new(created.id).expect("game id");
+
+        let error = backend
+            .perform_game_action(game_id.clone(), LiveGameAction::ClaimDraw)
+            .await
+            .expect_err("normal position must not be claimable");
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("no claimable draw"));
+
+        let game = backend.game(&game_id).expect("stored game");
+        let game = lock(&game).expect("game state");
+        assert_eq!(game.live.state.status.as_str(), "started");
+        assert_eq!(game.live.state.winner, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn accepts_a_draw_claim_for_an_established_dead_position() {
+        let Ok(probe) = locate_and_probe() else {
+            return;
+        };
+        let descriptor = descriptor(probe.name, None);
+        let backend = StockfishBackend::new(descriptor, probe.path);
+        let request = BotGameRequest::new(
+            "skill-0",
+            "from-position",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            Some(KINGS_ONLY_FEN.to_owned()),
+        )
+        .expect("kings-only local game");
+        let created = backend
+            .create_bot_game(request)
+            .await
+            .expect("create kings-only local game");
+        let game_id = GameId::new(created.id).expect("game id");
+
+        backend
+            .perform_game_action(game_id.clone(), LiveGameAction::ClaimDraw)
+            .await
+            .expect("dead position is a valid draw");
+
+        let game = backend.game(&game_id).expect("stored game");
+        let game = lock(&game).expect("game state");
+        assert_eq!(game.live.state.status.as_str(), "draw");
+        assert_eq!(game.live.state.winner, None);
     }
 
     #[tokio::test(flavor = "current_thread")]

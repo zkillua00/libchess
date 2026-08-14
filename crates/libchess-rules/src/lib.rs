@@ -109,6 +109,40 @@ pub fn reconstruct(
     })
 }
 
+pub fn is_insufficient_material(
+    variant_id: &str,
+    initial_fen: &str,
+    move_ids: &[String],
+) -> Result<bool, RulesError> {
+    let (variant, castling_mode) = variant_and_castling_mode(variant_id)?;
+    let mut position = if initial_fen == "startpos" {
+        VariantPosition::new(variant)
+    } else {
+        let fen = Fen::from_ascii(initial_fen.as_bytes())
+            .map_err(|error| RulesError::InvalidInitialPosition(error.to_string()))?;
+        VariantPosition::from_setup(variant, fen.into_setup(), castling_mode)
+            .map_err(|error| RulesError::InvalidInitialPosition(error.to_string()))?
+    };
+
+    for (ply, move_id) in move_ids.iter().enumerate() {
+        let uci = move_id
+            .parse::<UciMove>()
+            .map_err(|_| RulesError::InvalidMove {
+                ply,
+                move_id: move_id.clone(),
+            })?;
+        let chess_move = uci
+            .to_move(&position)
+            .map_err(|_| RulesError::InvalidMove {
+                ply,
+                move_id: move_id.clone(),
+            })?;
+        position.play_unchecked(chess_move);
+    }
+
+    Ok(position.is_insufficient_material())
+}
+
 pub fn normalize_san_moves(
     variant_id: &str,
     initial_fen: &str,
@@ -275,6 +309,18 @@ mod tests {
             Some("e7e5")
         );
         assert!(state.pieces.iter().any(|piece| piece.square == "e5"));
+    }
+
+    #[test]
+    fn detects_insufficient_material_without_guessing_other_draws() {
+        assert!(
+            is_insufficient_material("standard", "8/5k2/8/8/8/8/3K4/8 w - - 0 1", &[])
+                .expect("kings-only position")
+        );
+        assert!(
+            !is_insufficient_material("standard", "startpos", &[])
+                .expect("normal starting position")
+        );
     }
 
     #[test]
