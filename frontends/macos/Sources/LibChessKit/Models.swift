@@ -102,12 +102,35 @@ public struct GameVariant: Codable, Hashable, Identifiable, Sendable {
     public let displayName: String
     public let supportsCustomPosition: Bool
     public let requiresCustomPosition: Bool
+    public let supportsMoveHistory: Bool
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        supportsCustomPosition = try container.decode(Bool.self, forKey: .supportsCustomPosition)
+        requiresCustomPosition = try container.decode(Bool.self, forKey: .requiresCustomPosition)
+        supportsMoveHistory = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .supportsMoveHistory
+        ) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(supportsCustomPosition, forKey: .supportsCustomPosition)
+        try container.encode(requiresCustomPosition, forKey: .requiresCustomPosition)
+        try container.encode(supportsMoveHistory, forKey: .supportsMoveHistory)
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case displayName = "display_name"
         case supportsCustomPosition = "supports_custom_position"
         case requiresCustomPosition = "requires_custom_position"
+        case supportsMoveHistory = "supports_move_history"
     }
 }
 

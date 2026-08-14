@@ -80,9 +80,9 @@ impl PlatformBackendFactory for StockfishFactory {
 
 fn descriptor(engine_name: String, unavailable_reason: Option<String>) -> ProviderDescriptor {
     let variants = vec![
-        GameVariant::new("standard", "Standard", true, false)
+        GameVariant::new("standard", "Standard", true, false, true)
             .expect("the built-in standard variant is valid"),
-        GameVariant::new("from-position", "From Position", true, true)
+        GameVariant::new("from-position", "From Position", true, true, true)
             .expect("the built-in custom-position variant is valid"),
     ];
     let bot_opponents = (0_u8..=20)
@@ -417,8 +417,11 @@ impl LocalGame {
             .initial_fen
             .clone()
             .unwrap_or_else(|| "startpos".to_owned());
-        let board = libchess_rules::reconstruct(variant.id.as_str(), &initial_fen, &[])
-            .map_err(|error| LibChessError::invalid_input(format!("invalid position: {error}")))?;
+        let board =
+            libchess_rules::reconstruct(variant.id.as_str(), &initial_fen, &request.initial_moves)
+                .map_err(|error| {
+                    LibChessError::invalid_input(format!("invalid position: {error}"))
+                })?;
         let id = random_game_id()?;
         let game_id = GameId::new(id.clone())?;
         let local_player = LiveGamePlayer {
@@ -758,6 +761,16 @@ fn validate_request(
             "this variant does not support a starting FEN",
         ));
     }
+    if !request.initial_moves.is_empty() && request.initial_fen.is_none() {
+        return Err(LibChessError::invalid_input(
+            "preloaded move history requires a root FEN",
+        ));
+    }
+    if !request.initial_moves.is_empty() && !variant.supports_move_history {
+        return Err(LibChessError::invalid_input(
+            "this variant does not support preloaded move history",
+        ));
+    }
     Ok(())
 }
 
@@ -980,6 +993,15 @@ mod tests {
                 .len(),
             2
         );
+        assert!(
+            descriptor
+                .bot_game_options
+                .as_ref()
+                .expect("bot options")
+                .variants
+                .iter()
+                .all(|variant| variant.supports_move_history)
+        );
         let reply_delay = descriptor
             .bot_game_options
             .as_ref()
@@ -1006,6 +1028,17 @@ mod tests {
         .expect("globally bounded reply delay");
 
         assert!(validate_request(&descriptor, &request).is_err());
+
+        let mut history_without_fen = BotGameRequest::new(
+            "skill-0",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            None,
+        )
+        .expect("base request");
+        history_without_fen.initial_moves = vec!["e2e4".to_owned()];
+        assert!(validate_request(&descriptor, &history_without_fen).is_err());
     }
 
     #[test]
@@ -1066,6 +1099,52 @@ mod tests {
         let export = export_snapshot(snapshot).expect("PGN export");
         assert!(export.pgn.contains("1. e4 e5 *"));
         assert!(export.suggested_filename.ends_with(".pgn"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preloads_move_history_and_can_take_it_back() {
+        let Ok(probe) = locate_and_probe() else {
+            return;
+        };
+        let descriptor = descriptor(probe.name, None);
+        let backend = StockfishBackend::new(descriptor, probe.path);
+        let initial_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let request = BotGameRequest::new(
+            "skill-0",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            Some(initial_fen.to_owned()),
+        )
+        .and_then(|request| request.with_initial_moves(vec!["e2e4".to_owned(), "e7e5".to_owned()]))
+        .and_then(|request| request.with_reply_delay_millis(0))
+        .expect("local game with move history");
+        let created = backend
+            .create_bot_game(request)
+            .await
+            .expect("create local game with history");
+        let game_id = GameId::new(created.id.clone()).expect("game id");
+
+        {
+            let game = backend.game(&game_id).expect("stored game");
+            let game = lock(&game).expect("game state");
+            assert_eq!(
+                game.live.state.board.moves,
+                vec!["e2e4".to_owned(), "e7e5".to_owned()]
+            );
+            assert_eq!(game.live.state.board.ply, 2);
+            assert_eq!(game.live.state.board.turn, PlayerColor::White);
+        }
+
+        backend
+            .perform_game_action(game_id.clone(), LiveGameAction::OfferTakeback)
+            .await
+            .expect("take back loaded turn");
+
+        let game = backend.game(&game_id).expect("stored game");
+        let game = lock(&game).expect("game state");
+        assert!(game.live.state.board.moves.is_empty());
+        assert_eq!(game.live.state.board.ply, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

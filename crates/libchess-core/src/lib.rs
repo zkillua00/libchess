@@ -246,6 +246,8 @@ pub struct GameVariant {
     pub display_name: String,
     pub supports_custom_position: bool,
     pub requires_custom_position: bool,
+    #[serde(default)]
+    pub supports_move_history: bool,
 }
 
 impl GameVariant {
@@ -254,6 +256,7 @@ impl GameVariant {
         display_name: impl Into<String>,
         supports_custom_position: bool,
         requires_custom_position: bool,
+        supports_move_history: bool,
     ) -> Result<Self, LibChessError> {
         let display_name = display_name.into();
         if display_name.is_empty() || display_name.len() > 128 {
@@ -266,12 +269,18 @@ impl GameVariant {
                 "a game variant cannot require an unsupported custom position",
             ));
         }
+        if supports_move_history && !supports_custom_position {
+            return Err(LibChessError::invalid_input(
+                "move history requires custom-position support",
+            ));
+        }
 
         Ok(Self {
             id: GameVariantId::new(id)?,
             display_name,
             supports_custom_position,
             requires_custom_position,
+            supports_move_history,
         })
     }
 }
@@ -405,6 +414,8 @@ pub struct BotGameRequest {
     pub color: ColorPreference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_fen: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_moves: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_delay_millis: Option<u32>,
 }
@@ -437,8 +448,32 @@ impl BotGameRequest {
             time_control,
             color,
             initial_fen,
+            initial_moves: Vec::new(),
             reply_delay_millis: None,
         })
+    }
+
+    pub fn with_initial_moves(mut self, initial_moves: Vec<String>) -> Result<Self, LibChessError> {
+        if !initial_moves.is_empty() && self.initial_fen.is_none() {
+            return Err(LibChessError::invalid_input(
+                "move history requires an initial FEN",
+            ));
+        }
+        let valid = initial_moves.len() <= 1_024
+            && initial_moves.iter().all(|move_id| {
+                !move_id.is_empty()
+                    && move_id.len() <= 16
+                    && move_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'@')
+            });
+        if !valid {
+            return Err(LibChessError::invalid_input(
+                "initial moves must contain at most 1,024 compact ASCII move identifiers",
+            ));
+        }
+        self.initial_moves = initial_moves;
+        Ok(self)
     }
 
     pub fn with_reply_delay_millis(
@@ -806,6 +841,43 @@ mod tests {
             )
             .is_err()
         );
+
+        let initial_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let request = BotGameRequest::new(
+            "level-4",
+            "from-position",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            Some(initial_fen.to_owned()),
+        )
+        .and_then(|request| request.with_initial_moves(vec!["e2e4".to_owned(), "e7e5".to_owned()]))
+        .expect("bounded compact move history");
+        assert_eq!(
+            request.initial_moves,
+            vec!["e2e4".to_owned(), "e7e5".to_owned()]
+        );
+
+        let missing_fen = BotGameRequest::new(
+            "level-4",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            None,
+        )
+        .and_then(|request| request.with_initial_moves(vec!["e2e4".to_owned()]));
+        assert!(missing_fen.is_err());
+
+        let malformed_move = BotGameRequest::new(
+            "level-4",
+            "from-position",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            Some(initial_fen.to_owned()),
+        )
+        .and_then(|request| request.with_initial_moves(vec!["e2/e4".to_owned()]));
+        assert!(malformed_move.is_err());
+
+        assert!(GameVariant::new("standard", "Standard", false, false, true).is_err());
     }
 
     #[test]

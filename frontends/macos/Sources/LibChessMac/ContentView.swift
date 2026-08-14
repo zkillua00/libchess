@@ -900,6 +900,8 @@ private struct BotGameCreatorView: View {
     @State private var replyDelayMillis: UInt32?
     @State private var useCustomPosition = false
     @State private var initialFEN = ""
+    @State private var loadMoveHistory = false
+    @State private var initialMoveText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1036,6 +1038,29 @@ private struct BotGameCreatorView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                    if variant.supportsMoveHistory {
+                        Toggle("Load move history", isOn: $loadMoveHistory)
+
+                        if loadMoveHistory {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text("Moves after the X-FEN")
+                                    .font(.callout.weight(.medium))
+                                TextField(
+                                    "e2e4 e7e5 g1f3",
+                                    text: $initialMoveText,
+                                    axis: .vertical
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(2 ... 5)
+                                Text("Enter UCI moves separated by spaces. LibChess replays and validates them from the X-FEN; loaded plies remain available to the move list and takeback.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1064,6 +1089,7 @@ private struct BotGameCreatorView: View {
                         timeControl: requestedTimeControl,
                         color: selectedColor,
                         initialFEN: customPositionEnabled ? initialFEN : nil,
+                        initialMoves: requestedInitialMoves,
                         replyDelayMillis: replyDelayOptions == nil
                             ? nil
                             : selectedReplyDelayMillis
@@ -1302,6 +1328,18 @@ private struct BotGameCreatorView: View {
         return variant.requiresCustomPosition || (variant.supportsCustomPosition && useCustomPosition)
     }
 
+    private var requestedInitialMoves: [String] {
+        guard customPositionEnabled,
+              selectedVariant?.supportsMoveHistory == true,
+              loadMoveHistory
+        else {
+            return []
+        }
+        return initialMoveText
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+    }
+
     private var requestedTimeControl: BotGameTimeControl? {
         switch selectedTimeControlMode {
         case .clock:
@@ -1373,13 +1411,37 @@ private struct BotGameCreatorView: View {
             else {
                 return "X-FEN must be one printable ASCII line up to 1,024 bytes."
             }
+
+            if loadMoveHistory && variant.supportsMoveHistory {
+                let moves = requestedInitialMoves
+                guard !moves.isEmpty else {
+                    return "Enter at least one move to load the move history."
+                }
+                guard moves.count <= 1_024,
+                      moves.allSatisfy({ moveID in
+                          !moveID.isEmpty
+                              && moveID.utf8.count <= 16
+                              && moveID.utf8.allSatisfy {
+                                  (48 ... 57).contains($0)
+                                      || (65 ... 90).contains($0)
+                                      || (97 ... 122).contains($0)
+                                      || $0 == 64
+                              }
+                      })
+                else {
+                    return "Use at most 1,024 compact UCI move identifiers."
+                }
+            }
         }
         return nil
     }
 
     private var summaryLabel: String {
         let variant = selectedVariant?.displayName ?? "Chess"
-        return "\(variant) · Casual · \(requestedTimeControl?.label ?? "Time control")"
+        let history = requestedInitialMoves.isEmpty
+            ? ""
+            : " · \(requestedInitialMoves.count) loaded plies"
+        return "\(variant) · Casual · \(requestedTimeControl?.label ?? "Time control")\(history)"
     }
 
 }

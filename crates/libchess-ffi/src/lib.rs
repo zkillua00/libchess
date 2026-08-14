@@ -111,6 +111,8 @@ enum Command {
         #[serde(default)]
         initial_fen: Option<String>,
         #[serde(default)]
+        initial_moves: Vec<String>,
+        #[serde(default)]
         reply_delay_millis: Option<u32>,
     },
     Disconnect,
@@ -657,6 +659,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         time_control,
                         color,
                         initial_fen,
+                        initial_moves,
                         reply_delay_millis,
                     } => {
                         let request = BotGameRequest::new(
@@ -666,6 +669,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             color,
                             initial_fen,
                         )
+                        .and_then(|request| request.with_initial_moves(initial_moves))
                         .and_then(|request| match reply_delay_millis {
                             Some(value) => request.with_reply_delay_millis(value),
                             None => Ok(request),

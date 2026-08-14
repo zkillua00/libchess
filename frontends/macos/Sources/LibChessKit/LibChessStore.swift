@@ -432,6 +432,7 @@ public final class LibChessStore: ObservableObject {
         timeControl: BotGameTimeControl,
         color: GameColorPreference,
         initialFEN: String?,
+        initialMoves: [String] = [],
         replyDelayMillis: UInt32? = nil
     ) {
         guard !isCreatingBotGame else {
@@ -446,7 +447,8 @@ public final class LibChessStore: ObservableObject {
               options.colors.contains(color),
               supports(timeControl, using: options),
               supports(replyDelayMillis, using: options),
-              customPositionIsValid(normalizedFEN, for: variant)
+              customPositionIsValid(normalizedFEN, for: variant),
+              moveHistoryIsValid(initialMoves, initialFEN: normalizedFEN, for: variant)
         else {
             message = "Choose settings advertised by the connected chess provider."
             return
@@ -460,6 +462,7 @@ public final class LibChessStore: ObservableObject {
             timeControl: timeControl,
             color: color,
             initialFEN: normalizedFEN,
+            initialMoves: initialMoves,
             replyDelayMillis: replyDelayMillis
         )
         pendingBotGameRequestID = command.requestID
@@ -1629,6 +1632,29 @@ public final class LibChessStore: ObservableObject {
             && fen.utf8.count <= 1_024
             && fen.unicodeScalars.allSatisfy { (32 ... 126).contains($0.value) }
     }
+
+    private func moveHistoryIsValid(
+        _ moves: [String],
+        initialFEN: String?,
+        for variant: GameVariant
+    ) -> Bool {
+        if moves.isEmpty {
+            return true
+        }
+        return initialFEN != nil
+            && variant.supportsMoveHistory
+            && moves.count <= 1_024
+            && moves.allSatisfy { moveID in
+                !moveID.isEmpty
+                    && moveID.utf8.count <= 16
+                    && moveID.utf8.allSatisfy {
+                        (48 ... 57).contains($0)
+                            || (65 ... 90).contains($0)
+                            || (97 ... 122).contains($0)
+                            || $0 == 64
+                    }
+            }
+    }
 }
 
 private struct PendingMove {
@@ -1733,6 +1759,7 @@ struct CreateBotGameCommand: Encodable {
     let timeControl: BotGameTimeControl
     let color: GameColorPreference
     let initialFEN: String?
+    let initialMoves: [String]?
     let replyDelayMillis: UInt32?
 
     init(
@@ -1742,6 +1769,7 @@ struct CreateBotGameCommand: Encodable {
         timeControl: BotGameTimeControl,
         color: GameColorPreference,
         initialFEN: String?,
+        initialMoves: [String] = [],
         replyDelayMillis: UInt32? = nil
     ) {
         self.requestID = requestID
@@ -1750,6 +1778,7 @@ struct CreateBotGameCommand: Encodable {
         self.timeControl = timeControl
         self.color = color
         self.initialFEN = initialFEN
+        self.initialMoves = initialMoves.isEmpty ? nil : initialMoves
         self.replyDelayMillis = replyDelayMillis
     }
 
@@ -1762,6 +1791,7 @@ struct CreateBotGameCommand: Encodable {
         case timeControl = "time_control"
         case color
         case initialFEN = "initial_fen"
+        case initialMoves = "initial_moves"
         case replyDelayMillis = "reply_delay_millis"
     }
 }

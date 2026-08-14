@@ -60,10 +60,32 @@ final class WireProtocolTests: XCTestCase {
             [1, 2, 3, 5, 7, 10, 14]
         )
         XCTAssertEqual(event.providers?.first?.botGameOptions?.unlimited, true)
+        XCTAssertEqual(
+            event.providers?.first?.botGameOptions?.variants.first?.supportsMoveHistory,
+            false
+        )
         XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.minimumMillis, 0)
         XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.maximumMillis, 2_000)
         XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.stepMillis, 100)
         XCTAssertEqual(event.providers?.first?.botGameOptions?.replyDelay?.defaultMillis, 500)
+    }
+
+    func testDecodesVariantMoveHistorySupportWithALegacyDefault() throws {
+        let enabled = try JSONDecoder().decode(
+            GameVariant.self,
+            from: Data(
+                #"{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false,"supports_move_history":true}"#.utf8
+            )
+        )
+        let legacy = try JSONDecoder().decode(
+            GameVariant.self,
+            from: Data(
+                #"{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false}"#.utf8
+            )
+        )
+
+        XCTAssertTrue(enabled.supportsMoveHistory)
+        XCTAssertFalse(legacy.supportsMoveHistory)
     }
 
     func testDecodesOAuthCredentialEventWithExplicitWireKeys() throws {
@@ -156,7 +178,8 @@ final class WireProtocolTests: XCTestCase {
             variantID: "from-position",
             timeControl: .unlimited,
             color: .black,
-            initialFEN: "8/8/8/8/8/8/4K3/6k1 w - - 0 1"
+            initialFEN: "8/8/8/8/8/8/4K3/6k1 w - - 0 1",
+            initialMoves: ["e2e4", "e7e5"]
         )
 
         let clockObject = try jsonObject(clock)
@@ -191,6 +214,7 @@ final class WireProtocolTests: XCTestCase {
             unlimitedObject["initial_fen"] as? String,
             "8/8/8/8/8/8/4K3/6k1 w - - 0 1"
         )
+        XCTAssertEqual(unlimitedObject["initial_moves"] as? [String], ["e2e4", "e7e5"])
     }
 
     func testDecodesLiveGameSnapshotWithBoardAndLegalMoves() throws {

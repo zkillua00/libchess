@@ -369,7 +369,8 @@ output and zeroizes owned secret data on drop.
 
 The creation flow is the common backend `create_bot_game` contract. Each
 descriptor supplies opaque opponent identifiers, supported variants, player
-colors, time-control choices, custom-position rules, and explicit defaults.
+colors, time-control choices, custom-position and move-history rules, and
+explicit defaults.
 Swift renders that descriptor and returns selected values without calculating a
 default, translating provider identifiers, or classifying a time control.
 
@@ -388,6 +389,17 @@ default. Stockfish advertises 0–2,000 milliseconds in 100-millisecond steps wi
 a 500-millisecond default; Lichess does not advertise this option. The native
 creator renders the option only when present and sends the selected value through
 the common `create_bot_game` request, without identifying the provider.
+
+Variants independently advertise whether a custom X-FEN may retain preloaded
+move history. The X-FEN is the root position and the optional move list contains
+bounded UCI move identifiers replayed after that root. Rust validates every move
+against the preceding reconstructed position. Stockfish advertises this support,
+stores the reconstructed list in the normalized live board, and therefore lets
+the regular move list, export, review, prediction, and takeback paths operate on
+the loaded plies. Lichess does not advertise or accept this option because its AI
+challenge endpoint accepts a position but cannot preserve a client-supplied
+pre-game history. Turning the native "Load move history" option off sends only
+the X-FEN and retains the previous position-only behavior.
 
 After connection, the app loads the backend's ongoing-game catalog. Games are
 identified and labeled using normalized provider summaries rather than a single

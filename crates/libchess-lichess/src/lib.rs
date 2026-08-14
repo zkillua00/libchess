@@ -89,6 +89,7 @@ impl LichessFactory {
                         *display_name,
                         *supports_custom_position,
                         *requires_custom_position,
+                        false,
                     )
                 },
             )
@@ -440,6 +441,11 @@ impl PlatformBackend for LichessBackend {
         if request.reply_delay_millis.is_some() {
             return Err(LibChessError::invalid_input(
                 "Lichess does not advertise a configurable bot reply delay",
+            ));
+        }
+        if !request.initial_moves.is_empty() {
+            return Err(LibChessError::invalid_input(
+                "Lichess does not advertise preloaded move history",
             ));
         }
         let requested_variant = options
@@ -1399,8 +1405,22 @@ mod tests {
             Some("8/8/8/8/8/8/4K3/6k1 w - - 0 1".to_owned()),
         )
         .expect("provider-neutral request");
+        let preloaded_history = BotGameRequest::new(
+            "level-4",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::Random,
+            Some("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_owned()),
+        )
+        .and_then(|request| request.with_initial_moves(vec!["e2e4".to_owned()]))
+        .expect("provider-neutral request");
 
-        for request in [invalid_days, missing_fen, unsupported_fen] {
+        for request in [
+            invalid_days,
+            missing_fen,
+            unsupported_fen,
+            preloaded_history,
+        ] {
             let error = backend
                 .create_bot_game(request)
                 .await
@@ -1417,6 +1437,12 @@ mod tests {
             .bot_game_options
             .as_ref()
             .expect("bot-game options");
+        assert!(
+            options
+                .variants
+                .iter()
+                .all(|variant| !variant.supports_move_history)
+        );
 
         assert_eq!(descriptor.bot_opponents.len(), 8);
         assert_eq!(options.variants.len(), 10);
