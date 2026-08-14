@@ -157,6 +157,30 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertNil(event.game?.initialFEN)
     }
 
+    @MainActor
+    func testTerminalCreatedBotGameIsExcludedFromActiveGames() throws {
+        let createdData = Data(
+            #"{"version":1,"type":"bot_game_created","game":{"provider":"stockfish","id":"local-test","url":"","player_color":"white","opponent":{"id":"skill-0","display_name":"Skill 0"},"variant":{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false},"time_control":{"type":"unlimited"},"speed":"unlimited","is_my_turn":true}}"#.utf8
+        )
+        let terminalData = Data(
+            #"{"version":1,"type":"live_game_updated","live_game":{"provider":"stockfish","id":"local-test","url":"","player_color":"white","initial_fen":"startpos","variant_id":"standard","variant_name":"Standard","rated":false,"speed":"unlimited","white":{"name":"Local Player","provisional":false},"black":{"name":"Stockfish","provisional":false,"ai_level":0},"state":{"board":{"pieces":[],"pockets":[],"turn":"white","ply":0,"moves":[],"legal_moves":[],"in_check":false},"status":"aborted","white_draw_offer":false,"black_draw_offer":false,"white_takeback_offer":false,"black_takeback_offer":false,"opponent_gone":false}}}"#.utf8
+        )
+        let created = try XCTUnwrap(
+            JSONDecoder().decode(WireEvent.self, from: createdData).game
+        )
+        let terminal = try XCTUnwrap(
+            JSONDecoder().decode(WireEvent.self, from: terminalData).liveGame
+        )
+
+        XCTAssertTrue(LibChessStore.createdBotGameIsActive(created.id, liveGames: [:]))
+        XCTAssertFalse(
+            LibChessStore.createdBotGameIsActive(
+                created.id,
+                liveGames: [terminal.id: terminal]
+            )
+        )
+    }
+
     func testEncodesEveryBotGameTimeControlWithExplicitWireKeys() throws {
         let clock = CreateBotGameCommand(
             opponentID: "level-6",

@@ -369,7 +369,7 @@ struct LocalGame {
     created_at_millis: u64,
     last_move_at_millis: u64,
     reply_delay: Duration,
-    engine: UciEngine,
+    engine: Option<UciEngine>,
     updates: watch::Sender<LiveGame>,
 }
 
@@ -486,7 +486,7 @@ impl LocalGame {
             created_at_millis: now,
             last_move_at_millis: now,
             reply_delay,
-            engine,
+            engine: Some(engine),
             updates,
         };
         game.update_terminal()?;
@@ -607,7 +607,11 @@ impl LocalGame {
             return Ok(());
         }
         let reply_started_at = std::time::Instant::now();
-        let analysis = self.engine.analyse(
+        let engine = self
+            .engine
+            .as_mut()
+            .ok_or_else(|| engine_error("the local game engine has stopped", false))?;
+        let analysis = engine.analyse(
             &self.live.initial_fen,
             &self.live.state.board.moves,
             ENGINE_MOVE_TIME,
@@ -669,10 +673,14 @@ impl LocalGame {
         self.live.state.status = GameStatus::new(status)?;
         self.live.state.winner = winner;
         self.last_move_at_millis = now_millis();
+        self.engine = None;
         Ok(())
     }
 
     fn perform_action(&mut self, action: LiveGameAction) -> Result<(), LibChessError> {
+        if !self.live.state.status.is_playable() {
+            return Err(LibChessError::invalid_input("the local game has ended"));
+        }
         match action {
             LiveGameAction::Abort => self.finish("aborted", None)?,
             LiveGameAction::Resign => {
@@ -935,7 +943,7 @@ fn game_result(game: &LiveGame) -> &'static str {
     match game.state.winner {
         Some(PlayerColor::White) => "1-0",
         Some(PlayerColor::Black) => "0-1",
-        None if game.state.status.is_playable() => "*",
+        None if game.state.status.is_playable() || game.state.status.as_str() == "aborted" => "*",
         None => "1/2-1/2",
     }
 }
@@ -977,6 +985,62 @@ fn engine_error(message: impl Into<String>, retryable: bool) -> LibChessError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn game_snapshot(status: &str) -> GameSnapshot {
+        let descriptor = descriptor("Stockfish 18".to_owned(), None);
+        let board = libchess_rules::reconstruct(
+            "standard",
+            "startpos",
+            &["e2e4".to_owned(), "e7e5".to_owned()],
+        )
+        .expect("position");
+        GameSnapshot {
+            live: LiveGame {
+                provider: descriptor.id,
+                id: GameId::new("local-test").expect("game id"),
+                url: String::new(),
+                player_color: PlayerColor::White,
+                initial_fen: "startpos".to_owned(),
+                variant_id: GameVariantId::new("standard").expect("variant"),
+                variant_name: "Standard".to_owned(),
+                rated: false,
+                speed: "unlimited".to_owned(),
+                clock: None,
+                days_per_turn: None,
+                white: LiveGamePlayer {
+                    id: Some(LOCAL_ACCOUNT_ID.to_owned()),
+                    name: LOCAL_ACCOUNT_NAME.to_owned(),
+                    title: None,
+                    rating: None,
+                    provisional: false,
+                    ai_level: None,
+                },
+                black: LiveGamePlayer {
+                    id: None,
+                    name: "Stockfish 18".to_owned(),
+                    title: Some("Engine".to_owned()),
+                    rating: None,
+                    provisional: false,
+                    ai_level: Some(20),
+                },
+                state: LiveGameState {
+                    board,
+                    status: GameStatus::new(status).expect("status"),
+                    winner: None,
+                    white_time_millis: None,
+                    black_time_millis: None,
+                    white_increment_millis: None,
+                    black_increment_millis: None,
+                    white_draw_offer: false,
+                    black_draw_offer: false,
+                    white_takeback_offer: false,
+                    black_takeback_offer: false,
+                    opponent_gone: false,
+                    claim_win_in_seconds: None,
+                },
+            },
+        }
+    }
 
     #[test]
     fn descriptor_advertises_only_implemented_local_options() {
@@ -1043,62 +1107,18 @@ mod tests {
 
     #[test]
     fn builds_local_pgn_without_provider_urls() {
-        let descriptor = descriptor("Stockfish 18".to_owned(), None);
-        let board = libchess_rules::reconstruct(
-            "standard",
-            "startpos",
-            &["e2e4".to_owned(), "e7e5".to_owned()],
-        )
-        .expect("position");
-        let snapshot = GameSnapshot {
-            live: LiveGame {
-                provider: descriptor.id,
-                id: GameId::new("local-test").expect("game id"),
-                url: String::new(),
-                player_color: PlayerColor::White,
-                initial_fen: "startpos".to_owned(),
-                variant_id: GameVariantId::new("standard").expect("variant"),
-                variant_name: "Standard".to_owned(),
-                rated: false,
-                speed: "unlimited".to_owned(),
-                clock: None,
-                days_per_turn: None,
-                white: LiveGamePlayer {
-                    id: Some(LOCAL_ACCOUNT_ID.to_owned()),
-                    name: LOCAL_ACCOUNT_NAME.to_owned(),
-                    title: None,
-                    rating: None,
-                    provisional: false,
-                    ai_level: None,
-                },
-                black: LiveGamePlayer {
-                    id: None,
-                    name: "Stockfish 18".to_owned(),
-                    title: Some("Engine".to_owned()),
-                    rating: None,
-                    provisional: false,
-                    ai_level: Some(20),
-                },
-                state: LiveGameState {
-                    board,
-                    status: GameStatus::new("started").expect("status"),
-                    winner: None,
-                    white_time_millis: None,
-                    black_time_millis: None,
-                    white_increment_millis: None,
-                    black_increment_millis: None,
-                    white_draw_offer: false,
-                    black_draw_offer: false,
-                    white_takeback_offer: false,
-                    black_takeback_offer: false,
-                    opponent_gone: false,
-                    claim_win_in_seconds: None,
-                },
-            },
-        };
-        let export = export_snapshot(snapshot).expect("PGN export");
+        let export = export_snapshot(game_snapshot("started")).expect("PGN export");
         assert!(export.pgn.contains("1. e4 e5 *"));
         assert!(export.suggested_filename.ends_with(".pgn"));
+    }
+
+    #[test]
+    fn exports_aborted_games_as_unfinished() {
+        let export = export_snapshot(game_snapshot("aborted")).expect("PGN export");
+
+        assert!(export.pgn.contains("[Result \"*\"]"));
+        assert!(export.pgn.ends_with("1. e4 e5 *\n"));
+        assert!(!export.pgn.contains("1/2-1/2"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1145,6 +1165,62 @@ mod tests {
         let game = lock(&game).expect("game state");
         assert!(game.live.state.board.moves.is_empty());
         assert_eq!(game.live.state.board.ply, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finishing_a_local_game_releases_its_engine_and_preserves_records() {
+        let Ok(probe) = locate_and_probe() else {
+            return;
+        };
+        let descriptor = descriptor(probe.name, None);
+        let backend = StockfishBackend::new(descriptor, probe.path);
+        let request = BotGameRequest::new(
+            "skill-0",
+            "standard",
+            BotGameTimeControl::Unlimited,
+            ColorPreference::White,
+            None,
+        )
+        .expect("local-game request");
+        let created = backend
+            .create_bot_game(request)
+            .await
+            .expect("create local game");
+        let game_id = GameId::new(created.id).expect("game id");
+
+        backend
+            .perform_game_action(game_id.clone(), LiveGameAction::Abort)
+            .await
+            .expect("abort local game");
+
+        {
+            let game = backend.game(&game_id).expect("stored game");
+            let game = lock(&game).expect("game state");
+            assert_eq!(game.live.state.status.as_str(), "aborted");
+            assert!(game.engine.is_none());
+        }
+
+        let history = backend
+            .game_history(
+                GameHistoryRequest::new(LOCAL_ACCOUNT_ID, LOCAL_ACCOUNT_NAME, 20, None)
+                    .expect("history request"),
+            )
+            .await
+            .expect("local-game history");
+        assert_eq!(history.games.len(), 1);
+        assert_eq!(history.games[0].status.as_str(), "aborted");
+
+        let export = backend
+            .export_game(game_id.clone())
+            .await
+            .expect("finished-game export");
+        assert!(export.pgn.contains("[Result \"*\"]"));
+
+        let review = backend
+            .review_game(game_id)
+            .await
+            .expect("finished-game review");
+        assert!(review.moves.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

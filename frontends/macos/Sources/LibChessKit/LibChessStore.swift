@@ -1159,8 +1159,10 @@ public final class LibChessStore: ObservableObject {
         loadingGameIDs.remove(game.id)
         connectedGameIDs.insert(game.id)
         pendingLiveGameRequests = pendingLiveGameRequests.filter { $0.value != game.id }
-        upsertActiveGame(summary(for: game), atFront: false)
-        if !game.state.isPlayable {
+        if game.state.isPlayable {
+            upsertActiveGame(summary(for: game), atFront: false)
+        } else {
+            activeGames.removeAll(where: { $0.id == game.id })
             rollbackPrediction(for: game.id)
             if let requestID = pendingMoveRequestByGame[game.id] {
                 clearPendingMove(requestID: requestID, rollback: true)
@@ -1230,6 +1232,7 @@ public final class LibChessStore: ObservableObject {
         }
         for game in createdBotGames.values where !listedIDs.contains(game.id)
             && !merged.contains(where: { $0.id == game.id })
+            && Self.createdBotGameIsActive(game.id, liveGames: liveGames)
         {
             merged.append(
                 LiveGameSummary(
@@ -1247,6 +1250,13 @@ public final class LibChessStore: ObservableObject {
             )
         }
         activeGames = merged
+    }
+
+    static func createdBotGameIsActive(
+        _ gameID: String,
+        liveGames: [String: LiveGame]
+    ) -> Bool {
+        liveGames[gameID]?.state.isPlayable != false
     }
 
     private func requestGameHistory(beforeMillis: UInt64?) {
