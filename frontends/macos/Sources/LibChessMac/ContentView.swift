@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var store: LibChessStore
-    @Environment(\.openURL) private var openURL
     @State private var selection: SidebarDestination? = .newGame
     @State private var exportDocument: PGNDocument?
     @State private var exportFilename = "game.pgn"
@@ -14,18 +13,12 @@ struct ContentView: View {
     @State private var showsAccountPopover = false
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
-        } detail: {
-            detail
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if let message = store.message {
-                        InlineMessageBanner(message: message) {
-                            store.message = nil
-                        }
-                    }
-                }
+        workspace
+        .onChange(of: store.selectedBackend?.id) { _, backendID in
+            if backendID == nil {
+                selection = .newGame
+                showsAccountPopover = false
+            }
         }
         .onChange(of: store.connectionState.rawValue) { previousState, state in
             if state == ConnectionState.connected.rawValue,
@@ -69,19 +62,14 @@ struct ContentView: View {
             showsFileExporter = true
             store.consumeExportedGame()
         }
-        .onChange(of: store.authorizationURL) { _, authorizationURL in
-            if let authorizationURL {
-                openURL(authorizationURL)
-            }
-        }
-        .onOpenURL { callbackURL in
-            _ = store.handleOpenURL(callbackURL)
-        }
         .onReceive(NotificationCenter.default.publisher(for: .showNewGame)) { _ in
+            guard store.connectionState == .connected else { return }
             selection = .newGame
         }
         .onReceive(NotificationCenter.default.publisher(for: .showGame)) { notification in
-            guard let gameID = notification.object as? String else {
+            guard store.connectionState == .connected,
+                  let gameID = notification.object as? String
+            else {
                 return
             }
             selection = .game(gameID)
@@ -96,6 +84,22 @@ struct ContentView: View {
                 store.message = "The PGN could not be saved: \(error.localizedDescription)"
             }
             exportDocument = nil
+        }
+    }
+
+    private var workspace: some View {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+        } detail: {
+            detail
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if let message = store.message {
+                        InlineMessageBanner(message: message) {
+                            store.message = nil
+                        }
+                    }
+                }
         }
     }
 
@@ -162,15 +166,11 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        switch store.connectionState {
-        case .connected:
+        if store.connectionState == .connected {
             connectedDetail
-        case .authorizing:
-            AuthorizingView()
-        case .connecting:
-            ConnectingView()
-        case .disconnected:
-            ConnectView()
+        } else {
+            ProgressView("Returning to launcher…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -211,7 +211,7 @@ struct ContentView: View {
         case let .review(gameID):
             if let game = store.recentGames.first(where: { $0.id == gameID }) {
                 GameReviewView(game: game)
-                    .navigationTitle("vs (game.opponentDisplayName)")
+                    .navigationTitle("vs \(game.opponentDisplayName)")
             } else {
                 RecentGamesView { selectedGameID in
                     selection = .review(selectedGameID)
@@ -318,11 +318,11 @@ private struct SidebarAccountButton: View {
         case .connected:
             providerName ?? "Connected"
         case .authorizing:
-            "Waiting for Lichess"
+            "Waiting for \(providerName ?? "approval")"
         case .connecting:
             "Connecting…"
         case .disconnected:
-            "Lichess"
+            providerName ?? "Not connected"
         }
     }
 }
@@ -337,7 +337,7 @@ private struct RecentGamesView: View {
                 ContentUnavailableView {
                     Label("Game History Unavailable", systemImage: "clock.badge.questionmark")
                 } description: {
-                    Text("The connected chess service does not expose finished games.")
+                    Text("\(store.selectedBackend?.displayName ?? "The selected backend") does not expose finished games.")
                 }
             } else if store.recentGames.isEmpty, store.isLoadingGameHistory {
                 VStack(spacing: 14) {
@@ -494,11 +494,13 @@ private struct HistoryGameRow: View {
                     }
                     .disabled(store.isExportingGame(game.id))
                 }
-                Divider()
-                Button {
-                    openGame()
-                } label: {
-                    Label("View on Lichess", systemImage: "safari")
+                if !game.url.isEmpty {
+                    Divider()
+                    Button {
+                        openGame()
+                    } label: {
+                        Label("View on \(store.selectedBackend?.displayName ?? "Web")", systemImage: "safari")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -515,8 +517,10 @@ private struct HistoryGameRow: View {
                 }
                 .disabled(store.isExportingGame(game.id))
             }
-            Divider()
-            Button("View on Lichess", action: openGame)
+            if !game.url.isEmpty {
+                Divider()
+                Button("View on \(store.selectedBackend?.displayName ?? "Web")", action: openGame)
+            }
         }
     }
 
@@ -552,102 +556,6 @@ private struct HistoryGameRow: View {
     }
 }
 
-private struct ConnectView: View {
-    @EnvironmentObject private var store: LibChessStore
-
-    var body: some View {
-        VStack(spacing: 18) {
-            ContentUnavailableView {
-                Label("Sign in to Lichess", systemImage: "checkerboard.rectangle")
-            } description: {
-                Text("Connect your account to create and play games from this Mac.")
-            } actions: {
-                HStack(spacing: 10) {
-                    Button("Sign in with Lichess") {
-                        store.beginLichessOAuth()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-
-                    if store.savedCredentialAvailable {
-                        Button {
-                            store.connectUsingSavedCredential()
-                        } label: {
-                            if store.isLoadingSavedCredential {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: 132)
-                            } else {
-                                Text("Use Saved Credential")
-                            }
-                        }
-                        .disabled(store.isLoadingSavedCredential)
-                    }
-                }
-            }
-
-            Label(
-                "Authentication opens on lichess.org. Your credential is stored in macOS Keychain without password prompts.",
-                systemImage: "lock.shield"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("Connect")
-    }
-}
-
-private struct AuthorizingView: View {
-    @EnvironmentObject private var store: LibChessStore
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        ContentUnavailableView {
-            Label("Finish signing in", systemImage: "safari")
-        } description: {
-            Text("Approve permission in your browser. LibChess will continue when Lichess returns you here.")
-        } actions: {
-            HStack(spacing: 10) {
-                if let authorizationURL = store.authorizationURL {
-                    Button("Reopen Browser") {
-                        openURL(authorizationURL)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                Button("Cancel", role: .cancel) {
-                    store.cancelOAuth()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
-        }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("Connect")
-    }
-}
-
-private struct ConnectingView: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("Connecting to Lichess", systemImage: "arrow.triangle.2.circlepath")
-        } description: {
-            Text("LibChess is validating your account and preparing the connection.")
-        } actions: {
-            ProgressView()
-                .controlSize(.small)
-        }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("Connect")
-    }
-}
-
 private struct NewGameView: View {
     @EnvironmentObject private var store: LibChessStore
 
@@ -669,7 +577,7 @@ private struct NewGameView: View {
                     ContentUnavailableView {
                         Label("Bot games unavailable", systemImage: "exclamationmark.triangle")
                     } description: {
-                        Text("The connected chess service does not provide bot-game creation.")
+                        Text("\(store.selectedBackend?.displayName ?? "The selected backend") does not provide bot-game creation.")
                     }
                 }
             }
@@ -721,20 +629,26 @@ private struct AccountPopoverView: View {
                 Divider()
 
                 HStack {
-                    Button("Refresh") {
-                        store.refreshAccount()
+                    if store.selectedBackend?.connection.isLocal == false {
+                        Button("Refresh") {
+                            store.refreshAccount()
+                        }
                     }
 
                     Spacer()
 
-                    Button("Disconnect") {
-                        store.disconnect()
-                        dismiss()
+                    if store.selectedBackend?.connection.isLocal == false {
+                        Button("Disconnect") {
+                            store.disconnect()
+                            dismiss()
+                        }
                     }
                 }
 
-                Button("Remove Saved Credential…", role: .destructive) {
-                    confirmsCredentialRemoval = true
+                if store.selectedBackend?.connection.usesOAuthPKCE == true {
+                    Button("Remove Saved Credential…", role: .destructive) {
+                        confirmsCredentialRemoval = true
+                    }
                 }
 
             case .authorizing:
@@ -759,8 +673,8 @@ private struct AccountPopoverView: View {
                 statusRow("Validating your account…")
 
             case .disconnected:
-                Button("Sign in with Lichess") {
-                    store.beginLichessOAuth()
+                Button("Sign in with \(store.selectedBackend?.displayName ?? "Backend")") {
+                    store.beginOAuth()
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -791,6 +705,14 @@ private struct AccountPopoverView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+
+            Divider()
+
+            Button("Choose Another Backend…") {
+                store.clearBackendSelection()
+                dismiss()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(18)
         .frame(width: 360)
@@ -801,7 +723,7 @@ private struct AccountPopoverView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("LibChess will disconnect and remove the Lichess credential from this Mac.")
+            Text("LibChess will disconnect and remove the \(store.selectedBackend?.displayName ?? "saved") credential from this Mac.")
         }
     }
 
@@ -842,7 +764,9 @@ private struct AccountPopoverView: View {
     }
 
     private var accountTitle: String {
-        store.account?.displayName ?? "Lichess Account"
+        store.account?.displayName
+            ?? store.selectedBackend.map { "\($0.displayName) Account" }
+            ?? "Backend Account"
     }
 
     private var accountSubtitle: String {
@@ -966,13 +890,13 @@ private struct LiveGameLoadingView: View {
 
 private struct BotGameCreatorView: View {
     @EnvironmentObject private var store: LibChessStore
-    @State private var opponentID = ""
-    @State private var variantID = ""
-    @State private var timeControlMode = BotTimeControlMode.clock
-    @State private var initialSeconds: UInt32 = 600
-    @State private var incrementSeconds: UInt32 = 0
-    @State private var correspondenceDays: UInt8 = 3
-    @State private var color = GameColorPreference.random
+    @State private var opponentID: String?
+    @State private var variantID: String?
+    @State private var timeControlMode: BotTimeControlMode?
+    @State private var initialSeconds: UInt32?
+    @State private var incrementSeconds: UInt32?
+    @State private var correspondenceDays: UInt8?
+    @State private var color: GameColorPreference?
     @State private var useCustomPosition = false
     @State private var initialFEN = ""
 
@@ -1138,13 +1062,15 @@ private struct BotGameCreatorView: View {
     }
 
     private var selectedOpponentID: String {
-        if store.botOpponents.contains(where: { $0.id == opponentID }) {
+        if let opponentID, store.botOpponents.contains(where: { $0.id == opponentID }) {
             return opponentID
         }
-        guard !store.botOpponents.isEmpty else {
-            return ""
+        if let defaultID = store.botGameOptions?.defaultOpponentID,
+           store.botOpponents.contains(where: { $0.id == defaultID })
+        {
+            return defaultID
         }
-        return store.botOpponents[(store.botOpponents.count - 1) / 2].id
+        return store.botOpponents.first?.id ?? ""
     }
 
     private var opponentSelection: Binding<String> {
@@ -1155,12 +1081,15 @@ private struct BotGameCreatorView: View {
     }
 
     private var selectedVariantID: String {
-        if store.botVariants.contains(where: { $0.id == variantID }) {
+        if let variantID, store.botVariants.contains(where: { $0.id == variantID }) {
             return variantID
         }
-        return store.botVariants.first(where: { $0.id == "standard" })?.id
-            ?? store.botVariants.first?.id
-            ?? ""
+        if let defaultID = store.botGameOptions?.defaultVariantID,
+           store.botVariants.contains(where: { $0.id == defaultID })
+        {
+            return defaultID
+        }
+        return store.botVariants.first?.id ?? ""
     }
 
     private var selectedVariant: GameVariant? {
@@ -1192,9 +1121,13 @@ private struct BotGameCreatorView: View {
     }
 
     private var selectedTimeControlMode: BotTimeControlMode {
-        availableTimeControlModes.contains(timeControlMode)
-            ? timeControlMode
-            : availableTimeControlModes.first ?? .clock
+        if let timeControlMode, availableTimeControlModes.contains(timeControlMode) {
+            return timeControlMode
+        }
+        if let defaultMode, availableTimeControlModes.contains(defaultMode) {
+            return defaultMode
+        }
+        return availableTimeControlModes.first ?? .unlimited
     }
 
     private var timeControlModeSelection: Binding<BotTimeControlMode> {
@@ -1210,9 +1143,17 @@ private struct BotGameCreatorView: View {
 
     private var selectedInitialSeconds: UInt32 {
         guard let choices = clockOptions?.initialSeconds else {
+            return initialSeconds ?? 0
+        }
+        if let initialSeconds, choices.contains(initialSeconds) {
             return initialSeconds
         }
-        return choices.contains(initialSeconds) ? initialSeconds : choices.first ?? 0
+        if case let .some(.clock(defaultInitial, _)) = store.botGameOptions?.defaultTimeControl,
+           choices.contains(defaultInitial)
+        {
+            return defaultInitial
+        }
+        return choices.first ?? 0
     }
 
     private var initialSecondsSelection: Binding<UInt32> {
@@ -1224,9 +1165,17 @@ private struct BotGameCreatorView: View {
 
     private var selectedIncrementSeconds: UInt32 {
         guard let choices = clockOptions?.incrementSeconds else {
+            return incrementSeconds ?? 0
+        }
+        if let incrementSeconds, choices.contains(incrementSeconds) {
             return incrementSeconds
         }
-        return choices.contains(incrementSeconds) ? incrementSeconds : choices.first ?? 0
+        if case let .some(.clock(_, defaultIncrement)) = store.botGameOptions?.defaultTimeControl,
+           choices.contains(defaultIncrement)
+        {
+            return defaultIncrement
+        }
+        return choices.first ?? 0
     }
 
     private var incrementSecondsSelection: Binding<UInt32> {
@@ -1241,9 +1190,15 @@ private struct BotGameCreatorView: View {
     }
 
     private var selectedCorrespondenceDays: UInt8 {
-        correspondenceDayOptions.contains(correspondenceDays)
-            ? correspondenceDays
-            : correspondenceDayOptions.first ?? 1
+        if let correspondenceDays, correspondenceDayOptions.contains(correspondenceDays) {
+            return correspondenceDays
+        }
+        if case let .some(.correspondence(defaultDays)) = store.botGameOptions?.defaultTimeControl,
+           correspondenceDayOptions.contains(defaultDays)
+        {
+            return defaultDays
+        }
+        return correspondenceDayOptions.first ?? 1
     }
 
     private var correspondenceDaysSelection: Binding<UInt8> {
@@ -1259,8 +1214,13 @@ private struct BotGameCreatorView: View {
     }
 
     private var selectedColor: GameColorPreference {
-        if advertisedColors.contains(color) {
+        if let color, advertisedColors.contains(color) {
             return color
+        }
+        if let defaultColor = store.botGameOptions?.defaultColor,
+           advertisedColors.contains(defaultColor)
+        {
+            return defaultColor
         }
         return advertisedColors.first ?? .random
     }
@@ -1302,6 +1262,15 @@ private struct BotGameCreatorView: View {
         }
     }
 
+    private var defaultMode: BotTimeControlMode? {
+        switch store.botGameOptions?.defaultTimeControl {
+        case .some(.clock(_, _)): .clock
+        case .some(.correspondence(_)): .correspondence
+        case .some(.unlimited): .unlimited
+        case nil: nil
+        }
+    }
+
     private var validationMessage: String? {
         guard !selectedOpponentID.isEmpty,
               let variant = selectedVariant,
@@ -1324,7 +1293,7 @@ private struct BotGameCreatorView: View {
             if let minimum = clockOptions.minimumEstimatedDurationSeconds,
                estimated < UInt64(minimum)
             {
-                return "Choose a Blitz-or-slower clock."
+                return "Choose a time control within the backend's advertised minimum."
             }
         }
 

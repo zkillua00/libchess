@@ -482,6 +482,7 @@ dependencies = [
  "libchess-board",
  "libchess-core",
  "libchess-lichess",
+ "libchess-stockfish",
 ]
 
 [[package]]
@@ -540,6 +541,17 @@ dependencies = [
  "libchess-core",
  "shakmaty",
  "thiserror",
+]
+
+[[package]]
+name = "libchess-stockfish"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "getrandom",
+ "libchess-core",
+ "libchess-rules",
+ "tokio",
 ]
 
 [[package]]

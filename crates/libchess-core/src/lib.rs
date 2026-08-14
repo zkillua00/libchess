@@ -55,12 +55,55 @@ pub enum PlatformCapability {
     Challenges,
     GameHistory,
     GameReview,
+    LocalGames,
     LiveGames,
     Matchmaking,
     #[serde(rename = "oauth_pkce")]
     OAuthPkce,
     PgnExport,
+    PositionAnalysis,
     RealtimeEvents,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendKind {
+    Platform,
+    LocalEngine,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendIcon {
+    Network,
+    Processor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BackendConnection {
+    Local,
+    #[serde(rename = "oauth_pkce")]
+    OAuthPkce {
+        client_id: String,
+        redirect_uri: String,
+        authorization_origin: String,
+    },
+}
+
+impl BackendConnection {
+    pub fn oauth_configuration(&self) -> Result<OAuthClientConfiguration, LibChessError> {
+        match self {
+            Self::OAuthPkce {
+                client_id,
+                redirect_uri,
+                ..
+            } => OAuthClientConfiguration::new(client_id.clone(), redirect_uri.clone()),
+            Self::Local => Err(LibChessError::unsupported(
+                "the selected local backend does not use OAuth",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -123,8 +166,18 @@ impl BotOpponent {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProviderDescriptor {
     pub id: ProviderId,
+    pub kind: BackendKind,
     pub display_name: String,
-    pub web_url: String,
+    pub subtitle: String,
+    pub description: String,
+    pub icon: BackendIcon,
+    pub action_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
+    pub connection: BackendConnection,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     pub capabilities: BTreeSet<PlatformCapability>,
     #[serde(default)]
     pub bot_opponents: Vec<BotOpponent>,
@@ -294,6 +347,10 @@ pub struct BotGameOptions {
     #[serde(default)]
     pub correspondence_days: Vec<u8>,
     pub unlimited: bool,
+    pub default_opponent_id: BotOpponentId,
+    pub default_variant_id: GameVariantId,
+    pub default_time_control: BotGameTimeControl,
+    pub default_color: ColorPreference,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -347,6 +404,8 @@ pub struct BotGame {
     pub opponent: BotOpponent,
     pub variant: GameVariant,
     pub time_control: BotGameTimeControl,
+    pub speed: String,
+    pub is_my_turn: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_fen: Option<String>,
 }
@@ -600,6 +659,13 @@ pub trait PlatformBackendFactory: Send + Sync {
 
     fn create(&self, token: AccessToken) -> Result<Arc<dyn PlatformBackend>, LibChessError>;
 
+    fn create_local(&self) -> Result<Arc<dyn PlatformBackend>, LibChessError> {
+        Err(LibChessError::unsupported(format!(
+            "backend '{}' requires authentication",
+            self.descriptor().id
+        )))
+    }
+
     fn begin_oauth(
         &self,
         _configuration: OAuthClientConfiguration,
@@ -711,5 +777,16 @@ mod tests {
             serde_json::to_string(&PlatformCapability::OAuthPkce).expect("serialize capability"),
             r#""oauth_pkce""#
         );
+    }
+
+    #[test]
+    fn oauth_connection_has_a_stable_wire_tag() {
+        let connection = BackendConnection::OAuthPkce {
+            client_id: "org.libchess.macos".to_owned(),
+            redirect_uri: "org.libchess.macos://oauth/example".to_owned(),
+            authorization_origin: "https://example.com".to_owned(),
+        };
+        let value = serde_json::to_value(connection).expect("serialize connection");
+        assert_eq!(value["type"], "oauth_pkce");
     }
 }

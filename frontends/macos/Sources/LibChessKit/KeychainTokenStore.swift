@@ -200,7 +200,7 @@ private enum KeychainError: LocalizedError {
         case .invalidEncoding:
             "The saved credential is not valid UTF-8."
         case .interactionRequired:
-            "The saved credential requires interaction, so LibChess did not request a Keychain password. Sign in with Lichess once to replace it."
+            "The saved credential requires interaction, so LibChess did not request a Keychain password. Sign in again once to replace it."
         case let .status(status):
             SecCopyErrorMessageString(status, nil) as String?
                 ?? "Keychain returned status \(status)."

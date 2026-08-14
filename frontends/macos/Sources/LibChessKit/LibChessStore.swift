@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 public final class LibChessStore: ObservableObject {
     @Published public private(set) var providers: [ProviderDescriptor] = []
+    @Published public private(set) var selectedBackend: ProviderDescriptor?
     @Published public private(set) var boardProviders: [BoardProviderDescriptor] = []
     @Published public private(set) var boardPresentation: BoardPresentation?
     @Published public private(set) var boardCustomization = BoardCustomizationState.empty
@@ -74,11 +75,17 @@ public final class LibChessStore: ObservableObject {
     }
 
     public func refreshSavedCredentialAvailability() {
+        guard let provider = selectedBackend,
+              provider.connection.usesOAuthPKCE
+        else {
+            savedCredentialAvailable = false
+            return
+        }
         let tokenStore = tokenStore
         Task { [weak self] in
             do {
                 let isAvailable = try await Task.detached(priority: .utility) {
-                    try tokenStore.contains(provider: "lichess")
+                    try tokenStore.contains(provider: provider.id)
                 }.value
                 self?.savedCredentialAvailable = isAvailable
             } catch {
@@ -87,19 +94,19 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    public func beginLichessOAuth() {
+    public func beginOAuth() {
+        guard selectedBackend?.connection.usesOAuthPKCE == true else {
+            return
+        }
         message = nil
-        send(
-            BeginOAuthCommand(
-                provider: "lichess",
-                clientID: LichessOAuth.clientID,
-                redirectURI: LichessOAuth.redirectURI
-            )
-        )
+        send(BasicCommand(type: "begin_oauth"))
     }
 
     public func connectUsingSavedCredential() {
-        guard !isLoadingSavedCredential else {
+        guard !isLoadingSavedCredential,
+              let provider = selectedBackend,
+              provider.connection.usesOAuthPKCE
+        else {
             return
         }
         isLoadingSavedCredential = true
@@ -108,18 +115,18 @@ public final class LibChessStore: ObservableObject {
             defer { self?.isLoadingSavedCredential = false }
             do {
                 let token = try await Task.detached(priority: .userInitiated) {
-                    try tokenStore.load(provider: "lichess")
+                    try tokenStore.load(provider: provider.id)
                 }.value
                 guard let self else {
                     return
                 }
                 guard let token else {
                     savedCredentialAvailable = false
-                    message = "No saved Lichess credential was found."
+                    message = "No saved \(provider.displayName) credential was found."
                     return
                 }
                 message = nil
-                send(ConnectCommand(provider: "lichess", accessToken: token))
+                send(ConnectCommand(provider: provider.id, accessToken: token))
             } catch {
                 self?.message = error.localizedDescription
             }
@@ -128,9 +135,12 @@ public final class LibChessStore: ObservableObject {
 
     @discardableResult
     public func handleOpenURL(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == LichessOAuth.callbackScheme,
-              url.host?.lowercased() == "oauth",
-              url.path == "/lichess"
+        guard connectionState == .authorizing,
+              let redirect = selectedBackend?.connection.redirectURI,
+              let expected = URL(string: redirect),
+              url.scheme?.lowercased() == expected.scheme?.lowercased(),
+              url.host?.lowercased() == expected.host?.lowercased(),
+              url.path == expected.path
         else {
             return false
         }
@@ -152,10 +162,27 @@ public final class LibChessStore: ObservableObject {
     }
 
     public var connectedProvider: ProviderDescriptor? {
-        guard let provider = account?.provider else {
+        guard let selectedBackend,
+              account?.provider == selectedBackend.id
+        else {
             return nil
         }
-        return providers.first(where: { $0.id == provider })
+        return selectedBackend
+    }
+
+    public func selectBackend(_ backend: ProviderDescriptor) {
+        guard backend.available, selectedBackend?.id != backend.id else {
+            return
+        }
+        message = nil
+        send(SelectBackendCommand(backend: backend.id))
+    }
+
+    public func clearBackendSelection() {
+        send(BasicCommand(type: "clear_backend_selection"))
+        selectedBackend = nil
+        savedCredentialAvailable = false
+        resetSessionState()
     }
 
     public var supportsBotGames: Bool {
@@ -518,7 +545,29 @@ public final class LibChessStore: ObservableObject {
     }
 
     public func disconnect(forgetCredential: Bool = false) {
+        let credentialProvider = selectedBackend?.connection.usesOAuthPKCE == true
+            ? selectedBackend?.id
+            : nil
         send(BasicCommand(type: "disconnect"))
+        resetSessionState()
+
+        guard forgetCredential, let credentialProvider else {
+            return
+        }
+        savedCredentialAvailable = false
+        let tokenStore = tokenStore
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try tokenStore.delete(provider: credentialProvider)
+                }.value
+            } catch {
+                self?.message = error.localizedDescription
+            }
+        }
+    }
+
+    private func resetSessionState() {
         account = nil
         authorizationURL = nil
         createdBotGames = [:]
@@ -560,21 +609,6 @@ public final class LibChessStore: ObservableObject {
         liveGamesRefreshTask = nil
         catalogReconnectTask?.cancel()
         catalogReconnectTask = nil
-
-        guard forgetCredential else {
-            return
-        }
-        savedCredentialAvailable = false
-        let tokenStore = tokenStore
-        Task { [weak self] in
-            do {
-                try await Task.detached(priority: .utility) {
-                    try tokenStore.delete(provider: "lichess")
-                }.value
-            } catch {
-                self?.message = error.localizedDescription
-            }
-        }
     }
 
     @discardableResult
@@ -622,11 +656,16 @@ public final class LibChessStore: ObservableObject {
             switch event.type {
             case "ready":
                 providers = event.providers ?? []
+                selectedBackend = event.selectedBackend
                 receiveBoardCatalog(event)
                 boardCustomization = event.boardCustomization ?? .empty
                 beginSavedBoardCustomizationRestore()
             case "providers":
                 providers = event.providers ?? []
+            case "backend_selection_changed":
+                resetSessionState()
+                selectedBackend = event.backend
+                refreshSavedCredentialAvailability()
             case "board_providers":
                 receiveBoardCatalog(event)
             case "board_presentation_loaded":
@@ -757,9 +796,15 @@ public final class LibChessStore: ObservableObject {
         guard let value,
               let url = URL(string: value),
               url.scheme == "https",
-              url.host == "lichess.org"
+              let originValue = selectedBackend?.connection.authorizationOrigin,
+              let origin = URL(string: originValue),
+              url.scheme?.lowercased() == origin.scheme?.lowercased(),
+              url.host?.lowercased() == origin.host?.lowercased(),
+              url.port == origin.port,
+              url.user == nil,
+              url.password == nil
         else {
-            message = "LibChess returned an invalid Lichess authorization URL."
+            message = "LibChess returned an invalid authorization URL."
             return
         }
         authorizationURL = url
@@ -1000,12 +1045,13 @@ public final class LibChessStore: ObservableObject {
     private func persistOAuthCredential(_ event: WireEvent) {
         guard let token = event.accessToken,
               !token.isEmpty,
-              token.count <= 4096
+              token.count <= 4096,
+              let provider = event.provider,
+              provider == selectedBackend?.id
         else {
-            message = "Lichess returned an invalid OAuth credential."
+            message = "The selected backend returned an invalid OAuth credential."
             return
         }
-        let provider = event.provider ?? "lichess"
         let tokenStore = tokenStore
         Task { [weak self] in
             do {
@@ -1036,21 +1082,10 @@ public final class LibChessStore: ObservableObject {
               options.variants.contains(game.variant),
               supports(game.timeControl, using: options),
               customPositionIsValid(game.initialFEN, for: game.variant),
-              game.id.utf8.count == 8,
-              game.id.utf8.allSatisfy({ byte in
-                  (48 ... 57).contains(byte)
-                      || (65 ... 90).contains(byte)
-                      || (97 ... 122).contains(byte)
-              }),
-              let url = URL(string: game.url),
-              let providerWebURLValue = provider.webURL,
-              let providerWebURL = URL(string: providerWebURLValue),
-              providerWebURL.scheme?.lowercased() == "https",
-              url.scheme?.lowercased() == providerWebURL.scheme?.lowercased(),
-              url.host?.lowercased() == providerWebURL.host?.lowercased(),
-              url.port == providerWebURL.port,
-              url.user == nil,
-              url.password == nil
+              !game.speed.isEmpty,
+              game.speed.utf8.count <= 64,
+              Self.gameIDIsValid(game.id),
+              Self.backendResourceURLIsValid(game.url, for: provider)
         else {
             isCreatingBotGame = false
             message = "LibChess returned an invalid bot game destination."
@@ -1068,8 +1103,8 @@ public final class LibChessStore: ObservableObject {
             variantID: game.variant.id,
             variantName: game.variant.displayName,
             rated: false,
-            speed: game.timeControl.speedName,
-            isMyTurn: game.playerColor == .white
+            speed: game.speed,
+            isMyTurn: game.isMyTurn
         )
         upsertActiveGame(summary, atFront: true)
         focusedGameID = game.id
@@ -1200,8 +1235,8 @@ public final class LibChessStore: ObservableObject {
                     variantID: game.variant.id,
                     variantName: game.variant.displayName,
                     rated: false,
-                    speed: game.timeControl.speedName,
-                    isMyTurn: game.playerColor == .white
+                    speed: game.speed,
+                    isMyTurn: game.isMyTurn
                 )
             )
         }
@@ -1424,8 +1459,7 @@ public final class LibChessStore: ObservableObject {
               game.initialFEN.utf8.count <= 4_096,
               game.initialFEN.unicodeScalars.allSatisfy({ (32 ... 126).contains($0.value) }),
               let provider = connectedProvider,
-              let providerWebURL = provider.webURL,
-              Self.providerURL(game.url, belongsTo: providerWebURL)
+              Self.backendResourceURLIsValid(game.url, for: provider)
         else {
             return false
         }
@@ -1450,42 +1484,29 @@ public final class LibChessStore: ObservableObject {
     }
 
     private func liveGameSummaryIsValid(_ game: LiveGameSummary) -> Bool {
-        guard let provider = connectedProvider, let providerWebURL = provider.webURL else {
+        guard let provider = connectedProvider else {
             return false
         }
         return game.provider == provider.id
-            && game.id.utf8.count <= 128
-            && !game.id.isEmpty
-            && game.id.utf8.allSatisfy {
-                (48 ... 57).contains($0)
-                    || (65 ... 90).contains($0)
-                    || (97 ... 122).contains($0)
-                    || $0 == 45
-                    || $0 == 95
-            }
+            && Self.gameIDIsValid(game.id)
             && !game.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && game.displayName.utf8.count <= 128
-            && Self.providerURL(game.url, belongsTo: providerWebURL)
+            && Self.backendResourceURLIsValid(game.url, for: provider)
     }
 
     private func gameHistoryEntryIsValid(_ game: GameHistoryEntry) -> Bool {
-        guard let provider = connectedProvider, let providerWebURL = provider.webURL else {
+        guard let provider = connectedProvider else {
             return false
         }
         return game.provider == provider.id
-            && game.id.utf8.count == 8
-            && game.id.utf8.allSatisfy {
-                (48 ... 57).contains($0)
-                    || (65 ... 90).contains($0)
-                    || (97 ... 122).contains($0)
-            }
+            && Self.gameIDIsValid(game.id)
             && !game.opponentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && game.opponentName.utf8.count <= 128
             && !game.variantName.isEmpty
             && game.variantName.utf8.count <= 128
             && game.lastMoveAtMillis >= game.createdAtMillis
-            && Self.providerURL(game.url, belongsTo: providerWebURL)
-            && Self.providerURL(game.analysisURL, belongsTo: providerWebURL)
+            && Self.backendResourceURLIsValid(game.url, for: provider)
+            && Self.backendResourceURLIsValid(game.analysisURL, for: provider)
     }
 
     private func gameReviewIsValid(_ review: GameReview) -> Bool {
@@ -1528,6 +1549,31 @@ public final class LibChessStore: ObservableObject {
             return false
         }
         return true
+    }
+
+    private static func backendResourceURLIsValid(
+        _ value: String,
+        for backend: ProviderDescriptor
+    ) -> Bool {
+        if backend.connection.isLocal {
+            return value.isEmpty
+        }
+        guard let webURL = backend.webURL else {
+            return false
+        }
+        return providerURL(value, belongsTo: webURL)
+    }
+
+    private static func gameIDIsValid(_ value: String) -> Bool {
+        !value.isEmpty
+            && value.utf8.count <= 128
+            && value.utf8.allSatisfy {
+                (48 ... 57).contains($0)
+                    || (65 ... 90).contains($0)
+                    || (97 ... 122).contains($0)
+                    || $0 == 45
+                    || $0 == 95
+            }
     }
 
     private static func isBoardSquare(_ value: String) -> Bool {
@@ -1608,12 +1654,6 @@ private extension String {
     }
 }
 
-public enum LichessOAuth {
-    public static let clientID = "org.libchess.macos"
-    public static let callbackScheme = "org.libchess.macos"
-    public static let redirectURI = "org.libchess.macos://oauth/lichess"
-}
-
 struct BasicCommand: Encodable {
     let version = LIBCHESS_API_VERSION
     let requestID = UUID().uuidString
@@ -1642,21 +1682,17 @@ struct ConnectCommand: Encodable {
     }
 }
 
-struct BeginOAuthCommand: Encodable {
+struct SelectBackendCommand: Encodable {
     let version = LIBCHESS_API_VERSION
     let requestID = UUID().uuidString
-    let type = "begin_oauth"
-    let provider: String
-    let clientID: String
-    let redirectURI: String
+    let type = "select_backend"
+    let backend: String
 
     private enum CodingKeys: String, CodingKey {
         case version
         case requestID = "request_id"
         case type
-        case provider
-        case clientID = "client_id"
-        case redirectURI = "redirect_uri"
+        case backend
     }
 }
 

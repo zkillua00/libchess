@@ -1,12 +1,13 @@
 [package]
-name = "libchess"
+name = "libchess-stockfish"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
-libchess-board.workspace = true
+async-trait.workspace = true
+getrandom.workspace = true
 libchess-core.workspace = true
-libchess-lichess.workspace = true
-libchess-stockfish.workspace = true
+libchess-rules.workspace = true
+tokio.workspace = true

@@ -318,9 +318,11 @@ struct GameReviewView: View {
                         store.loadGameReview(game.id, reload: true)
                     }
 
-                    Button("Open on Lichess") {
-                        if let url = URL(string: game.url) {
-                            openURL(url)
+                    if !game.url.isEmpty {
+                        Button("Open on \(store.selectedBackend?.displayName ?? "Web")") {
+                            if let url = URL(string: game.url) {
+                                openURL(url)
+                            }
                         }
                     }
                 } label: {
@@ -642,6 +644,7 @@ private struct ReviewChessBoardView: View {
 }
 
 private struct GameReviewInspector: View {
+    @EnvironmentObject private var store: LibChessStore
     let game: GameHistoryEntry
     let review: GameReview
     let selectedPly: UInt32
@@ -815,7 +818,7 @@ private struct GameReviewInspector: View {
             } description: {
                 Text(
                     evaluatedMoves.isEmpty
-                        ? "Lichess has not produced computer analysis for this game. Move replay and PGN export remain available here."
+                        ? "\(store.selectedBackend?.displayName ?? "The selected backend") has not produced computer analysis for this game. Move replay and PGN export remain available here."
                         : "This move has no stored engine annotation."
                 )
             }
@@ -1157,11 +1160,11 @@ struct FloatingBoardView: View {
             Label("Show Full Game", systemImage: "macwindow")
         }
 
-        if let url = URL(string: game.url) {
+        if !game.url.isEmpty, let url = URL(string: game.url) {
             Button {
                 openURL(url)
             } label: {
-                Label("Open on Lichess", systemImage: "safari")
+                Label("Open on \(store.selectedBackend?.displayName ?? "Web")", systemImage: "safari")
             }
         }
 
@@ -1996,8 +1999,8 @@ private struct GameInspector: View {
                     Button("Claim draw") {
                         store.performGameAction(.claimDraw, in: game.id)
                     }
-                    if let url = URL(string: game.url) {
-                        Link("Open on Lichess", destination: url)
+                    if !game.url.isEmpty, let url = URL(string: game.url) {
+                        Link("Open on \(store.selectedBackend?.displayName ?? "Web")", destination: url)
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -2028,8 +2031,8 @@ private struct GameInspector: View {
                     NotificationCenter.default.post(name: .showNewGame, object: nil)
                 }
                 .buttonStyle(.borderedProminent)
-                if let url = URL(string: game.url) {
-                    Link("View on Lichess", destination: url)
+                if !game.url.isEmpty, let url = URL(string: game.url) {
+                    Link("View on \(store.selectedBackend?.displayName ?? "Web")", destination: url)
                 }
             }
         }

@@ -9,11 +9,11 @@ use std::{
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use libchess_core::{
-    AccessToken, Account, BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent,
-    ClockTimeControlOptions, ColorPreference, ErrorKind, GameVariant, GameVariantId, LibChessError,
-    OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PlatformBackend,
-    PlatformBackendFactory, PlatformCapability, PlatformOAuthSession, PlayerColor,
-    ProviderDescriptor, ProviderId,
+    AccessToken, Account, BackendConnection, BackendIcon, BackendKind, BotGame, BotGameOptions,
+    BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId, ClockTimeControlOptions,
+    ColorPreference, ErrorKind, GameVariant, GameVariantId, LibChessError, OAuthAuthorization,
+    OAuthClientConfiguration, OAuthToken, PlatformBackend, PlatformBackendFactory,
+    PlatformCapability, PlatformOAuthSession, PlayerColor, ProviderDescriptor, ProviderId,
 };
 use reqwest::{Client, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
@@ -110,13 +110,30 @@ impl LichessFactory {
             }),
             correspondence_days: vec![1, 2, 3, 5, 7, 10, 14],
             unlimited: true,
+            default_opponent_id: BotOpponentId::new("level-4")?,
+            default_variant_id: GameVariantId::new("standard")?,
+            default_time_control: BotGameTimeControl::clock(600, 0),
+            default_color: ColorPreference::Random,
         };
 
         Ok(Self {
             descriptor: ProviderDescriptor {
                 id: ProviderId::new("lichess")?,
+                kind: BackendKind::Platform,
                 display_name: "Lichess".to_owned(),
-                web_url: base_url.to_string(),
+                subtitle: "Online chess service".to_owned(),
+                description: "Play online games and computer opponents using your Lichess account."
+                    .to_owned(),
+                icon: BackendIcon::Network,
+                action_title: "Use Lichess".to_owned(),
+                web_url: Some(base_url.to_string()),
+                connection: BackendConnection::OAuthPkce {
+                    client_id: "org.libchess.macos".to_owned(),
+                    redirect_uri: "org.libchess.macos://oauth/lichess".to_owned(),
+                    authorization_origin: base_url.origin().ascii_serialization(),
+                },
+                available: true,
+                unavailable_reason: None,
                 capabilities,
                 bot_opponents,
                 bot_game_options: Some(bot_game_options),
@@ -569,6 +586,30 @@ impl PlatformBackend for LichessBackend {
                 false,
             ));
         }
+        if game.speed.is_empty()
+            || game.speed.len() > 64
+            || !game
+                .speed
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(LibChessError::new(
+                ErrorKind::Provider,
+                "Lichess returned an invalid game speed",
+                false,
+            ));
+        }
+        let initial_fen = request.initial_fen.as_deref().unwrap_or("startpos");
+        let initial_board =
+            libchess_rules::reconstruct(response_variant.id.as_str(), initial_fen, &[]).map_err(
+                |error| {
+                    LibChessError::new(
+                        ErrorKind::Provider,
+                        format!("Lichess returned an invalid starting position: {error}"),
+                        false,
+                    )
+                },
+            )?;
         let game_url = self.endpoint(&game.id)?;
 
         Ok(BotGame {
@@ -579,6 +620,8 @@ impl PlatformBackend for LichessBackend {
             opponent,
             variant: response_variant,
             time_control: request.time_control,
+            speed: game.speed,
+            is_my_turn: initial_board.turn == player_color,
             initial_fen: request.initial_fen,
         })
     }
@@ -667,6 +710,7 @@ struct LichessAiChallengeRequest<'a> {
 struct LichessAiGame {
     id: String,
     variant: LichessVariant,
+    speed: String,
     rated: bool,
 }
 

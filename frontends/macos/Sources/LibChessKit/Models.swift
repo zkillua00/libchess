@@ -21,11 +21,70 @@ public struct PlatformCapability: RawRepresentable, Codable, Hashable, Sendable 
     public static let challenges = Self(rawValue: "challenges")
     public static let gameHistory = Self(rawValue: "game_history")
     public static let gameReview = Self(rawValue: "game_review")
+    public static let localGames = Self(rawValue: "local_games")
     public static let liveGames = Self(rawValue: "live_games")
     public static let matchmaking = Self(rawValue: "matchmaking")
     public static let oauthPkce = Self(rawValue: "oauth_pkce")
     public static let pgnExport = Self(rawValue: "pgn_export")
+    public static let positionAnalysis = Self(rawValue: "position_analysis")
     public static let realtimeEvents = Self(rawValue: "realtime_events")
+}
+
+public struct BackendKind: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static let platform = Self(rawValue: "platform")
+    public static let localEngine = Self(rawValue: "local_engine")
+}
+
+public struct BackendIcon: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static let network = Self(rawValue: "network")
+    public static let processor = Self(rawValue: "processor")
+}
+
+public struct BackendConnection: Codable, Hashable, Sendable {
+    public let type: String
+    public let clientID: String?
+    public let redirectURI: String?
+    public let authorizationOrigin: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case clientID = "client_id"
+        case redirectURI = "redirect_uri"
+        case authorizationOrigin = "authorization_origin"
+    }
+
+    public var isLocal: Bool { type == "local" }
+    public var usesOAuthPKCE: Bool { type == "oauth_pkce" }
 }
 
 public struct BotOpponent: Codable, Hashable, Identifiable, Sendable {
@@ -70,6 +129,10 @@ public struct BotGameOptions: Codable, Hashable, Sendable {
     public let clock: ClockTimeControlOptions?
     public let correspondenceDays: [UInt8]
     public let unlimited: Bool
+    public let defaultOpponentID: String
+    public let defaultVariantID: String
+    public let defaultTimeControl: BotGameTimeControl
+    public let defaultColor: GameColorPreference
 
     private enum CodingKeys: String, CodingKey {
         case variants
@@ -77,21 +140,41 @@ public struct BotGameOptions: Codable, Hashable, Sendable {
         case clock
         case correspondenceDays = "correspondence_days"
         case unlimited
+        case defaultOpponentID = "default_opponent_id"
+        case defaultVariantID = "default_variant_id"
+        case defaultTimeControl = "default_time_control"
+        case defaultColor = "default_color"
     }
 }
 
 public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
     public let id: String
+    public let kind: BackendKind
     public let displayName: String
+    public let subtitle: String
+    public let description: String
+    public let icon: BackendIcon
+    public let actionTitle: String
     public let webURL: String?
+    public let connection: BackendConnection
+    public let available: Bool
+    public let unavailableReason: String?
     public let capabilities: Set<PlatformCapability>
     public let botOpponents: [BotOpponent]
     public let botGameOptions: BotGameOptions?
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case kind
         case displayName = "display_name"
+        case subtitle
+        case description
+        case icon
+        case actionTitle = "action_title"
         case webURL = "web_url"
+        case connection
+        case available
+        case unavailableReason = "unavailable_reason"
         case capabilities
         case botOpponents = "bot_opponents"
         case botGameOptions = "bot_game_options"
@@ -100,8 +183,16 @@ public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(BackendKind.self, forKey: .kind)
         displayName = try container.decode(String.self, forKey: .displayName)
+        subtitle = try container.decode(String.self, forKey: .subtitle)
+        description = try container.decode(String.self, forKey: .description)
+        icon = try container.decode(BackendIcon.self, forKey: .icon)
+        actionTitle = try container.decode(String.self, forKey: .actionTitle)
         webURL = try container.decodeIfPresent(String.self, forKey: .webURL)
+        connection = try container.decode(BackendConnection.self, forKey: .connection)
+        available = try container.decode(Bool.self, forKey: .available)
+        unavailableReason = try container.decodeIfPresent(String.self, forKey: .unavailableReason)
         capabilities = try container.decode(Set<PlatformCapability>.self, forKey: .capabilities)
         botOpponents = try container.decodeIfPresent([BotOpponent].self, forKey: .botOpponents) ?? []
         botGameOptions = try container.decodeIfPresent(BotGameOptions.self, forKey: .botGameOptions)
@@ -110,8 +201,16 @@ public struct ProviderDescriptor: Codable, Hashable, Identifiable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
         try container.encode(displayName, forKey: .displayName)
+        try container.encode(subtitle, forKey: .subtitle)
+        try container.encode(description, forKey: .description)
+        try container.encode(icon, forKey: .icon)
+        try container.encode(actionTitle, forKey: .actionTitle)
         try container.encodeIfPresent(webURL, forKey: .webURL)
+        try container.encode(connection, forKey: .connection)
+        try container.encode(available, forKey: .available)
+        try container.encodeIfPresent(unavailableReason, forKey: .unavailableReason)
         try container.encode(capabilities, forKey: .capabilities)
         try container.encode(botOpponents, forKey: .botOpponents)
         try container.encodeIfPresent(botGameOptions, forKey: .botGameOptions)
@@ -542,7 +641,7 @@ public enum LiveGameAction: String, Codable, CaseIterable, Hashable, Identifiabl
     public var id: Self { self }
 }
 
-public enum BotGameTimeControl: Codable, Equatable, Sendable {
+public enum BotGameTimeControl: Codable, Equatable, Hashable, Sendable {
     case clock(initialSeconds: UInt32, incrementSeconds: UInt32)
     case correspondence(daysPerMove: UInt8)
     case unlimited
@@ -592,23 +691,6 @@ public enum BotGameTimeControl: Codable, Equatable, Sendable {
         }
     }
 
-    public var speedName: String {
-        switch self {
-        case let .clock(initialSeconds, incrementSeconds):
-            let estimated = UInt64(initialSeconds) + UInt64(incrementSeconds) * 40
-            return switch estimated {
-            case ..<30: "ultraBullet"
-            case ..<180: "bullet"
-            case ..<480: "blitz"
-            case ..<1_500: "rapid"
-            default: "classical"
-            }
-        case .correspondence:
-            return "correspondence"
-        case .unlimited:
-            return "unlimited"
-        }
-    }
 }
 
 public struct BotGame: Codable, Equatable, Identifiable, Sendable {
@@ -619,6 +701,8 @@ public struct BotGame: Codable, Equatable, Identifiable, Sendable {
     public let opponent: BotOpponent
     public let variant: GameVariant
     public let timeControl: BotGameTimeControl
+    public let speed: String
+    public let isMyTurn: Bool
     public let initialFEN: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -629,6 +713,8 @@ public struct BotGame: Codable, Equatable, Identifiable, Sendable {
         case opponent
         case variant
         case timeControl = "time_control"
+        case speed
+        case isMyTurn = "is_my_turn"
         case initialFEN = "initial_fen"
     }
 }
@@ -651,6 +737,8 @@ struct WireEvent: Decodable, Sendable {
     let requestID: String?
     let type: String
     let providers: [ProviderDescriptor]?
+    let backend: ProviderDescriptor?
+    let selectedBackend: ProviderDescriptor?
     let boardProviders: [BoardProviderDescriptor]?
     let boardPresentation: BoardPresentation?
     let boardCustomization: BoardCustomizationState?
@@ -680,6 +768,8 @@ struct WireEvent: Decodable, Sendable {
         case requestID = "request_id"
         case type
         case providers
+        case backend
+        case selectedBackend = "selected_backend"
         case boardProviders = "board_providers"
         case boardPresentation = "board_presentation"
         case boardCustomization = "board_customization"

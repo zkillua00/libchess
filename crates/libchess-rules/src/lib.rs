@@ -4,7 +4,7 @@ use libchess_core::{BoardPiece, BoardState, LegalMove, PieceRole, PlayerColor, P
 use shakmaty::{
     CastlingMode, Color, Move, Position, Role, Square,
     fen::Fen,
-    san::San,
+    san::{San, SanPlus},
     uci::UciMove,
     variant::{Variant, VariantPosition},
 };
@@ -137,6 +137,39 @@ pub fn normalize_san_moves(
         position.play_unchecked(chess_move);
     }
     Ok(move_ids)
+}
+
+pub fn san_moves(
+    variant_id: &str,
+    initial_fen: &str,
+    move_ids: &[String],
+) -> Result<Vec<String>, RulesError> {
+    let (variant, castling_mode) = variant_and_castling_mode(variant_id)?;
+    let mut position = if initial_fen == "startpos" {
+        VariantPosition::new(variant)
+    } else {
+        let fen = Fen::from_ascii(initial_fen.as_bytes())
+            .map_err(|error| RulesError::InvalidInitialPosition(error.to_string()))?;
+        VariantPosition::from_setup(variant, fen.into_setup(), castling_mode)
+            .map_err(|error| RulesError::InvalidInitialPosition(error.to_string()))?
+    };
+    let mut sans = Vec::with_capacity(move_ids.len());
+    for (ply, move_id) in move_ids.iter().enumerate() {
+        let uci = move_id
+            .parse::<UciMove>()
+            .map_err(|_| RulesError::InvalidMove {
+                ply,
+                move_id: move_id.clone(),
+            })?;
+        let chess_move = uci
+            .to_move(&position)
+            .map_err(|_| RulesError::InvalidMove {
+                ply,
+                move_id: move_id.clone(),
+            })?;
+        sans.push(SanPlus::from_move_and_play_unchecked(&mut position, chess_move).to_string());
+    }
+    Ok(sans)
 }
 
 fn variant_and_castling_mode(variant_id: &str) -> Result<(Variant, CastlingMode), RulesError> {
@@ -282,6 +315,13 @@ mod tests {
             moves,
             ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1"]
         );
+    }
+
+    #[test]
+    fn renders_uci_moves_as_san() {
+        let moves = vec!["e2e4".to_owned(), "e7e5".to_owned(), "g1f3".to_owned()];
+        let sans = san_moves("standard", "startpos", &moves).expect("valid UCI moves");
+        assert_eq!(sans, ["e4", "e5", "Nf3"]);
     }
 
     #[test]

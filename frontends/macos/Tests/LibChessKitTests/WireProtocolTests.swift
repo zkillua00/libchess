@@ -28,12 +28,14 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesStableOAuthCapabilityName() throws {
         let data = Data(
-            #"{"version":1,"type":"ready","providers":[{"id":"lichess","display_name":"Lichess","web_url":"https://lichess.org/","capabilities":["account","bot_games","oauth_pkce","future_capability"],"bot_opponents":[{"id":"level-1","display_name":"Level 1"}],"bot_game_options":{"variants":[{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false},{"id":"from-position","display_name":"From Position","supports_custom_position":true,"requires_custom_position":true}],"colors":["white","black","random"],"clock":{"initial_seconds":[0,15,30,45,60,90,120,10800],"increment_seconds":[0,1,2,3,60],"minimum_estimated_duration_seconds":180},"correspondence_days":[1,2,3,5,7,10,14],"unlimited":true}}]}"#.utf8
+            #"{"version":1,"type":"ready","providers":[{"id":"lichess","kind":"platform","display_name":"Lichess","subtitle":"Online chess service","description":"Play online.","icon":"network","action_title":"Use Lichess","web_url":"https://lichess.org/","connection":{"type":"oauth_pkce","client_id":"org.libchess.macos","redirect_uri":"org.libchess.macos://oauth/lichess","authorization_origin":"https://lichess.org"},"available":true,"capabilities":["account","bot_games","oauth_pkce","future_capability"],"bot_opponents":[{"id":"level-1","display_name":"Level 1"}],"bot_game_options":{"variants":[{"id":"standard","display_name":"Standard","supports_custom_position":true,"requires_custom_position":false},{"id":"from-position","display_name":"From Position","supports_custom_position":true,"requires_custom_position":true}],"colors":["white","black","random"],"clock":{"initial_seconds":[0,15,30,45,60,90,120,10800],"increment_seconds":[0,1,2,3,60],"minimum_estimated_duration_seconds":180},"correspondence_days":[1,2,3,5,7,10,14],"unlimited":true,"default_opponent_id":"level-1","default_variant_id":"standard","default_time_control":{"type":"clock","initial_seconds":600,"increment_seconds":0},"default_color":"random"}}]}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
 
         XCTAssertEqual(event.providers?.first?.displayName, "Lichess")
+        XCTAssertEqual(event.providers?.first?.kind, .platform)
+        XCTAssertEqual(event.providers?.first?.connection.redirectURI, "org.libchess.macos://oauth/lichess")
         XCTAssertEqual(event.providers?.first?.webURL, "https://lichess.org/")
         XCTAssertEqual(
             event.providers?.first?.capabilities,
@@ -71,25 +73,39 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(event.expiresInSeconds, 31_536_000)
     }
 
-    func testEncodesOAuthCommandsWithExplicitWireKeys() throws {
-        let begin = BeginOAuthCommand(
-            provider: "lichess",
-            clientID: "org.libchess.macos",
-            redirectURI: "org.libchess.macos://oauth/lichess"
+    func testDecodesASelectedLocalEngineWithoutFrontendSpecificFields() throws {
+        let data = Data(
+            #"{"version":1,"type":"backend_selection_changed","backend":{"id":"stockfish","kind":"local_engine","display_name":"Stockfish 18","subtitle":"Local UCI chess engine","description":"Runs locally.","icon":"processor","action_title":"Use Local Engine","connection":{"type":"local"},"available":true,"capabilities":["account","bot_games","local_games","position_analysis"]}}"#.utf8
         )
+
+        let event = try JSONDecoder().decode(WireEvent.self, from: data)
+        let backend = try XCTUnwrap(event.backend)
+
+        XCTAssertEqual(backend.id, "stockfish")
+        XCTAssertEqual(backend.kind, .localEngine)
+        XCTAssertEqual(backend.icon, .processor)
+        XCTAssertTrue(backend.connection.isLocal)
+        XCTAssertTrue(backend.capabilities.contains(.positionAnalysis))
+        XCTAssertNil(backend.webURL)
+    }
+
+    func testEncodesBackendOwnedOAuthCommandsWithExplicitWireKeys() throws {
+        let select = SelectBackendCommand(backend: "lichess")
+        let begin = BasicCommand(type: "begin_oauth")
         let complete = CompleteOAuthCommand(
             callbackURL: "org.libchess.macos://oauth/lichess?code=one_time&state=opaque"
         )
 
+        let selectObject = try jsonObject(select)
         let beginObject = try jsonObject(begin)
         let completeObject = try jsonObject(complete)
 
-        XCTAssertEqual(beginObject["client_id"] as? String, "org.libchess.macos")
-        XCTAssertEqual(
-            beginObject["redirect_uri"] as? String,
-            "org.libchess.macos://oauth/lichess"
-        )
-        XCTAssertNil(beginObject["clientID"])
+        XCTAssertEqual(selectObject["type"] as? String, "select_backend")
+        XCTAssertEqual(selectObject["backend"] as? String, "lichess")
+        XCTAssertEqual(beginObject["type"] as? String, "begin_oauth")
+        XCTAssertNil(beginObject["provider"])
+        XCTAssertNil(beginObject["client_id"])
+        XCTAssertNil(beginObject["redirect_uri"])
         XCTAssertNotNil(beginObject["request_id"])
         XCTAssertEqual(
             completeObject["callback_url"] as? String,
@@ -99,7 +115,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesCreatedBotGameEvent() throws {
         let data = Data(
-            #"{"version":1,"request_id":"bot-1","type":"bot_game_created","game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"black","opponent":{"id":"level-6","display_name":"Level 6"},"variant":{"id":"atomic","display_name":"Atomic","supports_custom_position":false,"requires_custom_position":false},"time_control":{"type":"correspondence","days_per_move":7}}}"#.utf8
+            #"{"version":1,"request_id":"bot-1","type":"bot_game_created","game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"black","opponent":{"id":"level-6","display_name":"Level 6"},"variant":{"id":"atomic","display_name":"Atomic","supports_custom_position":false,"requires_custom_position":false},"time_control":{"type":"correspondence","days_per_move":7},"speed":"correspondence","is_my_turn":false}}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)

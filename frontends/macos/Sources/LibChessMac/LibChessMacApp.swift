@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import LibChessKit
 import SwiftUI
 
@@ -25,15 +26,160 @@ enum LibChessMacApp {
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let store = LibChessStore()
-    private var window: NSWindow?
+    private var launcherPanel: NSPanel?
+    private var workspaceWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var settingsWindowCoordinator: SettingsWindowCoordinator?
     private var floatingBoardWindowCoordinator: FloatingBoardWindowCoordinator?
+    private var subscriptions = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let application = notification.object as? NSApplication ?? NSApplication.shared
         application.mainMenu = makeMainMenu(for: application)
+        floatingBoardWindowCoordinator = FloatingBoardWindowCoordinator(
+            store: store,
+            showMainGame: { [weak self] gameID in
+                self?.showGameInMainWindow(gameID)
+            }
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showFloatingBoard(_:)),
+            name: .showFloatingBoard,
+            object: nil
+        )
+        observeWorkspaceReadiness()
+        synchronizeWindows()
+        application.activate(ignoringOtherApps: true)
+    }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self)
+        floatingBoardWindowCoordinator?.close()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if store.handleOpenURL(url) {
+                showLauncher()
+                application.activate(ignoringOtherApps: true)
+                return
+            }
+        }
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows _: Bool
+    ) -> Bool {
+        if workspaceIsReady {
+            showWorkspace()
+        } else {
+            showLauncher()
+        }
+        return true
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(showNewGame(_:)) {
+            return workspaceIsReady
+        }
+        if menuItem.action == #selector(showFocusedGameInFloatingWindow(_:)) {
+            guard let gameID = store.focusedGameID,
+                  let game = store.liveGame(gameID)
+            else {
+                return false
+            }
+            return game.state.isPlayable && store.boardPresentation != nil
+        }
+        return true
+    }
+
+    private var workspaceIsReady: Bool {
+        store.connectionState == .connected
+            && store.selectedBackend?.id == store.account?.provider
+    }
+
+    private func observeWorkspaceReadiness() {
+        Publishers.CombineLatest3(
+            store.$connectionState,
+            store.$selectedBackend,
+            store.$account
+        )
+        .sink { [weak self] connectionState, selectedBackend, account in
+            self?.synchronizeWindows(
+                workspaceReady: connectionState == .connected
+                    && selectedBackend?.id == account?.provider
+            )
+        }
+        .store(in: &subscriptions)
+    }
+
+    private func synchronizeWindows() {
+        synchronizeWindows(workspaceReady: workspaceIsReady)
+    }
+
+    private func synchronizeWindows(workspaceReady: Bool) {
+        if workspaceReady {
+            showWorkspace()
+        } else {
+            workspaceWindow?.orderOut(nil)
+            floatingBoardWindowCoordinator?.close()
+            showLauncher()
+        }
+    }
+
+    private func showLauncher() {
+        let panel = launcherPanel ?? makeLauncherPanel()
+        launcherPanel = panel
+        if panel.isVisible {
+            panel.makeKey()
+        } else {
+            panel.center()
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func makeLauncherPanel() -> NSPanel {
+        let size = NSSize(width: 760, height: 470)
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Welcome to LibChess"
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.titlebarSeparatorStyle = .none
+        panel.isMovableByWindowBackground = true
+        panel.isReleasedWhenClosed = false
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = true
+        panel.animationBehavior = .utilityWindow
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.contentMinSize = size
+        panel.contentMaxSize = size
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.contentView = NSHostingView(
+            rootView: BackendLauncherView()
+                .environmentObject(store)
+                .frame(width: size.width, height: size.height)
+        )
+        return panel
+    }
+
+    private func showWorkspace() {
+        launcherPanel?.orderOut(nil)
+
+        let window = workspaceWindow ?? makeWorkspaceWindow()
+        workspaceWindow = window
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeWorkspaceWindow() -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_120, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -52,58 +198,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                 .frame(minWidth: 760, minHeight: 520)
         )
         window.center()
-        window.makeKeyAndOrderFront(nil)
-        application.activate(ignoringOtherApps: true)
-        self.window = window
-        floatingBoardWindowCoordinator = FloatingBoardWindowCoordinator(
-            store: store,
-            showMainGame: { [weak self] gameID in
-                self?.showGameInMainWindow(gameID)
-            }
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(showFloatingBoard(_:)),
-            name: .showFloatingBoard,
-            object: nil
-        )
-        store.refreshSavedCredentialAvailability()
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        NotificationCenter.default.removeObserver(self)
-        floatingBoardWindowCoordinator?.close()
-    }
-
-    func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
-            if store.handleOpenURL(url) {
-                window?.makeKeyAndOrderFront(nil)
-                return
-            }
-        }
-    }
-
-    func applicationShouldHandleReopen(
-        _ sender: NSApplication,
-        hasVisibleWindows _: Bool
-    ) -> Bool {
-        if window?.isVisible != true {
-            window?.makeKeyAndOrderFront(nil)
-        }
-        return true
-    }
-
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(showFocusedGameInFloatingWindow(_:)) {
-            guard let gameID = store.focusedGameID,
-                  let game = store.liveGame(gameID)
-            else {
-                return false
-            }
-            return game.state.isPlayable && store.boardPresentation != nil
-        }
-        return true
+        return window
     }
 
     private func makeMainMenu(for application: NSApplication) -> NSMenu {
@@ -259,7 +354,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
 
     @objc private func showNewGame(_ sender: Any?) {
         NotificationCenter.default.post(name: .showNewGame, object: nil)
-        window?.makeKeyAndOrderFront(sender)
+        workspaceWindow?.makeKeyAndOrderFront(sender)
     }
 
     @objc private func showSettings(_ sender: Any?) {
@@ -311,13 +406,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private func presentFloatingBoard(for gameID: String) {
         floatingBoardWindowCoordinator?.show(
             gameID: gameID,
-            beside: window
+            beside: workspaceWindow
         )
     }
 
     private func showGameInMainWindow(_ gameID: String) {
         NotificationCenter.default.post(name: .showGame, object: gameID)
-        window?.makeKeyAndOrderFront(nil)
+        workspaceWindow?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 

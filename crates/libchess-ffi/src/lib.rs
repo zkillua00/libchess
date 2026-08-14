@@ -87,11 +87,15 @@ struct CommandEnvelope {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Command {
     BeginOauth {
-        provider: String,
-        client_id: String,
-        redirect_uri: String,
+        #[serde(default)]
+        provider: Option<String>,
+        #[serde(default)]
+        client_id: Option<String>,
+        #[serde(default)]
+        redirect_uri: Option<String>,
     },
     CancelOauth,
+    ClearBackendSelection,
     CompleteOauth {
         callback_url: String,
     },
@@ -159,6 +163,9 @@ enum Command {
         game_id: String,
         ply: u32,
     },
+    SelectBackend {
+        backend: String,
+    },
     StartLiveGame {
         game_id: String,
         player_color: PlayerColor,
@@ -201,6 +208,10 @@ enum Event {
     BoardCustomizationChanged {
         board_providers: Vec<BoardProviderDescriptor>,
         board_customization: BoardCustomizationState,
+    },
+    BackendSelectionChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        backend: Option<Box<ProviderDescriptor>>,
     },
     Error {
         error: LibChessError,
@@ -262,6 +273,8 @@ enum Event {
     },
     Ready {
         providers: Vec<ProviderDescriptor>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        selected_backend: Option<Box<ProviderDescriptor>>,
         board_providers: Vec<BoardProviderDescriptor>,
         board_customization: BoardCustomizationState,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,6 +313,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
         None,
         Event::Ready {
             providers: client.providers(),
+            selected_backend: client.selected_backend().cloned().map(Box::new),
             board_providers: client.board_providers(),
             board_customization: client.board_customization_state(),
             board_presentation: default_board_presentation.as_ref().ok().cloned(),
@@ -323,13 +337,14 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                         provider,
                         client_id,
                         redirect_uri,
-                    } => match client.begin_oauth(&provider, client_id, redirect_uri) {
+                    } => match begin_oauth(&mut client, provider, client_id, redirect_uri) {
                         Ok(authorization) => {
+                            let provider = authorization.provider.to_string();
                             sink.emit(
                                 request_id,
                                 Event::ConnectionStateChanged {
                                     state: ConnectionState::Authorizing,
-                                    provider: Some(provider),
+                                    provider: Some(provider.clone()),
                                 },
                             );
                             sink.emit(
@@ -347,13 +362,30 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                                 request_id,
                                 Event::ConnectionStateChanged {
                                     state: ConnectionState::Disconnected,
-                                    provider: None,
+                                    provider: selected_backend_id(&client),
                                 },
                             );
                         }
                     },
                     Command::CancelOauth => {
                         client.cancel_oauth();
+                        sink.emit(
+                            request_id,
+                            Event::ConnectionStateChanged {
+                                state: ConnectionState::Disconnected,
+                                provider: selected_backend_id(&client),
+                            },
+                        );
+                    }
+                    Command::ClearBackendSelection => {
+                        stop_all_live_tasks(&mut live_tasks).await;
+                        stop_task(&mut catalog_task).await;
+                        if let Ok(mut games) = latest_games.lock() {
+                            games.clear();
+                        }
+                        game_reviews.clear();
+                        client.clear_backend_selection();
+                        sink.emit(request_id, Event::BackendSelectionChanged { backend: None });
                         sink.emit(
                             request_id,
                             Event::ConnectionStateChanged {
@@ -367,7 +399,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             request_id,
                             Event::ConnectionStateChanged {
                                 state: ConnectionState::Connecting,
-                                provider: None,
+                                provider: selected_backend_id(&client),
                             },
                         );
                         match client.complete_oauth(&callback_url).await {
@@ -405,7 +437,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                                     request_id,
                                     Event::ConnectionStateChanged {
                                         state: ConnectionState::Disconnected,
-                                        provider: None,
+                                        provider: selected_backend_id(&client),
                                     },
                                 );
                             }
@@ -573,6 +605,48 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                                     },
                                 );
                             }
+                        }
+                    }
+                    Command::SelectBackend { backend } => {
+                        match client.select_backend(&backend).await {
+                            Ok(selection) => {
+                                stop_all_live_tasks(&mut live_tasks).await;
+                                stop_task(&mut catalog_task).await;
+                                if let Ok(mut games) = latest_games.lock() {
+                                    games.clear();
+                                }
+                                game_reviews.clear();
+                                sink.emit(
+                                    request_id,
+                                    Event::BackendSelectionChanged {
+                                        backend: Some(Box::new(selection.backend.clone())),
+                                    },
+                                );
+                                if let Some(account) = selection.account {
+                                    sink.emit(
+                                        request_id,
+                                        Event::AccountUpdated {
+                                            account: account.clone(),
+                                        },
+                                    );
+                                    sink.emit(
+                                        request_id,
+                                        Event::ConnectionStateChanged {
+                                            state: ConnectionState::Connected,
+                                            provider: Some(account.provider.to_string()),
+                                        },
+                                    );
+                                } else {
+                                    sink.emit(
+                                        request_id,
+                                        Event::ConnectionStateChanged {
+                                            state: ConnectionState::Disconnected,
+                                            provider: Some(selection.backend.id.to_string()),
+                                        },
+                                    );
+                                }
+                            }
+                            Err(error) => sink.emit(request_id, Event::Error { error }),
                         }
                     }
                     Command::CreateBotGame {
@@ -790,7 +864,7 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
                             request_id,
                             Event::ConnectionStateChanged {
                                 state: ConnectionState::Disconnected,
-                                provider: None,
+                                provider: selected_backend_id(&client),
                             },
                         );
                     }
@@ -801,6 +875,29 @@ async fn run_worker(mut receiver: mpsc::UnboundedReceiver<WorkerMessage>, sink: 
 
     stop_all_live_tasks(&mut live_tasks).await;
     stop_task(&mut catalog_task).await;
+}
+
+fn begin_oauth(
+    client: &mut Client,
+    provider: Option<String>,
+    client_id: Option<String>,
+    redirect_uri: Option<String>,
+) -> Result<libchess::OAuthAuthorization, LibChessError> {
+    match (provider, client_id, redirect_uri) {
+        (None, None, None) => client.begin_selected_oauth(),
+        (Some(provider), Some(client_id), Some(redirect_uri)) => {
+            client.begin_oauth(&provider, client_id, redirect_uri)
+        }
+        _ => Err(LibChessError::invalid_input(
+            "OAuth configuration must be omitted or supplied as one complete legacy configuration",
+        )),
+    }
+}
+
+fn selected_backend_id(client: &Client) -> Option<String> {
+    client
+        .selected_backend()
+        .map(|backend| backend.id.to_string())
 }
 
 fn review_position(review: &GameReview, ply: usize) -> Result<BoardState, LibChessError> {
@@ -1032,6 +1129,8 @@ mod tests {
             .expect("ready event");
         assert!(ready.contains(r#""type":"ready""#));
         assert!(ready.contains(r#""id":"lichess""#));
+        assert!(ready.contains(r#""id":"stockfish""#));
+        assert!(ready.contains(r#""kind":"local_engine""#));
         assert!(ready.contains(r#""bot_opponents""#));
         assert!(ready.contains(r#""id":"level-1""#));
         assert!(ready.contains(r#""game_review""#));
@@ -1108,6 +1207,134 @@ mod tests {
         assert!(custom_presentation_event.contains(r#""piece_theme":"blue-pieces""#));
         assert!(custom_presentation_event.contains(r#""display_name":"Night Board""#));
         assert!(custom_presentation_event.contains(r#""display_name":"Blue Pieces""#));
+
+        // SAFETY: This is the only destroy and no sends run concurrently.
+        unsafe { libchess_client_destroy(client) };
+        drop(sender);
+    }
+
+    #[test]
+    fn selects_and_plays_through_the_local_engine_protocol() {
+        let (sender, receiver) = std_mpsc::channel::<String>();
+        let sender = Box::new(sender);
+        let context = (&*sender as *const std_mpsc::Sender<String>)
+            .cast_mut()
+            .cast();
+        // SAFETY: The boxed sender outlives the client and callback.
+        let client = unsafe { libchess_client_create(Some(collect_event), context) };
+        assert!(!client.is_null());
+
+        let ready = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("ready event");
+        let ready: serde_json::Value = serde_json::from_str(&ready).expect("ready JSON");
+        let stockfish_available = ready["providers"]
+            .as_array()
+            .and_then(|providers| {
+                providers
+                    .iter()
+                    .find(|provider| provider["id"] == "stockfish")
+            })
+            .and_then(|provider| provider["available"].as_bool())
+            .unwrap_or(false);
+        if !stockfish_available {
+            // SAFETY: This is the only destroy and no sends run concurrently.
+            unsafe { libchess_client_destroy(client) };
+            drop(sender);
+            return;
+        }
+
+        let select = br#"{"version":1,"request_id":"select-local","type":"select_backend","backend":"stockfish"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, select.as_ptr(), select.len()) },
+            SEND_OK
+        );
+        let selected = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("selection event");
+        assert!(selected.contains(r#""type":"backend_selection_changed""#));
+        assert!(selected.contains(r#""id":"stockfish""#));
+        let account = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("local account event");
+        assert!(account.contains(r#""type":"account_updated""#));
+        let connected = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("local connection event");
+        assert!(connected.contains(r#""state":"connected""#));
+
+        let create = br#"{"version":1,"request_id":"create-local","type":"create_bot_game","opponent_id":"skill-0","variant_id":"standard","time_control":{"type":"unlimited"},"color":"white"}"#;
+        assert_eq!(
+            unsafe { libchess_client_send(client, create.as_ptr(), create.len()) },
+            SEND_OK
+        );
+        let created = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("local game event");
+        let created: serde_json::Value = serde_json::from_str(&created).expect("game JSON");
+        assert_eq!(created["type"], "bot_game_created");
+        assert_eq!(created["game"]["url"], "");
+        assert_eq!(created["game"]["speed"], "unlimited");
+        let game_id = created["game"]["id"]
+            .as_str()
+            .expect("local game id")
+            .to_owned();
+
+        let start = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "request_id": "start-local",
+            "type": "start_live_game",
+            "game_id": game_id,
+            "player_color": "white"
+        }))
+        .expect("start command");
+        assert_eq!(
+            unsafe { libchess_client_send(client, start.as_ptr(), start.len()) },
+            SEND_OK
+        );
+        let initial = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("initial local snapshot");
+        assert!(initial.contains(r#""type":"live_game_updated""#));
+
+        let play = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "request_id": "move-local",
+            "type": "play_move",
+            "game_id": game_id,
+            "move_id": "e2e4"
+        }))
+        .expect("move command");
+        assert_eq!(
+            unsafe { libchess_client_send(client, play.as_ptr(), play.len()) },
+            SEND_OK
+        );
+        let mut predicted = false;
+        let mut authoritative_reply = false;
+        let mut submitted = false;
+        for _ in 0..6 {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("local move event");
+            let event: serde_json::Value = serde_json::from_str(&event).expect("move event JSON");
+            match event["type"].as_str() {
+                Some("move_predicted") => predicted = true,
+                Some("move_submitted") => submitted = true,
+                Some("live_game_updated") => {
+                    authoritative_reply = event["live_game"]["state"]["board"]["moves"]
+                        .as_array()
+                        .is_some_and(|moves| moves.len() == 2);
+                }
+                Some("error") => panic!("local move failed: {event}"),
+                _ => {}
+            }
+            if predicted && authoritative_reply && submitted {
+                break;
+            }
+        }
+        assert!(predicted);
+        assert!(authoritative_reply);
+        assert!(submitted);
 
         // SAFETY: This is the only destroy and no sends run concurrently.
         unsafe { libchess_client_destroy(client) };

@@ -4,26 +4,27 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use libchess_board::{BuiltinBoardProvider, apply_custom_board_theme, apply_custom_piece_theme};
 pub use libchess_core::{
-    AccessToken, Account, BOARD_CUSTOMIZATION_STATE_VERSION, BoardAnimationCurve,
-    BoardAnimationRule, BoardAsset, BoardAssetKind, BoardColorOverrides, BoardCustomizationState,
-    BoardMetrics, BoardMotion, BoardPalette, BoardPiece, BoardPieceAsset, BoardPresentation,
-    BoardProvider, BoardProviderDescriptor, BoardProviderId, BoardState, BoardStyle,
-    BoardThemeDescriptor, BoardThemeId, BoardZoomPreset, BoardZoomPresetId, BoardZoomRules,
-    BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl, BotOpponent, BotOpponentId,
-    ChessContext, ClockTimeControl, ClockTimeControlOptions, ColorPreference, CustomBoardTheme,
-    CustomPieceAsset, CustomPieceAssets, CustomPieceTheme, ErrorKind, GameExport, GameHistoryEntry,
-    GameHistoryPage, GameHistoryRequest, GameId, GameMoveEvaluation, GameMoveJudgment,
-    GameMoveJudgmentKind, GameOpening, GameReview, GameReviewMove, GameStatus, GameVariant,
-    GameVariantId, LegalMove, LibChessError, LiveChatMessage, LiveGame, LiveGameAction,
-    LiveGameCatalogEvent, LiveGameCatalogEventSink, LiveGameClock, LiveGameEvent,
-    LiveGameEventSink, LiveGamePlayer, LiveGameRequest, LiveGameState, LiveGameSummary,
-    MoveSubmission, OAuthAuthorization, OAuthClientConfiguration, OAuthToken, PieceAssets,
-    PieceColorOverrides, PieceMetrics, PiecePalette, PieceRole, PieceStyle, PieceThemeDescriptor,
-    PieceThemeId, PlatformBackend, PlatformBackendFactory, PlatformCapability,
-    PlatformOAuthSession, PlayerColor, PocketPiece, ProviderDescriptor, ProviderId, RgbaColor,
-    ThemeColorAdjustment, ensure_engine_allowed,
+    AccessToken, Account, BOARD_CUSTOMIZATION_STATE_VERSION, BackendConnection, BackendIcon,
+    BackendKind, BoardAnimationCurve, BoardAnimationRule, BoardAsset, BoardAssetKind,
+    BoardColorOverrides, BoardCustomizationState, BoardMetrics, BoardMotion, BoardPalette,
+    BoardPiece, BoardPieceAsset, BoardPresentation, BoardProvider, BoardProviderDescriptor,
+    BoardProviderId, BoardState, BoardStyle, BoardThemeDescriptor, BoardThemeId, BoardZoomPreset,
+    BoardZoomPresetId, BoardZoomRules, BotGame, BotGameOptions, BotGameRequest, BotGameTimeControl,
+    BotOpponent, BotOpponentId, ChessContext, ClockTimeControl, ClockTimeControlOptions,
+    ColorPreference, CustomBoardTheme, CustomPieceAsset, CustomPieceAssets, CustomPieceTheme,
+    ErrorKind, GameExport, GameHistoryEntry, GameHistoryPage, GameHistoryRequest, GameId,
+    GameMoveEvaluation, GameMoveJudgment, GameMoveJudgmentKind, GameOpening, GameReview,
+    GameReviewMove, GameStatus, GameVariant, GameVariantId, LegalMove, LibChessError,
+    LiveChatMessage, LiveGame, LiveGameAction, LiveGameCatalogEvent, LiveGameCatalogEventSink,
+    LiveGameClock, LiveGameEvent, LiveGameEventSink, LiveGamePlayer, LiveGameRequest,
+    LiveGameState, LiveGameSummary, MoveSubmission, OAuthAuthorization, OAuthClientConfiguration,
+    OAuthToken, PieceAssets, PieceColorOverrides, PieceMetrics, PiecePalette, PieceRole,
+    PieceStyle, PieceThemeDescriptor, PieceThemeId, PlatformBackend, PlatformBackendFactory,
+    PlatformCapability, PlatformOAuthSession, PlayerColor, PocketPiece, ProviderDescriptor,
+    ProviderId, RgbaColor, ThemeColorAdjustment, ensure_engine_allowed,
 };
 use libchess_lichess::LichessFactory;
+use libchess_stockfish::StockfishFactory;
 
 pub struct ClientBuilder {
     factories: BTreeMap<ProviderId, Arc<dyn PlatformBackendFactory>>,
@@ -43,6 +44,7 @@ impl ClientBuilder {
     pub fn with_builtin_providers() -> Self {
         Self::empty()
             .register(LichessFactory::default())
+            .register(StockfishFactory::default())
             .register_board_provider(BuiltinBoardProvider::default())
     }
 
@@ -68,6 +70,7 @@ impl ClientBuilder {
             default_board_provider: self.default_board_provider,
             custom_board_themes: BTreeMap::new(),
             custom_piece_themes: BTreeMap::new(),
+            selected_backend: None,
             backend: None,
             account: None,
             oauth_session: None,
@@ -87,6 +90,7 @@ pub struct Client {
     default_board_provider: Option<BoardProviderId>,
     custom_board_themes: BTreeMap<(BoardProviderId, BoardThemeId), CustomBoardTheme>,
     custom_piece_themes: BTreeMap<(BoardProviderId, PieceThemeId), CustomPieceTheme>,
+    selected_backend: Option<ProviderId>,
     backend: Option<Arc<dyn PlatformBackend>>,
     account: Option<Account>,
     oauth_session: Option<Box<dyn PlatformOAuthSession>>,
@@ -96,6 +100,11 @@ pub struct OAuthConnection {
     pub account: Account,
     pub access_token: AccessToken,
     pub expires_in_seconds: u64,
+}
+
+pub struct BackendSelection {
+    pub backend: ProviderDescriptor,
+    pub account: Option<Account>,
 }
 
 impl Client {
@@ -108,6 +117,11 @@ impl Client {
             .values()
             .map(|factory| factory.descriptor().clone())
             .collect()
+    }
+
+    pub fn selected_backend(&self) -> Option<&ProviderDescriptor> {
+        let id = self.selected_backend.as_ref()?;
+        self.factories.get(id).map(|factory| factory.descriptor())
     }
 
     pub fn board_providers(&self) -> Vec<BoardProviderDescriptor> {
@@ -415,8 +429,50 @@ impl Client {
         provider: &str,
         access_token: String,
     ) -> Result<Account, LibChessError> {
+        self.selected_backend = Some(ProviderId::new(provider)?);
         self.connect_with_access_token(provider, AccessToken::new(access_token)?)
             .await
+    }
+
+    pub async fn select_backend(
+        &mut self,
+        backend: &str,
+    ) -> Result<BackendSelection, LibChessError> {
+        let id = ProviderId::new(backend)?;
+        let factory = self.factories.get(&id).cloned().ok_or_else(|| {
+            LibChessError::unsupported(format!("backend '{backend}' is not installed"))
+        })?;
+        let descriptor = factory.descriptor().clone();
+        if !descriptor.available {
+            return Err(LibChessError::unsupported(
+                descriptor
+                    .unavailable_reason
+                    .clone()
+                    .unwrap_or_else(|| format!("backend '{backend}' is unavailable")),
+            ));
+        }
+
+        let local_connection = match &descriptor.connection {
+            BackendConnection::Local => {
+                let active = factory.create_local()?;
+                let account = active.account().await?;
+                Some((active, account))
+            }
+            BackendConnection::OAuthPkce { .. } => None,
+        };
+
+        self.disconnect();
+        self.selected_backend = Some(id);
+        let account = local_connection.map(|(active, account)| {
+            self.backend = Some(active);
+            self.account = Some(account.clone());
+            account
+        });
+
+        Ok(BackendSelection {
+            backend: descriptor,
+            account,
+        })
     }
 
     async fn connect_with_access_token(
@@ -432,6 +488,7 @@ impl Client {
         let account = backend.account().await?;
 
         self.backend = Some(backend);
+        self.selected_backend = Some(id);
         self.account = Some(account.clone());
         Ok(account)
     }
@@ -447,6 +504,21 @@ impl Client {
             LibChessError::unsupported(format!("provider '{provider}' is not installed"))
         })?;
         let configuration = OAuthClientConfiguration::new(client_id, redirect_uri)?;
+        let session = factory.begin_oauth(configuration)?;
+        let authorization = session.authorization().clone();
+        self.oauth_session = Some(session);
+        Ok(authorization)
+    }
+
+    pub fn begin_selected_oauth(&mut self) -> Result<OAuthAuthorization, LibChessError> {
+        let id = self
+            .selected_backend
+            .as_ref()
+            .ok_or_else(|| LibChessError::invalid_input("no backend is selected"))?;
+        let factory = self.factories.get(id).ok_or_else(|| {
+            LibChessError::unsupported(format!("backend '{id}' is not installed"))
+        })?;
+        let configuration = factory.descriptor().connection.oauth_configuration()?;
         let session = factory.begin_oauth(configuration)?;
         let authorization = session.authorization().clone();
         self.oauth_session = Some(session);
@@ -469,6 +541,7 @@ impl Client {
         let account = self
             .connect_with_access_token(provider.as_str(), access_token)
             .await?;
+        self.selected_backend = Some(provider);
 
         Ok(OAuthConnection {
             account,
@@ -551,6 +624,11 @@ impl Client {
         self.backend = None;
     }
 
+    pub fn clear_backend_selection(&mut self) {
+        self.disconnect();
+        self.selected_backend = None;
+    }
+
     pub fn account(&self) -> Option<&Account> {
         self.account.as_ref()
     }
@@ -571,50 +649,49 @@ mod tests {
         let client = Client::new();
         let providers = client.providers();
 
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].id.as_str(), "lichess");
-        assert_eq!(providers[0].web_url, "https://lichess.org/");
+        assert_eq!(providers.len(), 2);
+        let lichess = providers
+            .iter()
+            .find(|provider| provider.id.as_str() == "lichess")
+            .expect("Lichess backend");
+        let stockfish = providers
+            .iter()
+            .find(|provider| provider.id.as_str() == "stockfish")
+            .expect("Stockfish backend");
+        assert_eq!(lichess.kind, BackendKind::Platform);
+        assert_eq!(lichess.web_url.as_deref(), Some("https://lichess.org/"));
+        assert_eq!(stockfish.kind, BackendKind::LocalEngine);
+        assert!(stockfish.web_url.is_none());
+        assert!(lichess.capabilities.contains(&PlatformCapability::Account));
         assert!(
-            providers[0]
-                .capabilities
-                .contains(&PlatformCapability::Account)
-        );
-        assert!(
-            providers[0]
+            lichess
                 .capabilities
                 .contains(&PlatformCapability::OAuthPkce)
         );
-        assert!(
-            providers[0]
-                .capabilities
-                .contains(&PlatformCapability::BotGames)
-        );
-        assert_eq!(providers[0].bot_opponents.len(), 8);
-        assert_eq!(providers[0].bot_opponents[0].id.as_str(), "level-1");
-        let bot_options = providers[0]
-            .bot_game_options
-            .as_ref()
-            .expect("bot-game options");
+        assert!(lichess.capabilities.contains(&PlatformCapability::BotGames));
+        assert_eq!(lichess.bot_opponents.len(), 8);
+        assert_eq!(lichess.bot_opponents[0].id.as_str(), "level-1");
+        let bot_options = lichess.bot_game_options.as_ref().expect("bot-game options");
         assert_eq!(bot_options.variants.len(), 10);
         assert_eq!(bot_options.correspondence_days.len(), 7);
         assert!(bot_options.unlimited);
         assert!(
-            providers[0]
+            lichess
                 .capabilities
                 .contains(&PlatformCapability::LiveGames)
         );
         assert!(
-            providers[0]
+            lichess
                 .capabilities
                 .contains(&PlatformCapability::RealtimeEvents)
         );
         assert!(
-            providers[0]
+            lichess
                 .capabilities
                 .contains(&PlatformCapability::GameHistory)
         );
         assert!(
-            providers[0]
+            lichess
                 .capabilities
                 .contains(&PlatformCapability::PgnExport)
         );
