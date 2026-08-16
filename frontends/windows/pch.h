@@ -1,11 +1,13 @@
 #pragma once
 
 #include <windows.h>
+#include <windowsx.h>
 #include <unknwn.h>
 #include <restrictederrorinfo.h>
 #include <hstring.h>
 #include <wincred.h>
 #include <shlobj.h>
+#include <commctrl.h>
 #include <dwmapi.h>
 #undef GetCurrentTime
 

@@ -1104,9 +1104,9 @@
                                         HorizontalAlignment="Stretch"
                                         Background="Transparent"
                                         DefaultLabelPosition="Collapsed">
-                                <AppBarButton Label="Appearance">
+                                <AppBarButton Click="GameAppearance_Click" Label="Appearance">
                                     <AppBarButton.Icon><FontIcon Glyph="&#xE790;" /></AppBarButton.Icon>
-                                    <AppBarButton.Flyout>
+                                    <FlyoutBase.AttachedFlyout>
                                         <Flyout Placement="TopEdgeAlignedRight">
                                             <StackPanel Width="280" Spacing="12">
                                                 <TextBlock Text="Board appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
@@ -1137,7 +1137,7 @@
                                                     Style="{StaticResource CaptionTextBlockStyle}" />
                                             </StackPanel>
                                         </Flyout>
-                                    </AppBarButton.Flyout>
+                                    </FlyoutBase.AttachedFlyout>
                                 </AppBarButton>
                                 <AppBarButton Click="FloatingBoard_Click" Label="Floating board">
                                     <AppBarButton.Icon><FontIcon Glyph="&#xE7F4;" /></AppBarButton.Icon>

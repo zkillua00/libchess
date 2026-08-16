@@ -15,6 +15,7 @@ namespace
     constexpr wchar_t OAuthRedirectUri[] = L"org.libchess.windows://oauth/lichess";
     constexpr wchar_t PreferenceKeyPath[] = L"Software\\LibChess\\Windows";
     constexpr wchar_t CustomizationFileName[] = L"board-customization.json";
+    constexpr UINT_PTR FloatingBoardSubclassId = 0x4C434642;
 
     using namespace winrt;
     using namespace Windows::Data::Json;
@@ -508,8 +509,8 @@ namespace winrt::LibChess::WinUI::implementation
                     WritePreference(L"PieceTheme", board_presentation_.piece_theme);
                     auto const settings_visible =
                         AppearancePane().Visibility() == Visibility::Visible;
-                    if (settings_visible) PopulateBoardAppearance();
-                    else PopulateSettingsAppearance();
+                    if (settings_visible) PopulateSettingsAppearance();
+                    else PopulateBoardAppearance();
                     populating_board_appearance_ = true;
                     if (settings_visible)
                     {
@@ -3507,6 +3508,15 @@ namespace winrt::LibChess::WinUI::implementation
         RequestBoardPresentation(BoardProviderPicker(), BoardThemePicker(), PieceThemePicker());
     }
 
+    void MainWindow::GameAppearance_Click(
+        Windows::Foundation::IInspectable const& sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        PopulateBoardAppearance();
+        Microsoft::UI::Xaml::Controls::Primitives::FlyoutBase::ShowAttachedFlyout(
+            sender.as<Microsoft::UI::Xaml::FrameworkElement>());
+    }
+
     void MainWindow::SettingsBoardAppearancePicker_SelectionChanged(
         Windows::Foundation::IInspectable const& sender,
         Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&)
@@ -4564,34 +4574,179 @@ namespace winrt::LibChess::WinUI::implementation
         return menu;
     }
 
+    LRESULT CALLBACK MainWindow::FloatingBoardSubclassProc(
+        HWND hwnd,
+        UINT message,
+        WPARAM wparam,
+        LPARAM lparam,
+        UINT_PTR subclass_id,
+        DWORD_PTR reference_data)
+    {
+        auto* self = reinterpret_cast<MainWindow*>(reference_data);
+        if (!self)
+        {
+            return DefSubclassProc(hwnd, message, wparam, lparam);
+        }
+
+        switch (message)
+        {
+        case WM_NCCALCSIZE:
+            // Make the whole HWND client area. This removes both the caption and
+            // the otherwise-reserved resize-frame strip while retaining resize
+            // semantics through WM_NCHITTEST below.
+            return 0;
+        case WM_NCACTIVATE:
+            return TRUE;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_NCHITTEST:
+        {
+            RECT rect{};
+            GetWindowRect(hwnd, &rect);
+            auto const dpi = GetDpiForWindow(hwnd);
+            auto const resize_inset = (std::max)(6,
+                GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi)
+                    + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi));
+            POINT const point{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+            auto const left = point.x >= rect.left && point.x < rect.left + resize_inset;
+            auto const right = point.x < rect.right && point.x >= rect.right - resize_inset;
+            auto const top = point.y >= rect.top && point.y < rect.top + resize_inset;
+            auto const bottom = point.y < rect.bottom && point.y >= rect.bottom - resize_inset;
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bottom && left) return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
+            return HTCLIENT;
+        }
+        case WM_GETMINMAXINFO:
+        {
+            auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
+            auto const dpi = GetDpiForWindow(hwnd);
+            auto const minimum = static_cast<LONG>(240.0 * dpi / 96.0);
+            auto const maximum = static_cast<LONG>(960.0 * dpi / 96.0);
+            limits->ptMinTrackSize = { minimum, minimum };
+            limits->ptMaxTrackSize = { maximum, maximum };
+            return 0;
+        }
+        case WM_ENTERSIZEMOVE:
+            GetWindowRect(hwnd, &self->floating_board_resize_origin_window_);
+            break;
+        case WM_SIZING:
+        {
+            auto* rect = reinterpret_cast<RECT*>(lparam);
+            auto origin = self->floating_board_resize_origin_window_;
+            if (origin.right <= origin.left || origin.bottom <= origin.top)
+            {
+                GetWindowRect(hwnd, &origin);
+            }
+            auto const proposed_width = rect->right - rect->left;
+            auto const proposed_height = rect->bottom - rect->top;
+            auto const origin_width = origin.right - origin.left;
+            auto const origin_height = origin.bottom - origin.top;
+            auto const horizontal = wparam == WMSZ_LEFT || wparam == WMSZ_RIGHT;
+            auto const vertical = wparam == WMSZ_TOP || wparam == WMSZ_BOTTOM;
+            auto const use_width = horizontal || (!vertical
+                && std::abs(proposed_width - origin_width)
+                    >= std::abs(proposed_height - origin_height));
+            auto const dpi = GetDpiForWindow(hwnd);
+            auto const minimum = static_cast<LONG>(240.0 * dpi / 96.0);
+            auto const maximum = static_cast<LONG>(960.0 * dpi / 96.0);
+            auto const extent = (std::clamp)(
+                use_width ? proposed_width : proposed_height, minimum, maximum);
+            switch (wparam)
+            {
+            case WMSZ_LEFT:
+                rect->left = rect->right - extent;
+                rect->bottom = rect->top + extent;
+                break;
+            case WMSZ_RIGHT:
+                rect->right = rect->left + extent;
+                rect->bottom = rect->top + extent;
+                break;
+            case WMSZ_TOP:
+                rect->top = rect->bottom - extent;
+                rect->right = rect->left + extent;
+                break;
+            case WMSZ_BOTTOM:
+                rect->bottom = rect->top + extent;
+                rect->right = rect->left + extent;
+                break;
+            case WMSZ_TOPLEFT:
+                rect->left = rect->right - extent;
+                rect->top = rect->bottom - extent;
+                break;
+            case WMSZ_TOPRIGHT:
+                rect->right = rect->left + extent;
+                rect->top = rect->bottom - extent;
+                break;
+            case WMSZ_BOTTOMLEFT:
+                rect->left = rect->right - extent;
+                rect->bottom = rect->top + extent;
+                break;
+            case WMSZ_BOTTOMRIGHT:
+                rect->right = rect->left + extent;
+                rect->bottom = rect->top + extent;
+                break;
+            default:
+                break;
+            }
+            return TRUE;
+        }
+        case WM_EXITSIZEMOVE:
+            self->SaveFloatingBoardFrame();
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, FloatingBoardSubclassProc, subclass_id);
+            if (self->floating_board_hwnd_ == hwnd)
+            {
+                self->floating_board_hwnd_ = nullptr;
+            }
+            break;
+        default:
+            break;
+        }
+        return DefSubclassProc(hwnd, message, wparam, lparam);
+    }
+
     void MainWindow::ConfigureFloatingBoardWindow()
     {
         auto const app_window = floating_board_window_.AppWindow();
         app_window.IsShownInSwitchers(false);
         auto const presenter = app_window.Presenter().as<Microsoft::UI::Windowing::OverlappedPresenter>();
-        // Retain Windows' native resize frame but remove the caption completely.
-        // The XAML window also extends through that removed caption area so the
-        // board, rather than an empty title-bar strip, occupies the whole panel.
-        presenter.SetBorderAndTitleBar(true, false);
+        presenter.SetBorderAndTitleBar(false, false);
         presenter.IsAlwaysOnTop(true);
         presenter.IsResizable(true);
         presenter.IsMaximizable(false);
         presenter.IsMinimizable(false);
 
-        HWND floating_hwnd = nullptr;
-        check_hresult(floating_board_window_.as<::IWindowNative>()->get_WindowHandle(&floating_hwnd));
+        check_hresult(floating_board_window_.as<::IWindowNative>()->get_WindowHandle(&floating_board_hwnd_));
         HWND owner_hwnd = nullptr;
         Microsoft::UI::Xaml::Window owner = *this;
         check_hresult(owner.as<::IWindowNative>()->get_WindowHandle(&owner_hwnd));
-        auto const extended_style = GetWindowLongPtrW(floating_hwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(floating_hwnd, GWL_EXSTYLE,
+        auto style = GetWindowLongPtrW(floating_board_hwnd_, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        style |= WS_POPUP | WS_THICKFRAME;
+        SetWindowLongPtrW(floating_board_hwnd_, GWL_STYLE, style);
+        auto const extended_style = GetWindowLongPtrW(floating_board_hwnd_, GWL_EXSTYLE);
+        SetWindowLongPtrW(floating_board_hwnd_, GWL_EXSTYLE,
             extended_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
-        SetWindowLongPtrW(floating_hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner_hwnd));
-        SetWindowPos(floating_hwnd, nullptr, 0, 0, 0, 0,
+        SetWindowLongPtrW(
+            floating_board_hwnd_, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner_hwnd));
+        check_bool(SetWindowSubclass(
+            floating_board_hwnd_, FloatingBoardSubclassProc,
+            FloatingBoardSubclassId, reinterpret_cast<DWORD_PTR>(this)));
+        SetWindowPos(floating_board_hwnd_, nullptr, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
         static_cast<void>(DwmSetWindowAttribute(
-            floating_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
+            floating_board_hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
+        constexpr COLORREF border_color = 0xFFFFFFFE;
+        static_cast<void>(DwmSetWindowAttribute(
+            floating_board_hwnd_, DWMWA_BORDER_COLOR, &border_color, sizeof(border_color)));
 
         auto const dpi = GetDpiForWindow(owner_hwnd);
         auto const minimum = static_cast<std::int32_t>(240.0 * dpi / 96.0);
@@ -4642,72 +4797,7 @@ namespace winrt::LibChess::WinUI::implementation
         }
         catch (...) {}
         app_window.MoveAndResize({ x, y, extent, extent });
-
-        floating_board_non_client_ = Microsoft::UI::Input::InputNonClientPointerSource::
-            GetForWindowId(app_window.Id());
-        floating_board_rect_changing_token_ = floating_board_non_client_.WindowRectChanging(
-            [minimum, maximum](auto const&, Microsoft::UI::Input::WindowRectChangingEventArgs const& args)
-            {
-                auto const old_rect = args.OldWindowRect();
-                auto const proposed = args.NewWindowRect();
-                auto const operation = args.MoveSizeOperation();
-                if (operation == Microsoft::UI::Input::MoveSizeOperation::Move) return;
-                using Microsoft::UI::Input::MoveSizeOperation;
-                auto const horizontal = operation == MoveSizeOperation::SizeLeft
-                    || operation == MoveSizeOperation::SizeRight;
-                auto const vertical = operation == MoveSizeOperation::SizeTop
-                    || operation == MoveSizeOperation::SizeBottom;
-                auto const use_width = horizontal || (!vertical
-                    && std::abs(proposed.Width - old_rect.Width)
-                        >= std::abs(proposed.Height - old_rect.Height));
-                auto const extent = (std::clamp)(use_width ? proposed.Width : proposed.Height,
-                    minimum, maximum);
-                auto rect = proposed;
-                rect.Width = extent;
-                rect.Height = extent;
-                switch (operation)
-                {
-                case MoveSizeOperation::SizeLeft:
-                    rect.X = old_rect.X + old_rect.Width - extent;
-                    rect.Y = old_rect.Y + (old_rect.Height - extent) / 2;
-                    break;
-                case MoveSizeOperation::SizeRight:
-                    rect.X = old_rect.X;
-                    rect.Y = old_rect.Y + (old_rect.Height - extent) / 2;
-                    break;
-                case MoveSizeOperation::SizeTop:
-                    rect.X = old_rect.X + (old_rect.Width - extent) / 2;
-                    rect.Y = old_rect.Y + old_rect.Height - extent;
-                    break;
-                case MoveSizeOperation::SizeBottom:
-                    rect.X = old_rect.X + (old_rect.Width - extent) / 2;
-                    rect.Y = old_rect.Y;
-                    break;
-                case MoveSizeOperation::SizeTopLeft:
-                    rect.X = old_rect.X + old_rect.Width - extent;
-                    rect.Y = old_rect.Y + old_rect.Height - extent;
-                    break;
-                case MoveSizeOperation::SizeTopRight:
-                    rect.X = old_rect.X;
-                    rect.Y = old_rect.Y + old_rect.Height - extent;
-                    break;
-                case MoveSizeOperation::SizeBottomLeft:
-                    rect.X = old_rect.X + old_rect.Width - extent;
-                    rect.Y = old_rect.Y;
-                    break;
-                case MoveSizeOperation::SizeBottomRight:
-                    rect.X = old_rect.X;
-                    rect.Y = old_rect.Y;
-                    break;
-                default: break;
-                }
-                args.NewWindowRect(rect);
-            });
-        floating_board_rect_changed_token_ = floating_board_non_client_.WindowRectChanged(
-            [this](auto const&, auto const&)
-            {
-                SaveFloatingBoardFrame();
-            });
+        GetWindowRect(floating_board_hwnd_, &floating_board_resize_origin_window_);
     }
 
     void MainWindow::SaveFloatingBoardFrame()
@@ -4843,7 +4933,12 @@ namespace winrt::LibChess::WinUI::implementation
             {
                 floating_board_drag_pending_ = false;
                 floating_board_drag_started_ = false;
-                floating_board_non_client_ = nullptr;
+                if (floating_board_hwnd_)
+                {
+                    RemoveWindowSubclass(
+                        floating_board_hwnd_, FloatingBoardSubclassProc, FloatingBoardSubclassId);
+                    floating_board_hwnd_ = nullptr;
+                }
                 floating_board_root_ = nullptr;
                 floating_board_grid_ = nullptr;
                 floating_board_window_ = nullptr;

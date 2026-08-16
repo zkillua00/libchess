@@ -31,6 +31,9 @@ namespace winrt::LibChess::WinUI::implementation
         void BoardAppearancePicker_SelectionChanged(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
+        void GameAppearance_Click(
+            Windows::Foundation::IInspectable const& sender,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void BoardZoomPicker_SelectionChanged(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
@@ -240,6 +243,13 @@ namespace winrt::LibChess::WinUI::implementation
         void OpenFloatingBoard();
         void ConfigureFloatingBoardWindow();
         void SaveFloatingBoardFrame();
+        static LRESULT CALLBACK FloatingBoardSubclassProc(
+            HWND hwnd,
+            UINT message,
+            WPARAM wparam,
+            LPARAM lparam,
+            UINT_PTR subclass_id,
+            DWORD_PTR reference_data);
         Microsoft::UI::Xaml::Controls::MenuFlyout BuildFloatingBoardMenu();
         void FloatingBoard_PointerPressed(
             Windows::Foundation::IInspectable const&,
@@ -307,10 +317,9 @@ namespace winrt::LibChess::WinUI::implementation
         Microsoft::UI::Xaml::Window floating_board_window_{ nullptr };
         Microsoft::UI::Xaml::Controls::Grid floating_board_root_{ nullptr };
         Microsoft::UI::Xaml::Controls::Grid floating_board_grid_{ nullptr };
-        Microsoft::UI::Input::InputNonClientPointerSource floating_board_non_client_{ nullptr };
         winrt::event_token floating_board_closed_token_{};
-        winrt::event_token floating_board_rect_changing_token_{};
-        winrt::event_token floating_board_rect_changed_token_{};
+        HWND floating_board_hwnd_{ nullptr };
+        RECT floating_board_resize_origin_window_{};
         std::uint32_t floating_board_drag_pointer_id_{ 0 };
         POINT floating_board_drag_origin_cursor_{};
         RECT floating_board_drag_origin_window_{};
