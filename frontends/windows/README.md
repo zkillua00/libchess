@@ -30,10 +30,28 @@ app after a successful build.
 The Windows slice implements backend discovery and selection, Lichess OAuth
 with PKCE in the system browser, per-user protocol activation, secure token
 persistence in Windows Credential Manager, saved-account reconnection, local
-backend connection, backend-advertised game defaults, live-game startup,
-native board rendering, legal click-to-move, and draw/resign commands.
-History/review, board theme selection, SVG piece rendering, promotion choice,
-and packaging remain follow-up work.
+backend connection, backend-advertised game defaults, and ongoing-game
+navigation. The live workspace includes a backend-presented board with native
+SVG support, themes and zoom, rounded chrome, coordinates, layered move/check
+indicators, piece motion, promotions, variant pockets and drops. It also
+includes ticking clock/correspondence/unlimited displays, move history,
+draw/takeback offers, disconnect claims, abort/resign confirmation, stream
+reconnection, and provider browser handoff.
+
+The connected workspace also provides a paged game-history list and a native
+review surface with Rust-reconstructed positions, opening data, move stepping,
+stored evaluations, judgment details, principal variations, and service
+analysis handoff. Backend-generated annotated PGN can be exported through the
+native Windows file picker.
+
+The Appearance page applies Rust-provided board and piece themes globally,
+persists the selection, and creates or edits portable derived themes. Custom
+piece themes can inherit installed assets or import the six validated SVG
+roles. Theme-library state is saved under `%LOCALAPPDATA%\LibChess` and restored
+through the versioned FFI. Live and review boards can also be opened in a
+native, always-on-top secondary WinUI window.
+
+Packaging remains follow-up work.
 
 The unpackaged developer build registers `org.libchess.windows` for the current
 user when the app starts. Windows App Lifecycle redirects the browser callback

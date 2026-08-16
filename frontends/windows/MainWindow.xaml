@@ -165,8 +165,27 @@
                     <NavigationViewItem Content="New game" Tag="new-game">
                         <NavigationViewItem.Icon><SymbolIcon Symbol="Add" /></NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem x:Name="BoardNavigationItem" Content="Board" IsEnabled="False" Tag="board">
+                    <NavigationViewItem
+                        x:Name="BoardNavigationItem"
+                        Content="Games"
+                        Tag="games">
                         <NavigationViewItem.Icon><SymbolIcon Symbol="Play" /></NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="HistoryNavigationItem"
+                        Content="History"
+                        Tag="history">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE81C;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="AppearanceNavigationItem"
+                        Content="Appearance"
+                        Tag="appearance">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE790;" />
+                        </NavigationViewItem.Icon>
                     </NavigationViewItem>
                 </NavigationView.MenuItems>
                 <NavigationView.PaneFooter>
@@ -500,6 +519,415 @@
                         </Grid>
                     </ScrollViewer>
 
+                    <ScrollViewer
+                        x:Name="GamesPane"
+                        HorizontalContentAlignment="Stretch"
+                        HorizontalScrollBarVisibility="Disabled"
+                        Visibility="Collapsed">
+                        <Grid
+                            MaxWidth="940"
+                            Padding="32,28,32,48"
+                            HorizontalAlignment="Center">
+                            <StackPanel Spacing="18">
+                                <StackPanel Spacing="6">
+                                    <TextBlock FontSize="28" FontWeight="SemiBold" Text="Games" />
+                                    <TextBlock
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="Ongoing games from the connected service."
+                                        Style="{StaticResource SubtitleTextBlockStyle}" />
+                                </StackPanel>
+                                <InfoBar
+                                    x:Name="GamesEmptyInfo"
+                                    IsClosable="False"
+                                    IsOpen="False"
+                                    Message="There are no ongoing games."
+                                    Severity="Informational" />
+                                <StackPanel x:Name="GamesListPanel" Spacing="10" />
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
+
+                    <ScrollViewer
+                        x:Name="HistoryPane"
+                        HorizontalContentAlignment="Stretch"
+                        HorizontalScrollBarVisibility="Disabled"
+                        Visibility="Collapsed">
+                        <Grid
+                            MaxWidth="940"
+                            Padding="32,28,32,48"
+                            HorizontalAlignment="Center">
+                            <StackPanel Spacing="18">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="6">
+                                        <TextBlock FontSize="28" FontWeight="SemiBold" Text="Game history" />
+                                        <TextBlock
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Text="Finished games available from the connected service."
+                                            Style="{StaticResource SubtitleTextBlockStyle}" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Click="RefreshHistory_Click"
+                                        Content="Refresh" />
+                                </Grid>
+                                <ProgressBar
+                                    x:Name="HistoryProgress"
+                                    IsIndeterminate="True"
+                                    Visibility="Collapsed" />
+                                <InfoBar
+                                    x:Name="HistoryEmptyInfo"
+                                    IsClosable="False"
+                                    IsOpen="False"
+                                    Message="No finished games were returned."
+                                    Severity="Informational" />
+                                <StackPanel x:Name="HistoryListPanel" Spacing="10" />
+                                <Button
+                                    x:Name="LoadMoreHistoryButton"
+                                    HorizontalAlignment="Center"
+                                    Click="LoadMoreHistory_Click"
+                                    Content="Load more"
+                                    Visibility="Collapsed" />
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
+
+                    <Grid
+                        x:Name="ReviewPane"
+                        MaxWidth="1280"
+                        Padding="32"
+                        HorizontalAlignment="Center"
+                        ColumnSpacing="28"
+                        Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="360" />
+                        </Grid.ColumnDefinitions>
+
+                        <Grid Grid.Column="0">
+                            <Viewbox
+                                x:Name="ReviewBoardViewbox"
+                                MaxWidth="720"
+                                MaxHeight="720"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Stretch"
+                                Stretch="Uniform">
+                                <Grid x:Name="ReviewBoardFrame" Width="640" Height="640">
+                                    <Grid x:Name="ReviewBoardClipHost">
+                                        <Grid x:Name="ReviewBoardGrid" />
+                                    </Grid>
+                                    <Border
+                                        x:Name="ReviewBoardOutline"
+                                        Background="Transparent"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        IsHitTestVisible="False" />
+                                </Grid>
+                            </Viewbox>
+                        </Grid>
+
+                        <Border
+                            Grid.Column="1"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <StackPanel Padding="16,14" Spacing="4">
+                                    <TextBlock x:Name="ReviewTitle" FontWeight="SemiBold" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                    <TextBlock
+                                        x:Name="ReviewSubtitle"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+                                <Rectangle Grid.Row="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <StackPanel Grid.Row="2" Padding="16,12" Spacing="6">
+                                    <TextBlock x:Name="ReviewOpening" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="ReviewEvaluation" FontFamily="Cascadia Mono, Consolas" FontSize="20" />
+                                    <InfoBar
+                                        x:Name="ReviewJudgment"
+                                        IsClosable="False"
+                                        IsOpen="False" />
+                                    <TextBlock
+                                        x:Name="ReviewVariation"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        TextWrapping="Wrap"
+                                        Style="{StaticResource CaptionTextBlockStyle}" />
+                                </StackPanel>
+                                <Rectangle Grid.Row="3" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <ScrollViewer Grid.Row="4" Padding="10,8">
+                                    <StackPanel x:Name="ReviewMovesPanel" Spacing="4" />
+                                </ScrollViewer>
+                                <Rectangle Grid.Row="5" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <StackPanel Grid.Row="6" Padding="10" Spacing="8">
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="0" HorizontalAlignment="Stretch" Click="ReviewFirst_Click" Content="|&lt;" />
+                                        <Button Grid.Column="1" HorizontalAlignment="Stretch" Click="ReviewPrevious_Click" Content="&lt;" />
+                                        <Button Grid.Column="2" HorizontalAlignment="Stretch" Click="ReviewNext_Click" Content="&gt;" />
+                                        <Button Grid.Column="3" HorizontalAlignment="Stretch" Click="ReviewLast_Click" Content="&gt;|" />
+                                    </Grid>
+                                    <Button
+                                        x:Name="OpenAnalysisButton"
+                                        HorizontalAlignment="Stretch"
+                                        Click="OpenAnalysis_Click"
+                                        Content="Open service analysis" />
+                                    <Button
+                                        HorizontalAlignment="Stretch"
+                                        Click="FloatingReviewBoard_Click"
+                                        Content="Open floating board" />
+                                    <Button
+                                        x:Name="ExportPgnButton"
+                                        HorizontalAlignment="Stretch"
+                                        Click="ExportPgn_Click"
+                                        Content="Export annotated PGN…" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <ScrollViewer
+                        x:Name="AppearancePane"
+                        HorizontalContentAlignment="Stretch"
+                        HorizontalScrollBarVisibility="Disabled"
+                        Visibility="Collapsed">
+                        <Grid
+                            MaxWidth="1120"
+                            Padding="32,28,32,48"
+                            HorizontalAlignment="Center">
+                            <StackPanel Spacing="20">
+                                <StackPanel Spacing="6">
+                                    <TextBlock FontSize="28" FontWeight="SemiBold" Text="Board appearance" />
+                                    <TextBlock
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="Choose an installed theme or create portable board and piece themes evaluated by LibChess."
+                                        TextWrapping="Wrap"
+                                        Style="{StaticResource SubtitleTextBlockStyle}" />
+                                </StackPanel>
+
+                                <InfoBar
+                                    x:Name="AppearanceInfoBar"
+                                    IsClosable="True"
+                                    IsOpen="False"
+                                    Severity="Informational" />
+
+                                <Grid ColumnSpacing="20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="380" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border
+                                        Padding="20"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8">
+                                        <StackPanel Spacing="12">
+                                            <TextBlock Text="Active appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                            <ComboBox
+                                                x:Name="SettingsBoardProviderPicker"
+                                                Header="Provider"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="SettingsBoardAppearancePicker_SelectionChanged" />
+                                            <ComboBox
+                                                x:Name="SettingsBoardThemePicker"
+                                                Header="Board"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="SettingsBoardAppearancePicker_SelectionChanged" />
+                                            <ComboBox
+                                                x:Name="SettingsPieceThemePicker"
+                                                Header="Pieces"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="SettingsBoardAppearancePicker_SelectionChanged" />
+                                            <ComboBox
+                                                x:Name="SettingsBoardZoomPicker"
+                                                Header="Board size"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="SettingsBoardZoomPicker_SelectionChanged" />
+                                            <ProgressBar
+                                                x:Name="AppearanceProgress"
+                                                IsIndeterminate="True"
+                                                Visibility="Collapsed" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Viewbox
+                                        Grid.Column="1"
+                                        MaxWidth="440"
+                                        MaxHeight="440"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Stretch="Uniform">
+                                        <Grid Width="400" Height="400">
+                                            <Grid x:Name="AppearancePreviewClipHost">
+                                                <Grid x:Name="AppearancePreviewGrid" />
+                                            </Grid>
+                                            <Border
+                                                x:Name="AppearancePreviewOutline"
+                                                Background="Transparent"
+                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                IsHitTestVisible="False" />
+                                        </Grid>
+                                    </Viewbox>
+                                </Grid>
+
+                                <Expander Header="Create or edit a board theme" IsExpanded="True">
+                                    <Grid Padding="0,16,0,4" ColumnSpacing="24">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="320" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="10">
+                                            <ComboBox
+                                                x:Name="CustomBoardThemePicker"
+                                                Header="Custom theme"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CustomBoardThemePicker_SelectionChanged" />
+                                            <TextBox x:Name="BoardThemeNameBox" Header="Name" PlaceholderText="My board" />
+                                            <TextBox x:Name="BoardThemeIdBox" Header="Identifier" PlaceholderText="my-board" />
+                                            <ComboBox
+                                                x:Name="BoardThemeProviderBox"
+                                                Header="Provider"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="BoardThemeProviderBox_SelectionChanged" />
+                                            <ComboBox x:Name="BoardBaseThemeBox" Header="Base theme" HorizontalAlignment="Stretch" />
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <NumberBox x:Name="BoardHueBox" Header="Hue" Minimum="-180" Maximum="180" SmallChange="1" Value="0" />
+                                                <NumberBox x:Name="BoardSaturationBox" Grid.Column="1" Header="Saturation" Minimum="-100" Maximum="100" SmallChange="1" Value="0" />
+                                                <NumberBox x:Name="BoardBrightnessBox" Grid.Column="2" Header="Brightness" Minimum="-100" Maximum="100" SmallChange="1" Value="0" />
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button Click="NewBoardTheme_Click" Content="New" />
+                                                <Button Click="SaveBoardTheme_Click" Content="Save theme" Style="{StaticResource AccentButtonStyle}" />
+                                                <Button Click="RemoveBoardTheme_Click" Content="Remove" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Grid Grid.Column="1" ColumnSpacing="16" RowSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <StackPanel Spacing="6"><TextBlock Text="Light squares" /><ColorPicker x:Name="BoardLightColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                            <StackPanel Grid.Column="1" Spacing="6"><TextBlock Text="Dark squares" /><ColorPicker x:Name="BoardDarkColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                            <StackPanel Grid.Row="1" Spacing="6"><TextBlock Text="Last move" /><ColorPicker x:Name="BoardLastMoveColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="6"><TextBlock Text="Selection" /><ColorPicker x:Name="BoardSelectionColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                            <StackPanel Grid.Row="2" Spacing="6"><TextBlock Text="Legal moves" /><ColorPicker x:Name="BoardLegalMoveColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                        </Grid>
+                                    </Grid>
+                                </Expander>
+
+                                <Expander Header="Create or edit a piece theme">
+                                    <Grid Padding="0,16,0,4" ColumnSpacing="24">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="320" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="10">
+                                            <ComboBox
+                                                x:Name="CustomPieceThemePicker"
+                                                Header="Custom theme"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CustomPieceThemePicker_SelectionChanged" />
+                                            <TextBox x:Name="PieceThemeNameBox" Header="Name" PlaceholderText="My pieces" />
+                                            <TextBox x:Name="PieceThemeIdBox" Header="Identifier" PlaceholderText="my-pieces" />
+                                            <ComboBox
+                                                x:Name="PieceThemeProviderBox"
+                                                Header="Provider"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="PieceThemeProviderBox_SelectionChanged" />
+                                            <ComboBox x:Name="PieceBaseThemeBox" Header="Base theme" HorizontalAlignment="Stretch" />
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <NumberBox x:Name="PieceHueBox" Header="Hue" Minimum="-180" Maximum="180" SmallChange="1" Value="0" />
+                                                <NumberBox x:Name="PieceSaturationBox" Grid.Column="1" Header="Saturation" Minimum="-100" Maximum="100" SmallChange="1" Value="0" />
+                                                <NumberBox x:Name="PieceBrightnessBox" Grid.Column="2" Header="Brightness" Minimum="-100" Maximum="100" SmallChange="1" Value="0" />
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button Click="ImportPieceSvgFolder_Click" Content="Import SVG folder…" />
+                                                <Button Click="ClearPieceAssets_Click" Content="Use base assets" />
+                                            </StackPanel>
+                                            <TextBlock
+                                                x:Name="PieceAssetsStatus"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="Using assets from the base theme."
+                                                TextWrapping="Wrap"
+                                                Style="{StaticResource CaptionTextBlockStyle}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button Click="NewPieceTheme_Click" Content="New" />
+                                                <Button Click="SavePieceTheme_Click" Content="Save theme" Style="{StaticResource AccentButtonStyle}" />
+                                                <Button Click="RemovePieceTheme_Click" Content="Remove" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Grid Grid.Column="1" ColumnSpacing="16" RowSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <StackPanel Spacing="6"><TextBlock Text="White pieces" /><ColorPicker x:Name="WhitePieceColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                            <StackPanel Grid.Column="1" Spacing="6"><TextBlock Text="Black pieces" /><ColorPicker x:Name="BlackPieceColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                            <StackPanel Grid.Row="1" Spacing="6"><TextBlock Text="Promoted marker" /><ColorPicker x:Name="PromotedMarkerColorPicker" IsAlphaEnabled="True" /></StackPanel>
+                                        </Grid>
+                                    </Grid>
+                                </Expander>
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
+
+                    <StackPanel
+                        x:Name="GameLoadingPane"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="12"
+                        Visibility="Collapsed">
+                        <ProgressRing Width="28" Height="28" IsActive="True" />
+                        <TextBlock
+                            HorizontalAlignment="Center"
+                            FontWeight="SemiBold"
+                            Text="Opening game…" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="Connecting to live updates"
+                            Style="{StaticResource CaptionTextBlockStyle}" />
+                    </StackPanel>
+
                     <Grid
                         x:Name="GamePane"
                         MaxWidth="1280"
@@ -512,95 +940,275 @@
                             <ColumnDefinition Width="320" />
                         </Grid.ColumnDefinitions>
 
-                        <Viewbox
-                            MaxWidth="720"
-                            MaxHeight="720"
-                            HorizontalAlignment="Stretch"
-                            VerticalAlignment="Stretch"
-                            Stretch="Uniform">
-                            <Border
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="4">
-                                <Grid x:Name="BoardGrid" Width="640" Height="640" />
-                            </Border>
-                        </Viewbox>
-
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="16">
-                            <StackPanel Spacing="4">
-                                <TextBlock
-                                    x:Name="GameVariant"
-                                    FontSize="28"
-                                    FontWeight="SemiBold" />
-                                <TextBlock
-                                    x:Name="GameStatus"
-                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                    TextWrapping="Wrap"
-                                    Style="{StaticResource SubtitleTextBlockStyle}" />
-                            </StackPanel>
-                            <Border
-                                Padding="16"
-                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8">
-                                <StackPanel Spacing="14">
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="32" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <FontIcon
-                                            VerticalAlignment="Center"
-                                            FontFamily="Segoe UI Symbol"
-                                            FontSize="22"
-                                            Glyph="&#x265F;" />
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
-                                            <TextBlock x:Name="BlackPlayer" FontWeight="SemiBold" />
-                                            <TextBlock
-                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                Text="Black"
-                                                Style="{StaticResource CaptionTextBlockStyle}" />
-                                        </StackPanel>
-                                    </Grid>
-                                    <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="32" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <FontIcon
-                                            VerticalAlignment="Center"
-                                            FontFamily="Segoe UI Symbol"
-                                            FontSize="22"
-                                            Glyph="&#x2659;" />
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
-                                            <TextBlock x:Name="WhitePlayer" FontWeight="SemiBold" />
-                                            <TextBlock
-                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                Text="White"
-                                                Style="{StaticResource CaptionTextBlockStyle}" />
-                                        </StackPanel>
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
-                            <CommandBar
+                        <Grid Grid.Column="0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <ItemsControl
+                                x:Name="OpponentPocketRow"
+                                Margin="0,0,0,8"
+                                HorizontalAlignment="Center"
+                                Visibility="Collapsed">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="6" /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                            </ItemsControl>
+                            <Viewbox
+                                x:Name="BoardViewbox"
+                                Grid.Row="1"
+                                MaxWidth="720"
+                                MaxHeight="720"
                                 HorizontalAlignment="Stretch"
-                                Background="Transparent"
-                                DefaultLabelPosition="Right">
-                                <AppBarButton Click="OfferDraw_Click" Label="Offer draw">
+                                VerticalAlignment="Stretch"
+                                Stretch="Uniform">
+                                <Grid x:Name="BoardFrame" Width="640" Height="640">
+                                    <Grid x:Name="BoardShadowHost" IsHitTestVisible="False" />
+                                    <Grid x:Name="BoardClipHost">
+                                        <Grid x:Name="BoardGrid" />
+                                    </Grid>
+                                    <Border
+                                        x:Name="BoardOutline"
+                                        Background="Transparent"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        IsHitTestVisible="False" />
+                                </Grid>
+                            </Viewbox>
+                            <ItemsControl
+                                x:Name="PlayerPocketRow"
+                                Grid.Row="2"
+                                Margin="0,8,0,0"
+                                HorizontalAlignment="Center"
+                                Visibility="Collapsed">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="6" /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                            </ItemsControl>
+                        </Grid>
+
+                        <Border
+                            Grid.Column="1"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Grid x:Name="OpponentRow" Padding="14,12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="20" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Ellipse
+                                        x:Name="OpponentColorIndicator"
+                                        Width="18"
+                                        Height="18"
+                                        VerticalAlignment="Center"
+                                        Stroke="{ThemeResource ControlStrongStrokeColorDefaultBrush}"
+                                        StrokeThickness="1" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                        <TextBlock x:Name="OpponentPlayer" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            x:Name="OpponentMetadata"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Style="{StaticResource CaptionTextBlockStyle}" />
+                                    </StackPanel>
+                                    <TextBlock
+                                        x:Name="OpponentClock"
+                                        Grid.Column="2"
+                                        VerticalAlignment="Center"
+                                        FontFamily="Cascadia Mono, Consolas"
+                                        FontSize="22"
+                                        FontWeight="SemiBold" />
+                                </Grid>
+
+                                <Rectangle Grid.Row="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                <StackPanel Grid.Row="2" Padding="14,12" Spacing="5">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="GameVariant" FontWeight="SemiBold" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                        <TextBlock
+                                            x:Name="GameMetadata"
+                                            Grid.Column="1"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Style="{StaticResource CaptionTextBlockStyle}" />
+                                    </Grid>
+                                    <TextBlock
+                                        x:Name="GameStatus"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        TextWrapping="Wrap" />
+                                    <InfoBar
+                                        x:Name="OpponentGoneInfoBar"
+                                        IsClosable="False"
+                                        IsOpen="False"
+                                        Severity="Warning" />
+                                    <StackPanel
+                                        x:Name="LiveConnectionPanel"
+                                        Orientation="Horizontal"
+                                        Spacing="8"
+                                        Visibility="Collapsed">
+                                        <TextBlock
+                                            VerticalAlignment="Center"
+                                            Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                            Text="Live updates disconnected" />
+                                        <Button x:Name="ReconnectGameButton" Click="ReconnectGame_Click" Content="Reconnect" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <Rectangle Grid.Row="3" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                <Grid Grid.Row="4">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock
+                                        Margin="14,10,14,6"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="Moves"
+                                        Style="{StaticResource CaptionTextBlockStyle}" />
+                                    <ListView
+                                        x:Name="MoveListView"
+                                        Grid.Row="1"
+                                        Padding="6,0,6,6"
+                                        IsItemClickEnabled="False"
+                                        SelectionMode="None" />
+                                </Grid>
+
+                                <Rectangle Grid.Row="5" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                <StackPanel Grid.Row="6" Padding="10,8" Spacing="8">
+                                    <StackPanel x:Name="IncomingOfferPanel" Margin="4,0" Spacing="7" Visibility="Collapsed">
+                                        <TextBlock x:Name="IncomingOfferText" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button x:Name="AcceptOfferButton" Click="AcceptOffer_Click" Content="Accept" Style="{StaticResource AccentButtonStyle}" />
+                                            <Button x:Name="DeclineOfferButton" Click="DeclineOffer_Click" Content="Decline" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <CommandBar
+                                        HorizontalAlignment="Stretch"
+                                        Background="Transparent"
+                                        DefaultLabelPosition="Collapsed">
+                                <AppBarButton Label="Appearance">
+                                    <AppBarButton.Icon><FontIcon Glyph="&#xE790;" /></AppBarButton.Icon>
+                                    <AppBarButton.Flyout>
+                                        <Flyout Placement="TopEdgeAlignedRight">
+                                            <StackPanel Width="280" Spacing="12">
+                                                <TextBlock Text="Board appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                                <ComboBox
+                                                    x:Name="BoardProviderPicker"
+                                                    Header="Provider"
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectionChanged="BoardAppearancePicker_SelectionChanged" />
+                                                <ComboBox
+                                                    x:Name="BoardThemePicker"
+                                                    Header="Board"
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectionChanged="BoardAppearancePicker_SelectionChanged" />
+                                                <ComboBox
+                                                    x:Name="PieceThemePicker"
+                                                    Header="Pieces"
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectionChanged="BoardAppearancePicker_SelectionChanged" />
+                                                <ComboBox
+                                                    x:Name="BoardZoomPicker"
+                                                    Header="Board size"
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectionChanged="BoardZoomPicker_SelectionChanged" />
+                                                <TextBlock
+                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                    Text="Colors, pieces, spacing, and motion are supplied by LibChess."
+                                                    TextWrapping="Wrap"
+                                                    Style="{StaticResource CaptionTextBlockStyle}" />
+                                            </StackPanel>
+                                        </Flyout>
+                                    </AppBarButton.Flyout>
+                                </AppBarButton>
+                                <AppBarButton Click="FloatingBoard_Click" Label="Floating board">
+                                    <AppBarButton.Icon><FontIcon Glyph="&#xE7F4;" /></AppBarButton.Icon>
+                                </AppBarButton>
+                                <AppBarButton x:Name="OfferDrawButton" Click="OfferDraw_Click" Label="Offer draw">
                                     <AppBarButton.Icon><FontIcon Glyph="&#xE8C2;" /></AppBarButton.Icon>
                                 </AppBarButton>
-                                <AppBarButton Click="Resign_Click" Label="Resign">
+                                <AppBarButton x:Name="TakebackButton" Click="OfferTakeback_Click" Label="Request takeback">
+                                    <AppBarButton.Icon><FontIcon Glyph="&#xE7A7;" /></AppBarButton.Icon>
+                                </AppBarButton>
+                                <AppBarButton x:Name="TerminateGameButton" Click="Resign_Click" Label="Resign">
                                     <AppBarButton.Icon><FontIcon Glyph="&#xE7BA;" /></AppBarButton.Icon>
                                 </AppBarButton>
-                            </CommandBar>
-                            <TextBlock
-                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                Text="Select a piece, then a highlighted destination."
-                                TextWrapping="Wrap"
-                                Style="{StaticResource CaptionTextBlockStyle}" />
-                        </StackPanel>
+                                        <CommandBar.SecondaryCommands>
+                                            <AppBarButton x:Name="ClaimVictoryButton" Click="ClaimVictory_Click" Label="Claim victory" Visibility="Collapsed" />
+                                            <AppBarButton x:Name="ClaimDrawButton" Click="ClaimDraw_Click" Label="Claim draw" />
+                                            <AppBarButton x:Name="OpenGameButton" Click="OpenGame_Click" Label="Open on service" />
+                                        </CommandBar.SecondaryCommands>
+                                    </CommandBar>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <ProgressRing
+                                            x:Name="GameActionProgress"
+                                            Width="16"
+                                            Height="16"
+                                            IsActive="True"
+                                            Visibility="Collapsed" />
+                                        <TextBlock
+                                            x:Name="PendingGameText"
+                                            VerticalAlignment="Center"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Visibility="Collapsed" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <Rectangle Grid.Row="7" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                <Grid x:Name="PlayerRow" Grid.Row="8" Padding="14,12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="20" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Ellipse
+                                        x:Name="PlayerColorIndicator"
+                                        Width="18"
+                                        Height="18"
+                                        VerticalAlignment="Center"
+                                        Stroke="{ThemeResource ControlStrongStrokeColorDefaultBrush}"
+                                        StrokeThickness="1" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                        <TextBlock x:Name="PlayerName" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            x:Name="PlayerMetadata"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Style="{StaticResource CaptionTextBlockStyle}" />
+                                    </StackPanel>
+                                    <TextBlock
+                                        x:Name="PlayerClock"
+                                        Grid.Column="2"
+                                        VerticalAlignment="Center"
+                                        FontFamily="Cascadia Mono, Consolas"
+                                        FontSize="22"
+                                        FontWeight="SemiBold" />
+                                </Grid>
+                            </Grid>
+                        </Border>
                     </Grid>
                 </Grid>
             </NavigationView>

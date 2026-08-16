@@ -56,6 +56,20 @@ namespace
         return value.ValueType() == JsonValueType::Number ? value.GetNumber() : fallback;
     }
 
+    std::optional<std::uint64_t> OptionalNumber(JsonObject const& parent, wchar_t const* name)
+    {
+        if (!parent || !parent.HasKey(name))
+        {
+            return std::nullopt;
+        }
+        auto const value = parent.GetNamedValue(name);
+        if (value.ValueType() != JsonValueType::Number)
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(value.GetNumber());
+    }
+
     LibChess::Windows::Wire::RgbaColor Color(
         JsonObject const& parent,
         wchar_t const* name,
@@ -78,15 +92,31 @@ namespace
         };
     }
 
-    hstring PlayerName(JsonObject const& player)
+    LibChess::Windows::Wire::LiveGamePlayer Player(JsonObject const& json)
     {
-        auto const name = String(player, L"name");
-        auto const title = String(player, L"title");
-        if (title.empty())
+        LibChess::Windows::Wire::LiveGamePlayer player;
+        player.id = String(json, L"id");
+        player.name = String(json, L"name");
+        player.title = String(json, L"title");
+        if (auto const rating = OptionalNumber(json, L"rating"))
         {
-            return name;
+            player.rating = static_cast<std::uint32_t>(*rating);
         }
-        return hstring(std::wstring(title) + L" " + std::wstring(name));
+        if (auto const level = OptionalNumber(json, L"ai_level"))
+        {
+            player.ai_level = static_cast<std::uint32_t>(*level);
+        }
+        player.provisional = Boolean(json, L"provisional");
+        return player;
+    }
+
+    LibChess::Windows::Wire::BoardAnimationRule AnimationRule(JsonObject const& json)
+    {
+        return {
+            static_cast<std::uint32_t>(Number(json, L"duration_millis")),
+            String(json, L"curve"),
+            static_cast<std::uint32_t>(Number(json, L"extra_bounce_percent")),
+        };
     }
 }
 
@@ -107,6 +137,16 @@ namespace LibChess::Windows::Wire
         auto const connection = Object(json, L"connection");
         provider.connection_type = String(connection, L"type");
         provider.authorization_origin = String(connection, L"authorization_origin");
+        if (auto const capabilities = Array(json, L"capabilities"))
+        {
+            for (auto const& value : capabilities)
+            {
+                if (value.ValueType() == JsonValueType::String)
+                {
+                    provider.capabilities.push_back(value.GetString());
+                }
+            }
+        }
 
         auto const options_json = Object(json, L"bot_game_options");
         if (!options_json)
@@ -239,18 +279,75 @@ namespace LibChess::Windows::Wire
     BoardPresentation ParseBoardPresentation(winrt::Windows::Data::Json::JsonObject const& json)
     {
         BoardPresentation presentation;
-        auto const board_palette = Object(Object(json, L"board"), L"palette");
+        presentation.provider = String(json, L"provider");
+        presentation.board_theme = String(json, L"board_theme");
+        presentation.piece_theme = String(json, L"piece_theme");
+        auto const board_style = Object(json, L"board");
+        auto const board_palette = Object(board_style, L"palette");
         presentation.light_square = Color(board_palette, L"light_square", presentation.light_square);
         presentation.dark_square = Color(board_palette, L"dark_square", presentation.dark_square);
+        presentation.coordinate_on_light = Color(
+            board_palette, L"coordinate_on_light", presentation.coordinate_on_light);
+        presentation.coordinate_on_dark = Color(
+            board_palette, L"coordinate_on_dark", presentation.coordinate_on_dark);
         presentation.selection = Color(board_palette, L"selection", presentation.selection);
         presentation.legal_move = Color(board_palette, L"legal_move", presentation.legal_move);
         presentation.last_move = Color(board_palette, L"last_move", presentation.last_move);
+        presentation.check_center = Color(board_palette, L"check_center", presentation.check_center);
+        presentation.check_edge = Color(board_palette, L"check_edge", presentation.check_edge);
+        presentation.border = Color(board_palette, L"border", presentation.border);
+        presentation.shadow = Color(board_palette, L"shadow", presentation.shadow);
+        if (auto const metrics = Object(board_style, L"metrics"))
+        {
+            presentation.board_metrics.maximum_extent = static_cast<std::uint32_t>(
+                Number(metrics, L"maximum_extent", presentation.board_metrics.maximum_extent));
+            presentation.board_metrics.corner_radius = static_cast<std::uint32_t>(
+                Number(metrics, L"corner_radius", presentation.board_metrics.corner_radius));
+            presentation.board_metrics.border_width = static_cast<std::uint32_t>(
+                Number(metrics, L"border_width", presentation.board_metrics.border_width));
+            presentation.board_metrics.shadow_radius = static_cast<std::uint32_t>(
+                Number(metrics, L"shadow_radius", presentation.board_metrics.shadow_radius));
+            presentation.board_metrics.shadow_offset_y = static_cast<std::int32_t>(
+                Number(metrics, L"shadow_offset_y", presentation.board_metrics.shadow_offset_y));
+            presentation.board_metrics.coordinate_font_scale_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"coordinate_font_scale_percent", presentation.board_metrics.coordinate_font_scale_percent));
+            presentation.board_metrics.coordinate_inset = static_cast<std::uint32_t>(
+                Number(metrics, L"coordinate_inset", presentation.board_metrics.coordinate_inset));
+            presentation.board_metrics.destination_dot_scale_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"destination_dot_scale_percent", presentation.board_metrics.destination_dot_scale_percent));
+            presentation.board_metrics.destination_ring_inset_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"destination_ring_inset_percent", presentation.board_metrics.destination_ring_inset_percent));
+            presentation.board_metrics.destination_ring_width_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"destination_ring_width_percent", presentation.board_metrics.destination_ring_width_percent));
+            presentation.board_metrics.check_gradient_radius_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"check_gradient_radius_percent", presentation.board_metrics.check_gradient_radius_percent));
+        }
 
         auto const piece_style = Object(json, L"pieces");
         auto const piece_palette = Object(piece_style, L"palette");
         presentation.white_piece = Color(piece_palette, L"white_piece", presentation.white_piece);
         presentation.black_piece = Color(piece_palette, L"black_piece", presentation.black_piece);
-        if (auto const assets = Array(Object(piece_style, L"assets"), L"pieces"))
+        presentation.white_piece_shadow = Color(
+            piece_palette, L"white_piece_shadow", presentation.white_piece_shadow);
+        presentation.black_piece_shadow = Color(
+            piece_palette, L"black_piece_shadow", presentation.black_piece_shadow);
+        presentation.promoted_marker_color = Color(
+            piece_palette, L"promoted_marker", presentation.promoted_marker_color);
+        if (auto const metrics = Object(piece_style, L"metrics"))
+        {
+            presentation.piece_metrics.scale_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"scale_percent", presentation.piece_metrics.scale_percent));
+            presentation.piece_metrics.shadow_radius_tenths = static_cast<std::uint32_t>(
+                Number(metrics, L"shadow_radius_tenths", presentation.piece_metrics.shadow_radius_tenths));
+            presentation.piece_metrics.shadow_offset_y_tenths = static_cast<std::int32_t>(
+                Number(metrics, L"shadow_offset_y_tenths", presentation.piece_metrics.shadow_offset_y_tenths));
+            presentation.piece_metrics.promoted_marker_scale_percent = static_cast<std::uint32_t>(
+                Number(metrics, L"promoted_marker_scale_percent", presentation.piece_metrics.promoted_marker_scale_percent));
+            presentation.piece_metrics.promoted_marker_inset = static_cast<std::uint32_t>(
+                Number(metrics, L"promoted_marker_inset", presentation.piece_metrics.promoted_marker_inset));
+        }
+        auto const piece_assets = Object(piece_style, L"assets");
+        if (auto const assets = Array(piece_assets, L"pieces"))
         {
             for (auto const& value : assets)
             {
@@ -265,7 +362,82 @@ namespace LibChess::Windows::Wire
                 });
             }
         }
+        if (auto const marker = Object(piece_assets, L"promoted_marker"))
+        {
+            presentation.promoted_marker = {
+                String(marker, L"kind"),
+                String(marker, L"value"),
+                Boolean(marker, L"tintable", true),
+            };
+        }
+        if (auto const motion = Object(json, L"motion"))
+        {
+            presentation.motion.board_resize = AnimationRule(Object(motion, L"board_resize"));
+            presentation.motion.piece_move = AnimationRule(Object(motion, L"piece_move"));
+            presentation.motion.selection = AnimationRule(Object(motion, L"selection"));
+            presentation.motion.piece_appearance_scale_percent = static_cast<std::uint32_t>(
+                Number(motion, L"piece_appearance_scale_percent", presentation.motion.piece_appearance_scale_percent));
+            presentation.motion.fade_piece_appearance = Boolean(
+                motion, L"fade_piece_appearance", presentation.motion.fade_piece_appearance);
+            presentation.motion.maximum_animated_ply_distance = static_cast<std::uint32_t>(
+                Number(motion, L"maximum_animated_ply_distance", presentation.motion.maximum_animated_ply_distance));
+        }
+        if (auto const zoom = Object(json, L"zoom"))
+        {
+            presentation.default_zoom_preset = String(zoom, L"default_preset");
+            if (auto const presets = Array(zoom, L"presets"))
+            {
+                for (auto const& value : presets)
+                {
+                    auto const preset = value.GetObject();
+                    presentation.zoom_presets.push_back({
+                        String(preset, L"id"),
+                        String(preset, L"display_name"),
+                        static_cast<std::uint32_t>(Number(preset, L"scale_percent", 100)),
+                    });
+                }
+            }
+        }
         return presentation;
+    }
+
+    std::vector<BoardProvider> ParseBoardProviders(
+        winrt::Windows::Data::Json::JsonArray const& json)
+    {
+        std::vector<BoardProvider> providers;
+        if (!json)
+        {
+            return providers;
+        }
+        for (auto const& value : json)
+        {
+            auto const object = value.GetObject();
+            BoardProvider provider;
+            provider.id = String(object, L"id");
+            provider.display_name = String(object, L"display_name");
+            provider.default_board_theme = String(object, L"default_board_theme");
+            provider.default_piece_theme = String(object, L"default_piece_theme");
+            if (auto const themes = Array(object, L"board_themes"))
+            {
+                for (auto const& theme_value : themes)
+                {
+                    auto const theme = theme_value.GetObject();
+                    provider.board_themes.push_back({
+                        String(theme, L"id"), String(theme, L"display_name") });
+                }
+            }
+            if (auto const themes = Array(object, L"piece_themes"))
+            {
+                for (auto const& theme_value : themes)
+                {
+                    auto const theme = theme_value.GetObject();
+                    provider.piece_themes.push_back({
+                        String(theme, L"id"), String(theme, L"display_name") });
+                }
+            }
+            providers.push_back(std::move(provider));
+        }
+        return providers;
     }
 
     LegalMove ParseLegalMove(winrt::Windows::Data::Json::JsonObject const& json)
@@ -279,6 +451,61 @@ namespace LibChess::Windows::Wire
         };
     }
 
+    BoardState ParseBoardState(winrt::Windows::Data::Json::JsonObject const& board)
+    {
+        BoardState state;
+        state.turn = String(board, L"turn");
+        state.ply = static_cast<std::uint32_t>(Number(board, L"ply"));
+        state.in_check = Boolean(board, L"in_check");
+        if (auto const pieces = Array(board, L"pieces"))
+        {
+            for (auto const& value : pieces)
+            {
+                auto const piece = value.GetObject();
+                state.pieces.push_back({
+                    String(piece, L"square"),
+                    String(piece, L"color"),
+                    String(piece, L"role"),
+                    Boolean(piece, L"promoted"),
+                });
+            }
+        }
+        if (auto const pockets = Array(board, L"pockets"))
+        {
+            for (auto const& value : pockets)
+            {
+                auto const pocket = value.GetObject();
+                state.pockets.push_back({
+                    String(pocket, L"color"),
+                    String(pocket, L"role"),
+                    static_cast<std::uint32_t>(Number(pocket, L"count")),
+                });
+            }
+        }
+        if (auto const moves = Array(board, L"moves"))
+        {
+            for (auto const& value : moves)
+            {
+                if (value.ValueType() == JsonValueType::String)
+                {
+                    state.moves.push_back(value.GetString());
+                }
+            }
+        }
+        if (auto const moves = Array(board, L"legal_moves"))
+        {
+            for (auto const& value : moves)
+            {
+                state.legal_moves.push_back(ParseLegalMove(value.GetObject()));
+            }
+        }
+        if (auto const last_move = Object(board, L"last_move"))
+        {
+            state.last_move = ParseLegalMove(last_move);
+        }
+        return state;
+    }
+
     LiveGame ParseLiveGame(winrt::Windows::Data::Json::JsonObject const& json)
     {
         LiveGame game;
@@ -287,41 +514,166 @@ namespace LibChess::Windows::Wire
         game.player_color = String(json, L"player_color");
         game.variant_name = String(json, L"variant_name");
         game.speed = String(json, L"speed");
-        game.white_name = PlayerName(Object(json, L"white"));
-        game.black_name = PlayerName(Object(json, L"black"));
+        game.url = String(json, L"url");
+        game.initial_fen = String(json, L"initial_fen");
+        game.variant_id = String(json, L"variant_id");
+        game.rated = Boolean(json, L"rated");
+        if (auto const clock = Object(json, L"clock"))
+        {
+            game.has_clock = true;
+            game.initial_clock_millis = OptionalNumber(clock, L"initial_millis");
+            game.clock_increment_millis = OptionalNumber(clock, L"increment_millis");
+        }
+        game.white = Player(Object(json, L"white"));
+        game.black = Player(Object(json, L"black"));
+        if (auto const days = OptionalNumber(json, L"days_per_turn"))
+        {
+            game.days_per_turn = static_cast<std::uint32_t>(*days);
+        }
 
         auto const state = Object(json, L"state");
         game.status = String(state, L"status");
         game.winner = String(state, L"winner");
-        auto const board = Object(state, L"board");
-        game.board.turn = String(board, L"turn");
-        game.board.ply = static_cast<std::uint32_t>(Number(board, L"ply"));
-        game.board.in_check = Boolean(board, L"in_check");
-        if (auto const pieces = Array(board, L"pieces"))
+        game.white_time_millis = OptionalNumber(state, L"white_time_millis");
+        game.black_time_millis = OptionalNumber(state, L"black_time_millis");
+        game.white_increment_millis = OptionalNumber(state, L"white_increment_millis");
+        game.black_increment_millis = OptionalNumber(state, L"black_increment_millis");
+        game.white_draw_offer = Boolean(state, L"white_draw_offer");
+        game.black_draw_offer = Boolean(state, L"black_draw_offer");
+        game.white_takeback_offer = Boolean(state, L"white_takeback_offer");
+        game.black_takeback_offer = Boolean(state, L"black_takeback_offer");
+        game.opponent_gone = Boolean(state, L"opponent_gone");
+        if (auto const seconds = OptionalNumber(state, L"claim_win_in_seconds"))
         {
-            for (auto const& value : pieces)
+            game.claim_win_in_seconds = static_cast<std::uint32_t>(*seconds);
+        }
+        game.board = ParseBoardState(Object(state, L"board"));
+        return game;
+    }
+
+    std::vector<LiveGameSummary> ParseLiveGameSummaries(
+        winrt::Windows::Data::Json::JsonArray const& json)
+    {
+        std::vector<LiveGameSummary> games;
+        if (!json)
+        {
+            return games;
+        }
+        for (auto const& value : json)
+        {
+            auto const game = value.GetObject();
+            games.push_back({
+                String(game, L"provider"),
+                String(game, L"id"),
+                String(game, L"url"),
+                String(game, L"player_color"),
+                String(game, L"display_name"),
+                String(game, L"variant_id"),
+                String(game, L"variant_name"),
+                Boolean(game, L"rated"),
+                String(game, L"speed"),
+                Boolean(game, L"is_my_turn"),
+            });
+        }
+        return games;
+    }
+
+    GameHistoryPage ParseGameHistoryPage(winrt::Windows::Data::Json::JsonObject const& json)
+    {
+        GameHistoryPage page;
+        page.next_before_millis = OptionalNumber(json, L"next_before_millis");
+        if (auto const games = Array(json, L"games"))
+        {
+            for (auto const& value : games)
             {
-                auto const piece = value.GetObject();
-                game.board.pieces.push_back({
-                    String(piece, L"square"),
-                    String(piece, L"color"),
-                    String(piece, L"role"),
-                    Boolean(piece, L"promoted"),
-                });
+                auto const game = value.GetObject();
+                GameHistoryEntry entry;
+                entry.provider = String(game, L"provider");
+                entry.id = String(game, L"id");
+                entry.url = String(game, L"url");
+                entry.analysis_url = String(game, L"analysis_url");
+                entry.player_color = String(game, L"player_color");
+                entry.opponent_name = String(game, L"opponent_name");
+                entry.opponent_title = String(game, L"opponent_title");
+                if (auto const rating = OptionalNumber(game, L"opponent_rating"))
+                {
+                    entry.opponent_rating = static_cast<std::uint32_t>(*rating);
+                }
+                if (auto const level = OptionalNumber(game, L"opponent_ai_level"))
+                {
+                    entry.opponent_ai_level = static_cast<std::uint32_t>(*level);
+                }
+                entry.variant_id = String(game, L"variant_id");
+                entry.variant_name = String(game, L"variant_name");
+                entry.rated = Boolean(game, L"rated");
+                entry.speed = String(game, L"speed");
+                entry.status = String(game, L"status");
+                entry.winner = String(game, L"winner");
+                entry.created_at_millis = static_cast<std::uint64_t>(
+                    Number(game, L"created_at_millis"));
+                entry.last_move_at_millis = static_cast<std::uint64_t>(
+                    Number(game, L"last_move_at_millis"));
+                page.games.push_back(std::move(entry));
             }
         }
-        if (auto const moves = Array(board, L"legal_moves"))
+        return page;
+    }
+
+    GameReview ParseGameReview(winrt::Windows::Data::Json::JsonObject const& json)
+    {
+        GameReview review;
+        review.provider = String(json, L"provider");
+        review.game_id = String(json, L"game_id");
+        review.variant_id = String(json, L"variant_id");
+        review.initial_fen = String(json, L"initial_fen");
+        if (auto const opening = Object(json, L"opening"))
+        {
+            review.opening = GameOpening{
+                String(opening, L"eco"),
+                String(opening, L"name"),
+                static_cast<std::uint32_t>(Number(opening, L"ply")),
+            };
+        }
+        if (auto const moves = Array(json, L"moves"))
         {
             for (auto const& value : moves)
             {
-                game.board.legal_moves.push_back(ParseLegalMove(value.GetObject()));
+                auto const move = value.GetObject();
+                GameReviewMove parsed;
+                parsed.ply = static_cast<std::uint32_t>(Number(move, L"ply"));
+                parsed.san = String(move, L"san");
+                parsed.move_id = String(move, L"move_id");
+                parsed.clock_millis = OptionalNumber(move, L"clock_millis");
+                if (auto const evaluation = Object(move, L"evaluation"))
+                {
+                    GameMoveEvaluation parsed_evaluation;
+                    if (evaluation.HasKey(L"centipawns")
+                        && evaluation.GetNamedValue(L"centipawns").ValueType()
+                            == JsonValueType::Number)
+                    {
+                        parsed_evaluation.centipawns = static_cast<std::int32_t>(
+                            evaluation.GetNamedNumber(L"centipawns"));
+                    }
+                    if (evaluation.HasKey(L"mate")
+                        && evaluation.GetNamedValue(L"mate").ValueType()
+                            == JsonValueType::Number)
+                    {
+                        parsed_evaluation.mate = static_cast<std::int32_t>(
+                            evaluation.GetNamedNumber(L"mate"));
+                    }
+                    parsed_evaluation.best_move = String(evaluation, L"best_move");
+                    parsed_evaluation.variation = String(evaluation, L"variation");
+                    if (auto const judgment = Object(evaluation, L"judgment"))
+                    {
+                        parsed_evaluation.judgment_kind = String(judgment, L"kind");
+                        parsed_evaluation.judgment_comment = String(judgment, L"comment");
+                    }
+                    parsed.evaluation = std::move(parsed_evaluation);
+                }
+                review.moves.push_back(std::move(parsed));
             }
         }
-        if (auto const last_move = Object(board, L"last_move"))
-        {
-            game.board.last_move = ParseLegalMove(last_move);
-        }
-        return game;
+        return review;
     }
 
     winrt::Windows::Data::Json::JsonObject ParseObject(std::string const& utf8)
