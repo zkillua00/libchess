@@ -735,6 +735,13 @@ namespace winrt::LibChess::WinUI::implementation
                 AccountName().Text(title.empty()
                     ? username
                     : hstring(std::wstring(title) + L" " + std::wstring(username)));
+                auto const service = selected_provider_ && *selected_provider_ < providers_.size()
+                    ? providers_[*selected_provider_].display_name : hstring{};
+                AccountConnection().Text(service.empty()
+                    ? hstring(L"Signed in") : service + L" · Signed in");
+                ToolTipService::SetToolTip(
+                    AccountNavigationItem(),
+                    box_value(AccountName().Text() + L" — " + AccountConnection().Text()));
                 return;
             }
             if (type == L"connection_state_changed")
@@ -2288,25 +2295,31 @@ namespace winrt::LibChess::WinUI::implementation
     {
         HistoryProgress().Visibility(
             history_request_pending_ ? Visibility::Visible : Visibility::Collapsed);
-        HistoryListPanel().Children().Clear();
-        auto const card_style = Application::Current().Resources()
-            .Lookup(box_value(L"LauncherCardButtonStyle")).as<Style>();
+        RefreshHistoryButton().IsEnabled(!history_request_pending_);
+        HistoryListView().Items().Clear();
         for (auto const& game : game_history_)
         {
-            Button button;
-            button.Style(card_style);
-            button.MinHeight(92);
-            button.Tag(box_value(game.id));
-            button.Click({ this, &MainWindow::HistoryGame_Click });
+            ListViewItem item;
+            item.MinHeight(68);
+            item.Padding(Thickness{ 12, 8, 10, 8 });
+            item.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+            item.Tag(box_value(game.id));
+
             Grid content;
+            content.Tag(box_value(game.id));
+            content.ColumnSpacing(12);
             ColumnDefinition details_column;
             details_column.Width(GridLength{ 1, GridUnitType::Star });
             content.ColumnDefinitions().Append(details_column);
             ColumnDefinition result_column;
             result_column.Width(GridLengthHelper::Auto());
             content.ColumnDefinitions().Append(result_column);
+            ColumnDefinition chevron_column;
+            chevron_column.Width(GridLength{ 20, GridUnitType::Pixel });
+            content.ColumnDefinitions().Append(chevron_column);
+
             StackPanel details;
-            details.Spacing(4);
+            details.Spacing(3);
             TextBlock title;
             auto opponent = game.opponent_title.empty()
                 ? game.opponent_name : game.opponent_title + L" " + game.opponent_name;
@@ -2316,12 +2329,23 @@ namespace winrt::LibChess::WinUI::implementation
             }
             else if (game.opponent_ai_level)
             {
-                opponent = opponent + L" · Level "
+                auto const level = hstring(L"level ")
                     + winrt::to_hstring(*game.opponent_ai_level);
+                auto lower_opponent = std::wstring(opponent);
+                std::transform(lower_opponent.begin(), lower_opponent.end(),
+                    lower_opponent.begin(), [](wchar_t value)
+                    {
+                        return static_cast<wchar_t>(std::towlower(value));
+                    });
+                if (lower_opponent.find(std::wstring(level)) == std::wstring::npos)
+                {
+                    opponent = opponent + L" · Level "
+                        + winrt::to_hstring(*game.opponent_ai_level);
+                }
             }
             title.Text(opponent);
-            title.FontSize(16);
             title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+            title.TextTrimming(TextTrimming::CharacterEllipsis);
             details.Children().Append(title);
             TextBlock subtitle;
             subtitle.Text(game.variant_name + (game.speed.empty()
@@ -2344,10 +2368,22 @@ namespace winrt::LibChess::WinUI::implementation
             result.Text(result_text);
             result.VerticalAlignment(VerticalAlignment::Center);
             result.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+            result.Foreground(Application::Current().Resources()
+                .Lookup(box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
             Grid::SetColumn(result, 1);
             content.Children().Append(result);
-            button.Content(content);
-            HistoryListPanel().Children().Append(button);
+
+            FontIcon chevron;
+            chevron.Glyph(L"\xE76C");
+            chevron.FontFamily(Media::FontFamily(L"Segoe Fluent Icons"));
+            chevron.FontSize(12);
+            chevron.Opacity(0.55);
+            chevron.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(chevron, 2);
+            content.Children().Append(chevron);
+
+            item.Content(content);
+            HistoryListView().Items().Append(item);
         }
         HistoryEmptyInfo().IsOpen(!history_request_pending_ && game_history_.empty());
         LoadMoreHistoryButton().Visibility(next_history_before_millis_
@@ -3160,11 +3196,15 @@ namespace winrt::LibChess::WinUI::implementation
         RefreshGameHistory(true);
     }
 
-    void MainWindow::HistoryGame_Click(
-        Windows::Foundation::IInspectable const& sender,
-        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    void MainWindow::HistoryGame_ItemClick(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::Controls::ItemClickEventArgs const& args)
     {
-        LoadGameReview(unbox_value<hstring>(sender.as<Button>().Tag()));
+        auto const row = args.ClickedItem().try_as<FrameworkElement>();
+        if (row)
+        {
+            LoadGameReview(unbox_value_or<hstring>(row.Tag(), {}));
+        }
     }
 
     void MainWindow::GameCard_Click(
@@ -3341,6 +3381,18 @@ namespace winrt::LibChess::WinUI::implementation
         else
         {
             NewGamePane().Visibility(Visibility::Visible);
+        }
+    }
+
+    void MainWindow::AccountNavigationItem_Tapped(
+        Windows::Foundation::IInspectable const& sender,
+        Microsoft::UI::Xaml::Input::TappedRoutedEventArgs const& args)
+    {
+        auto const item = sender.as<NavigationViewItem>();
+        if (auto const flyout = item.ContextFlyout())
+        {
+            flyout.ShowAt(item);
+            args.Handled(true);
         }
     }
 

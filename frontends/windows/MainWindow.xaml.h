@@ -19,6 +19,9 @@ namespace winrt::LibChess::WinUI::implementation
         void MainNavigation_SelectionChanged(
             Microsoft::UI::Xaml::Controls::NavigationView const&,
             Microsoft::UI::Xaml::Controls::NavigationViewSelectionChangedEventArgs const& args);
+        void AccountNavigationItem_Tapped(
+            Windows::Foundation::IInspectable const& sender,
+            Microsoft::UI::Xaml::Input::TappedRoutedEventArgs const&);
         void VariantPicker_SelectionChanged(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
@@ -107,9 +110,9 @@ namespace winrt::LibChess::WinUI::implementation
         void LoadMoreHistory_Click(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
-        void HistoryGame_Click(
-            Windows::Foundation::IInspectable const& sender,
-            Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void HistoryGame_ItemClick(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::Controls::ItemClickEventArgs const& args);
         void GameCard_Click(
             Windows::Foundation::IInspectable const& sender,
             Microsoft::UI::Xaml::RoutedEventArgs const&);

@@ -188,51 +188,42 @@
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
                 </NavigationView.MenuItems>
-                <NavigationView.PaneFooter>
-                    <StackPanel Margin="0,0,0,8" Spacing="8">
-                        <Border
-                            Margin="8,0"
-                            Padding="10"
-                            Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                            CornerRadius="6">
-                            <Grid ColumnSpacing="10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="28" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <FontIcon
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Center"
-                                    FontFamily="Segoe Fluent Icons"
-                                    FontSize="16"
-                                    Glyph="&#xE77B;" />
-                                <StackPanel Grid.Column="1" Spacing="1">
-                                    <TextBlock
-                                        x:Name="AccountName"
-                                        FontWeight="SemiBold"
-                                        TextTrimming="CharacterEllipsis" />
-                                    <TextBlock
-                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="Signed in"
-                                        Style="{StaticResource CaptionTextBlockStyle}" />
-                                </StackPanel>
-                            </Grid>
-                        </Border>
-                        <Button
-                            Margin="8,0"
-                            HorizontalAlignment="Stretch"
-                            HorizontalContentAlignment="Left"
-                            Click="ChangeBackend_Click">
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <FontIcon
-                                    FontFamily="Segoe Fluent Icons"
-                                    FontSize="16"
-                                    Glyph="&#xE8AB;" />
-                                <TextBlock Text="Switch service" />
+                <NavigationView.FooterMenuItems>
+                    <NavigationViewItem
+                        x:Name="AccountNavigationItem"
+                        Margin="0,0,0,8"
+                        SelectsOnInvoked="False"
+                        Tag="account"
+                        Tapped="AccountNavigationItem_Tapped">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE77B;" />
+                        </NavigationViewItem.Icon>
+                        <NavigationViewItem.Content>
+                            <StackPanel Spacing="1">
+                                <TextBlock
+                                    x:Name="AccountName"
+                                    FontWeight="SemiBold"
+                                    Text="Account"
+                                    TextTrimming="CharacterEllipsis" />
+                                <TextBlock
+                                    x:Name="AccountConnection"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="Signed in"
+                                    TextTrimming="CharacterEllipsis"
+                                    Style="{StaticResource CaptionTextBlockStyle}" />
                             </StackPanel>
-                        </Button>
-                    </StackPanel>
-                </NavigationView.PaneFooter>
+                        </NavigationViewItem.Content>
+                        <NavigationViewItem.ContextFlyout>
+                            <MenuFlyout>
+                                <MenuFlyoutItem Click="ChangeBackend_Click" Text="Switch service…">
+                                    <MenuFlyoutItem.Icon>
+                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8AB;" />
+                                    </MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                            </MenuFlyout>
+                        </NavigationViewItem.ContextFlyout>
+                    </NavigationViewItem>
+                </NavigationView.FooterMenuItems>
 
                 <Grid>
                     <ScrollViewer
@@ -547,54 +538,75 @@
                         </Grid>
                     </ScrollViewer>
 
-                    <ScrollViewer
+                    <Grid
                         x:Name="HistoryPane"
-                        HorizontalContentAlignment="Stretch"
-                        HorizontalScrollBarVisibility="Disabled"
+                        MaxWidth="940"
+                        Padding="24,24,24,32"
+                        HorizontalAlignment="Stretch"
                         Visibility="Collapsed">
-                        <Grid
-                            MaxWidth="940"
-                            Padding="32,28,32,48"
-                            HorizontalAlignment="Center">
-                            <StackPanel Spacing="18">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock FontSize="28" FontWeight="SemiBold" Text="Game history" />
-                                        <TextBlock
-                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                            Text="Finished games available from the connected service."
-                                            Style="{StaticResource SubtitleTextBlockStyle}" />
-                                    </StackPanel>
-                                    <Button
-                                        Grid.Column="1"
-                                        VerticalAlignment="Center"
-                                        Click="RefreshHistory_Click"
-                                        Content="Refresh" />
-                                </Grid>
-                                <ProgressBar
-                                    x:Name="HistoryProgress"
-                                    IsIndeterminate="True"
-                                    Visibility="Collapsed" />
-                                <InfoBar
-                                    x:Name="HistoryEmptyInfo"
-                                    IsClosable="False"
-                                    IsOpen="False"
-                                    Message="No finished games were returned."
-                                    Severity="Informational" />
-                                <StackPanel x:Name="HistoryListPanel" Spacing="10" />
-                                <Button
-                                    x:Name="LoadMoreHistoryButton"
-                                    HorizontalAlignment="Center"
-                                    Click="LoadMoreHistory_Click"
-                                    Content="Load more"
-                                    Visibility="Collapsed" />
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="6">
+                                <TextBlock FontSize="28" FontWeight="SemiBold" Text="Game history" />
+                                <TextBlock
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="Finished games available from the connected service."
+                                    Style="{StaticResource SubtitleTextBlockStyle}" />
                             </StackPanel>
+                            <CommandBar
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                Background="Transparent"
+                                DefaultLabelPosition="Right">
+                                <AppBarButton
+                                    x:Name="RefreshHistoryButton"
+                                    Click="RefreshHistory_Click"
+                                    Label="Refresh">
+                                    <AppBarButton.Icon><SymbolIcon Symbol="Refresh" /></AppBarButton.Icon>
+                                </AppBarButton>
+                            </CommandBar>
                         </Grid>
-                    </ScrollViewer>
+                        <ProgressBar
+                            x:Name="HistoryProgress"
+                            Grid.Row="1"
+                            Margin="0,12,0,0"
+                            IsIndeterminate="True"
+                            Visibility="Collapsed" />
+                        <InfoBar
+                            x:Name="HistoryEmptyInfo"
+                            Grid.Row="2"
+                            Margin="0,12,0,0"
+                            IsClosable="False"
+                            IsOpen="False"
+                            Message="No finished games were returned."
+                            Severity="Informational" />
+                        <ListView
+                            x:Name="HistoryListView"
+                            Grid.Row="3"
+                            Margin="0,12,0,0"
+                            HorizontalContentAlignment="Stretch"
+                            IsItemClickEnabled="True"
+                            ItemClick="HistoryGame_ItemClick"
+                            SelectionMode="None" />
+                        <Button
+                            x:Name="LoadMoreHistoryButton"
+                            Grid.Row="4"
+                            Margin="0,12,0,0"
+                            HorizontalAlignment="Center"
+                            Click="LoadMoreHistory_Click"
+                            Content="Load more"
+                            Visibility="Collapsed" />
+                    </Grid>
 
                     <Grid
                         x:Name="ReviewPane"
