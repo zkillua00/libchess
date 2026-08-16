@@ -145,6 +145,11 @@ numeric levels, variant keys, ranges, or correspondence intervals. This leaves
 a future Chess.com adapter free to advertise named bot personalities and a
 different supported option set through the same contract.
 
-No license has been selected yet. `libchess-rules` currently depends on
-Shakmaty, which is distributed under GPL-3.0-or-later, so choose a compatible
-project/distribution license or replace that dependency before publishing.
+## License
+
+LibChess is licensed under the GNU General Public License, version 3 or any
+later version (`GPL-3.0-or-later`). See [LICENSE](LICENSE).
+
+The chess piece silhouettes under
+`crates/libchess-board/assets/cc0-silhouette` remain available under CC0 1.0;
+their provenance and license details are documented alongside the assets.
