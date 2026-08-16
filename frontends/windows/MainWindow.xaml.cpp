@@ -1567,7 +1567,11 @@ namespace winrt::LibChess::WinUI::implementation
 
     void MainWindow::ShowLauncher()
     {
-        if (floating_board_window_) floating_board_window_.Close();
+        if (floating_board_window_)
+        {
+            SaveFloatingBoardFrame();
+            floating_board_window_.Close();
+        }
         WorkspaceView().Visibility(Visibility::Collapsed);
         LauncherView().Visibility(Visibility::Visible);
         live_game_.reset();
@@ -1951,7 +1955,11 @@ namespace winrt::LibChess::WinUI::implementation
 
     void MainWindow::ClearLiveGames()
     {
-        if (floating_board_window_) floating_board_window_.Close();
+        if (floating_board_window_)
+        {
+            SaveFloatingBoardFrame();
+            floating_board_window_.Close();
+        }
         clock_timer_.Stop();
         live_game_.reset();
         live_game_summaries_.clear();
@@ -2469,7 +2477,6 @@ namespace winrt::LibChess::WinUI::implementation
                 ReviewBoardGrid().Children().Append(cell);
             }
         }
-        if (floating_board_review_) RenderFloatingBoard();
     }
 
     void MainWindow::HideWorkspacePanes()
@@ -4481,43 +4488,338 @@ namespace winrt::LibChess::WinUI::implementation
     void MainWindow::RenderFloatingBoard()
     {
         if (!floating_board_window_ || !floating_board_grid_) return;
-        if (floating_board_review_)
+        if (!live_game_ || (live_game_->status != L"created" && live_game_->status != L"started"))
         {
-            if (!review_board_) return;
-            bool black_perspective = false;
-            auto const history = std::find_if(game_history_.begin(), game_history_.end(),
-                [&](auto const& game) { return game.id == review_game_id_; });
-            if (history != game_history_.end()) black_perspective = history->player_color == L"black";
-            RenderBoardInto(floating_board_grid_, review_board_, black_perspective, 80.0, false);
+            SaveFloatingBoardFrame();
+            floating_board_window_.Close();
+            return;
+        }
+        RenderBoardInto(floating_board_grid_, live_game_->board,
+            live_game_->player_color == L"black", 80.0, true);
+        ApplyRoundedClip(floating_board_grid_, 640.0);
+        auto const menu = BuildFloatingBoardMenu();
+        floating_board_grid_.ContextFlyout(menu);
+    }
+
+    MenuFlyout MainWindow::BuildFloatingBoardMenu()
+    {
+        MenuFlyout menu;
+        if (!live_game_) return menu;
+        auto append = [&](hstring const& label, auto&& action, bool enabled = true)
+        {
+            MenuFlyoutItem item;
+            item.Text(label);
+            item.IsEnabled(enabled);
+            item.Click(std::forward<decltype(action)>(action));
+            menu.Items().Append(item);
+        };
+        auto const busy = !pending_move_request_id_.empty() || !pending_game_action_request_id_.empty();
+        auto const own_draw = live_game_->player_color == L"white"
+            ? live_game_->white_draw_offer : live_game_->black_draw_offer;
+        auto const own_takeback = live_game_->player_color == L"white"
+            ? live_game_->white_takeback_offer : live_game_->black_takeback_offer;
+        if (incoming_offer_ == L"draw")
+        {
+            append(L"Accept draw", [this](auto const&, auto const&) { SendGameAction(L"accept_draw"); }, !busy);
+            append(L"Decline draw", [this](auto const&, auto const&) { SendGameAction(L"decline_draw"); }, !busy);
+        }
+        else if (incoming_offer_ == L"takeback")
+        {
+            append(L"Accept takeback", [this](auto const&, auto const&) { SendGameAction(L"accept_takeback"); }, !busy);
+            append(L"Decline takeback", [this](auto const&, auto const&) { SendGameAction(L"decline_takeback"); }, !busy);
         }
         else
         {
-            if (!live_game_) return;
-            RenderBoardInto(floating_board_grid_, live_game_->board,
-                live_game_->player_color == L"black", 80.0, true);
+            append(own_draw ? L"Draw offered" : L"Offer draw",
+                [this](auto const&, auto const&) { SendGameAction(L"offer_draw"); }, !busy && !own_draw);
+            append(own_takeback ? L"Takeback requested" : L"Request takeback",
+                [this](auto const&, auto const&) { SendGameAction(L"offer_takeback"); }, !busy && !own_takeback);
         }
-        ApplyRoundedClip(floating_board_grid_, 640.0);
+        if (live_game_->opponent_gone && live_game_->claim_win_in_seconds.value_or(1) == 0)
+        {
+            append(L"Claim victory", [this](auto const&, auto const&) { SendGameAction(L"claim_victory"); }, !busy);
+        }
+        append(L"Claim draw", [this](auto const&, auto const&) { SendGameAction(L"claim_draw"); }, !busy);
+        MenuFlyoutSeparator game_separator;
+        menu.Items().Append(game_separator);
+        append(live_game_->board.ply < 2 ? L"Abort…" : L"Resign…",
+            [this](auto const&, auto const&) { ConfirmTerminationAsync(); }, !busy);
+        MenuFlyoutSeparator window_separator;
+        menu.Items().Append(window_separator);
+        append(L"Show full game", [this](auto const&, auto const&)
+        {
+            if (live_game_) SelectNavigationForGame(live_game_->id);
+            Microsoft::UI::Xaml::Window window = *this;
+            window.Activate();
+        });
+        if (!live_game_->url.empty())
+        {
+            append(L"Open on service", [this](auto const&, auto const&) { OpenGameAsync(); });
+        }
+        append(L"Close floating board", [this](auto const&, auto const&)
+        {
+            SaveFloatingBoardFrame();
+            if (floating_board_window_) floating_board_window_.Close();
+        });
+        return menu;
     }
 
-    void MainWindow::OpenFloatingBoard(bool review)
+    void MainWindow::ConfigureFloatingBoardResizeRegions()
     {
-        if ((!review && !live_game_) || (review && !review_board_))
+        if (!floating_board_non_client_ || !floating_board_window_) return;
+        auto const size = floating_board_window_.AppWindow().Size();
+        auto const inset = static_cast<std::int32_t>((std::clamp)(
+            static_cast<double>((std::min)(size.Width, size.Height)) * 0.045, 18.0, 24.0));
+        using Microsoft::UI::Input::NonClientRegionKind;
+        auto set = [&](NonClientRegionKind kind, Windows::Graphics::RectInt32 const& rect)
         {
-            ShowMessage(L"Open a board before opening the floating board.", false);
+            std::array<Windows::Graphics::RectInt32, 1> regions{ rect };
+            floating_board_non_client_.SetRegionRects(kind, regions);
+        };
+        set(NonClientRegionKind::TopBorder, { 0, 0, size.Width, inset });
+        set(NonClientRegionKind::LeftBorder, { 0, 0, inset, size.Height });
+        set(NonClientRegionKind::BottomBorder, { 0, size.Height - inset, size.Width, inset });
+        set(NonClientRegionKind::RightBorder, { size.Width - inset, 0, inset, size.Height });
+    }
+
+    void MainWindow::ConfigureFloatingBoardWindow()
+    {
+        auto const app_window = floating_board_window_.AppWindow();
+        app_window.IsShownInSwitchers(false);
+        auto const presenter = app_window.Presenter().as<Microsoft::UI::Windowing::OverlappedPresenter>();
+        presenter.SetBorderAndTitleBar(false, false);
+        presenter.IsAlwaysOnTop(true);
+        presenter.IsMaximizable(false);
+        presenter.IsMinimizable(false);
+
+        HWND floating_hwnd = nullptr;
+        check_hresult(floating_board_window_.as<::IWindowNative>()->get_WindowHandle(&floating_hwnd));
+        HWND owner_hwnd = nullptr;
+        Microsoft::UI::Xaml::Window owner = *this;
+        check_hresult(owner.as<::IWindowNative>()->get_WindowHandle(&owner_hwnd));
+        auto const extended_style = GetWindowLongPtrW(floating_hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(floating_hwnd, GWL_EXSTYLE,
+            extended_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+        SetWindowLongPtrW(floating_hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner_hwnd));
+        DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+        static_cast<void>(DwmSetWindowAttribute(
+            floating_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
+
+        auto const dpi = GetDpiForWindow(owner_hwnd);
+        auto const minimum = static_cast<std::int32_t>(240.0 * dpi / 96.0);
+        auto const maximum = static_cast<std::int32_t>(960.0 * dpi / 96.0);
+        presenter.PreferredMinimumWidth(box_value(minimum).as<Windows::Foundation::IReference<std::int32_t>>());
+        presenter.PreferredMinimumHeight(box_value(minimum).as<Windows::Foundation::IReference<std::int32_t>>());
+        presenter.PreferredMaximumWidth(box_value(maximum).as<Windows::Foundation::IReference<std::int32_t>>());
+        presenter.PreferredMaximumHeight(box_value(maximum).as<Windows::Foundation::IReference<std::int32_t>>());
+
+        auto extent = static_cast<std::int32_t>(460.0 * dpi / 96.0);
+        try
+        {
+            auto const saved = std::stoi(std::wstring(ReadPreference(L"FloatingBoardExtent")));
+            extent = (std::clamp)(saved, minimum, maximum);
+        }
+        catch (...) {}
+        RECT owner_rect{};
+        GetWindowRect(owner_hwnd, &owner_rect);
+        MONITORINFO monitor{ sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromWindow(owner_hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
+        auto const margin = static_cast<std::int32_t>(24.0 * dpi / 96.0);
+        auto x = owner_rect.right + margin;
+        if (x + extent > monitor.rcWork.right - margin)
+        {
+            x = owner_rect.left - extent - margin;
+        }
+        if (x < monitor.rcWork.left + margin)
+        {
+            x = monitor.rcWork.right - extent - margin;
+        }
+        auto y = (std::clamp)(owner_rect.top, monitor.rcWork.top + margin,
+            monitor.rcWork.bottom - extent - margin);
+        try
+        {
+            auto const saved_x = std::stoi(std::wstring(ReadPreference(L"FloatingBoardX")));
+            auto const saved_y = std::stoi(std::wstring(ReadPreference(L"FloatingBoardY")));
+            POINT saved_point{ saved_x, saved_y };
+            MONITORINFO saved_monitor{ sizeof(saved_monitor) };
+            if (GetMonitorInfoW(MonitorFromPoint(saved_point, MONITOR_DEFAULTTONULL), &saved_monitor))
+            {
+                x = (std::clamp<int32_t>)(saved_x,
+                    static_cast<int32_t>(saved_monitor.rcWork.left),
+                    static_cast<int32_t>(saved_monitor.rcWork.right - extent));
+                y = (std::clamp<int32_t>)(saved_y,
+                    static_cast<int32_t>(saved_monitor.rcWork.top),
+                    static_cast<int32_t>(saved_monitor.rcWork.bottom - extent));
+            }
+        }
+        catch (...) {}
+        app_window.MoveAndResize({ x, y, extent, extent });
+
+        floating_board_non_client_ = Microsoft::UI::Input::InputNonClientPointerSource::
+            GetForWindowId(app_window.Id());
+        floating_board_rect_changing_token_ = floating_board_non_client_.WindowRectChanging(
+            [minimum, maximum](auto const&, Microsoft::UI::Input::WindowRectChangingEventArgs const& args)
+            {
+                auto const old_rect = args.OldWindowRect();
+                auto const proposed = args.NewWindowRect();
+                auto const operation = args.MoveSizeOperation();
+                if (operation == Microsoft::UI::Input::MoveSizeOperation::Move) return;
+                auto const horizontal = operation == Microsoft::UI::Input::MoveSizeOperation::SizeLeft
+                    || operation == Microsoft::UI::Input::MoveSizeOperation::SizeRight;
+                auto const extent = (std::clamp)(horizontal ? proposed.Width : proposed.Height,
+                    minimum, maximum);
+                auto rect = proposed;
+                rect.Width = extent;
+                rect.Height = extent;
+                using Microsoft::UI::Input::MoveSizeOperation;
+                switch (operation)
+                {
+                case MoveSizeOperation::SizeLeft:
+                    rect.X = old_rect.X + old_rect.Width - extent;
+                    rect.Y = old_rect.Y + (old_rect.Height - extent) / 2;
+                    break;
+                case MoveSizeOperation::SizeRight:
+                    rect.X = old_rect.X;
+                    rect.Y = old_rect.Y + (old_rect.Height - extent) / 2;
+                    break;
+                case MoveSizeOperation::SizeTop:
+                    rect.X = old_rect.X + (old_rect.Width - extent) / 2;
+                    rect.Y = old_rect.Y + old_rect.Height - extent;
+                    break;
+                case MoveSizeOperation::SizeBottom:
+                    rect.X = old_rect.X + (old_rect.Width - extent) / 2;
+                    rect.Y = old_rect.Y;
+                    break;
+                case MoveSizeOperation::SizeTopLeft:
+                    rect.X = old_rect.X + old_rect.Width - extent;
+                    rect.Y = old_rect.Y + old_rect.Height - extent;
+                    break;
+                case MoveSizeOperation::SizeTopRight:
+                    rect.X = old_rect.X;
+                    rect.Y = old_rect.Y + old_rect.Height - extent;
+                    break;
+                case MoveSizeOperation::SizeBottomLeft:
+                    rect.X = old_rect.X + old_rect.Width - extent;
+                    rect.Y = old_rect.Y;
+                    break;
+                case MoveSizeOperation::SizeBottomRight:
+                    rect.X = old_rect.X;
+                    rect.Y = old_rect.Y;
+                    break;
+                default: break;
+                }
+                args.NewWindowRect(rect);
+            });
+        floating_board_rect_changed_token_ = floating_board_non_client_.WindowRectChanged(
+            [this](auto const&, auto const&)
+            {
+                ConfigureFloatingBoardResizeRegions();
+                SaveFloatingBoardFrame();
+            });
+        ConfigureFloatingBoardResizeRegions();
+    }
+
+    void MainWindow::SaveFloatingBoardFrame()
+    {
+        if (!floating_board_window_) return;
+        auto const app_window = floating_board_window_.AppWindow();
+        auto const position = app_window.Position();
+        auto const size = app_window.Size();
+        WritePreference(L"FloatingBoardX", winrt::to_hstring(position.X));
+        WritePreference(L"FloatingBoardY", winrt::to_hstring(position.Y));
+        WritePreference(L"FloatingBoardExtent", winrt::to_hstring((std::min)(size.Width, size.Height)));
+    }
+
+    void MainWindow::FloatingBoard_PointerPressed(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args)
+    {
+        if (!live_game_ || !floating_board_root_) return;
+        auto const point = args.GetCurrentPoint(floating_board_root_);
+        if (!point.Properties().IsLeftButtonPressed()) return;
+        auto const width = floating_board_root_.ActualWidth();
+        auto const height = floating_board_root_.ActualHeight();
+        if (width <= 0 || height <= 0) return;
+        auto const position = point.Position();
+        auto const column = (std::clamp)(static_cast<int>(position.X / width * 8.0), 0, 7);
+        auto const row = (std::clamp)(static_cast<int>(position.Y / height * 8.0), 0, 7);
+        auto const black = live_game_->player_color == L"black";
+        auto const file_index = black ? 7 - column : column;
+        auto const rank = black ? row + 1 : 8 - row;
+        std::wstring square{ static_cast<wchar_t>(L'a' + file_index) };
+        square += std::to_wstring(rank);
+        if (std::any_of(live_game_->board.pieces.begin(), live_game_->board.pieces.end(),
+            [&](auto const& piece) { return piece.square == square; })) return;
+        HWND hwnd = nullptr;
+        check_hresult(floating_board_window_.as<::IWindowNative>()->get_WindowHandle(&hwnd));
+        GetCursorPos(&floating_board_drag_origin_cursor_);
+        GetWindowRect(hwnd, &floating_board_drag_origin_window_);
+        floating_board_drag_pointer_id_ = point.PointerId();
+        floating_board_drag_pending_ = true;
+        floating_board_drag_started_ = false;
+    }
+
+    void MainWindow::FloatingBoard_PointerMoved(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args)
+    {
+        if (!floating_board_drag_pending_ || !floating_board_root_) return;
+        auto const point = args.GetCurrentPoint(floating_board_root_);
+        if (point.PointerId() != floating_board_drag_pointer_id_
+            || !point.Properties().IsLeftButtonPressed()) return;
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        auto const dx = cursor.x - floating_board_drag_origin_cursor_.x;
+        auto const dy = cursor.y - floating_board_drag_origin_cursor_.y;
+        if (!floating_board_drag_started_ && std::hypot(dx, dy) < 3.0) return;
+        if (!floating_board_drag_started_)
+        {
+            floating_board_drag_started_ = true;
+            floating_board_root_.CapturePointer(args.Pointer());
+        }
+        HWND hwnd = nullptr;
+        check_hresult(floating_board_window_.as<::IWindowNative>()->get_WindowHandle(&hwnd));
+        SetWindowPos(hwnd, HWND_TOPMOST,
+            floating_board_drag_origin_window_.left + dx,
+            floating_board_drag_origin_window_.top + dy,
+            0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        args.Handled(true);
+    }
+
+    void MainWindow::FloatingBoard_PointerReleased(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args)
+    {
+        if (!floating_board_drag_pending_) return;
+        if (floating_board_drag_started_ && floating_board_root_)
+        {
+            floating_board_root_.ReleasePointerCapture(args.Pointer());
+            args.Handled(true);
+            SaveFloatingBoardFrame();
+        }
+        floating_board_drag_pending_ = false;
+        floating_board_drag_started_ = false;
+        floating_board_drag_pointer_id_ = 0;
+    }
+
+    void MainWindow::OpenFloatingBoard()
+    {
+        if (!live_game_ || (live_game_->status != L"created" && live_game_->status != L"started"))
+        {
+            ShowMessage(L"Open a playable live game before opening the floating board.", false);
             return;
         }
         if (floating_board_window_)
         {
-            floating_board_review_ = review;
             RenderFloatingBoard();
-            floating_board_window_.Activate();
+            floating_board_window_.AppWindow().Show(false);
             return;
         }
-        floating_board_review_ = review;
         floating_board_window_ = Microsoft::UI::Xaml::Window();
-        floating_board_window_.Title(L"LibChess — Floating board");
-        floating_board_window_.SystemBackdrop(Media::MicaBackdrop());
-        Grid root; root.Padding(Thickness{ 16, 16, 16, 16 });
+        floating_board_window_.Title(L"Floating Chessboard");
+        floating_board_window_.SystemBackdrop(nullptr);
+        floating_board_root_ = Grid();
+        floating_board_root_.Background(CreateBrush(Windows::UI::Colors::Transparent()));
         Viewbox viewbox; viewbox.Stretch(Stretch::Uniform);
         viewbox.HorizontalAlignment(HorizontalAlignment::Stretch);
         viewbox.VerticalAlignment(VerticalAlignment::Stretch);
@@ -4530,35 +4832,39 @@ namespace winrt::LibChess::WinUI::implementation
         outline.BorderThickness(Thickness{ 1, 1, 1, 1 });
         outline.BorderBrush(CreateBrush(Color(board_presentation_.border)));
         frame.Children().Append(outline);
-        viewbox.Child(frame); root.Children().Append(viewbox);
-        floating_board_window_.Content(root);
+        viewbox.Child(frame); floating_board_root_.Children().Append(viewbox);
+        floating_board_root_.AddHandler(UIElement::PointerPressedEvent(),
+            winrt::box_value<Microsoft::UI::Xaml::Input::PointerEventHandler>({
+                this, &MainWindow::FloatingBoard_PointerPressed }), true);
+        floating_board_root_.AddHandler(UIElement::PointerMovedEvent(),
+            winrt::box_value<Microsoft::UI::Xaml::Input::PointerEventHandler>({
+                this, &MainWindow::FloatingBoard_PointerMoved }), true);
+        floating_board_root_.AddHandler(UIElement::PointerReleasedEvent(),
+            winrt::box_value<Microsoft::UI::Xaml::Input::PointerEventHandler>({
+                this, &MainWindow::FloatingBoard_PointerReleased }), true);
+        floating_board_root_.AddHandler(UIElement::PointerCanceledEvent(),
+            winrt::box_value<Microsoft::UI::Xaml::Input::PointerEventHandler>({
+                this, &MainWindow::FloatingBoard_PointerReleased }), true);
+        floating_board_window_.Content(floating_board_root_);
         floating_board_closed_token_ = floating_board_window_.Closed(
             [this](auto const&, auto const&)
             {
+                floating_board_drag_pending_ = false;
+                floating_board_drag_started_ = false;
+                floating_board_non_client_ = nullptr;
+                floating_board_root_ = nullptr;
                 floating_board_grid_ = nullptr;
                 floating_board_window_ = nullptr;
-                floating_board_review_ = false;
             });
-        floating_board_window_.Activate();
-        auto const app_window = floating_board_window_.AppWindow();
-        app_window.Resize({ 680, 700 });
-        if (auto const presenter = app_window.Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>())
-        {
-            presenter.IsAlwaysOnTop(true);
-        }
+        ConfigureFloatingBoardWindow();
         RenderFloatingBoard();
+        floating_board_window_.AppWindow().Show(false);
     }
 
     void MainWindow::FloatingBoard_Click(
         Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
-        OpenFloatingBoard(false);
-    }
-
-    void MainWindow::FloatingReviewBoard_Click(
-        Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
-    {
-        OpenFloatingBoard(true);
+        OpenFloatingBoard();
     }
 
     void MainWindow::RenderBoard()

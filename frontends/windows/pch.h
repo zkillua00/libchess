@@ -6,6 +6,7 @@
 #include <hstring.h>
 #include <wincred.h>
 #include <shlobj.h>
+#include <dwmapi.h>
 #undef GetCurrentTime
 
 #include <algorithm>
@@ -46,6 +47,7 @@
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Microsoft.UI.Composition.h>
+#include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.h>

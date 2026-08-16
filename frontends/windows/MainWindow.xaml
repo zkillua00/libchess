@@ -692,10 +692,6 @@
                                         Click="OpenAnalysis_Click"
                                         Content="Open service analysis" />
                                     <Button
-                                        HorizontalAlignment="Stretch"
-                                        Click="FloatingReviewBoard_Click"
-                                        Content="Open floating board" />
-                                    <Button
                                         x:Name="ExportPgnButton"
                                         HorizontalAlignment="Stretch"
                                         Click="ExportPgn_Click"

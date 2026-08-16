@@ -61,7 +61,6 @@ namespace winrt::LibChess::WinUI::implementation
         void ImportPieceSvgFolder_Click(Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
         void ClearPieceAssets_Click(Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
         void FloatingBoard_Click(Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
-        void FloatingReviewBoard_Click(Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
         void ExportPgn_Click(Windows::Foundation::IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
         void CreateGame_Click(
             Windows::Foundation::IInspectable const&,
@@ -238,7 +237,20 @@ namespace winrt::LibChess::WinUI::implementation
         void RestoreCustomizationState();
         winrt::fire_and_forget ImportPieceSvgFolderAsync();
         winrt::fire_and_forget SavePgnAsync(winrt::hstring filename, winrt::hstring pgn);
-        void OpenFloatingBoard(bool review);
+        void OpenFloatingBoard();
+        void ConfigureFloatingBoardWindow();
+        void ConfigureFloatingBoardResizeRegions();
+        void SaveFloatingBoardFrame();
+        Microsoft::UI::Xaml::Controls::MenuFlyout BuildFloatingBoardMenu();
+        void FloatingBoard_PointerPressed(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
+        void FloatingBoard_PointerMoved(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
+        void FloatingBoard_PointerReleased(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
         void Square_Click(
             Windows::Foundation::IInspectable const& sender,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -294,9 +306,17 @@ namespace winrt::LibChess::WinUI::implementation
         winrt::hstring pending_board_presentation_request_id_;
         winrt::hstring pending_customization_request_id_;
         Microsoft::UI::Xaml::Window floating_board_window_{ nullptr };
+        Microsoft::UI::Xaml::Controls::Grid floating_board_root_{ nullptr };
         Microsoft::UI::Xaml::Controls::Grid floating_board_grid_{ nullptr };
+        Microsoft::UI::Input::InputNonClientPointerSource floating_board_non_client_{ nullptr };
         winrt::event_token floating_board_closed_token_{};
-        bool floating_board_review_{ false };
+        winrt::event_token floating_board_rect_changing_token_{};
+        winrt::event_token floating_board_rect_changed_token_{};
+        std::uint32_t floating_board_drag_pointer_id_{ 0 };
+        POINT floating_board_drag_origin_cursor_{};
+        RECT floating_board_drag_origin_window_{};
+        bool floating_board_drag_pending_{ false };
+        bool floating_board_drag_started_{ false };
         winrt::hstring selected_drop_;
         winrt::hstring incoming_offer_;
         winrt::hstring pending_move_request_id_;

@@ -80,7 +80,7 @@
       <AdditionalOptions>%(AdditionalOptions) /bigobj /permissive- /utf-8</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Advapi32.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Advapi32.lib;Dwmapi.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
