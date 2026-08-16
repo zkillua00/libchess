@@ -111,12 +111,56 @@
                                 x:Name="BackendDescription"
                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                 TextWrapping="Wrap" />
-                            <Button
-                                x:Name="BackendActionButton"
+                            <StackPanel
+                                x:Name="BackendAuthenticationPanel"
                                 HorizontalAlignment="Left"
-                                Click="BackendActionButton_Click"
-                                Style="{StaticResource AccentButtonStyle}"
-                                Visibility="Collapsed" />
+                                Spacing="8"
+                                Visibility="Collapsed">
+                                <Button
+                                    x:Name="BackendActionButton"
+                                    HorizontalAlignment="Stretch"
+                                    Click="BackendActionButton_Click"
+                                    Style="{StaticResource AccentButtonStyle}" />
+                                <Button
+                                    x:Name="SavedCredentialButton"
+                                    HorizontalAlignment="Stretch"
+                                    Click="SavedCredentialButton_Click"
+                                    Content="Continue with saved account"
+                                    Visibility="Collapsed" />
+                                <StackPanel
+                                    x:Name="BackendCredentialNote"
+                                    Orientation="Horizontal"
+                                    Spacing="6">
+                                    <FontIcon
+                                        VerticalAlignment="Center"
+                                        FontFamily="Segoe Fluent Icons"
+                                        FontSize="12"
+                                        Glyph="&#xEA18;" />
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="Credentials are kept in Windows Credential Manager."
+                                        Style="{StaticResource CaptionTextBlockStyle}" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel
+                                x:Name="BackendAuthorizationPanel"
+                                HorizontalAlignment="Left"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                                <TextBlock
+                                    Text="Finish signing in in your browser."
+                                    Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button
+                                        x:Name="ReopenAuthorizationButton"
+                                        Click="ReopenAuthorizationButton_Click"
+                                        Content="Reopen browser" />
+                                    <Button
+                                        Click="CancelOAuthButton_Click"
+                                        Content="Cancel" />
+                                </StackPanel>
+                            </StackPanel>
                             <ProgressBar
                                 x:Name="BackendProgress"
                                 IsIndeterminate="True"
@@ -197,7 +241,7 @@
                         Tag="account"
                         Tapped="AccountNavigationItem_Tapped">
                         <NavigationViewItem.Icon>
-                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE77B;" />
+                            <SymbolIcon Symbol="Contact" />
                         </NavigationViewItem.Icon>
                         <NavigationViewItem.Content>
                             <StackPanel Spacing="1">

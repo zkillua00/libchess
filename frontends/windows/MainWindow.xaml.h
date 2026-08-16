@@ -16,6 +16,15 @@ namespace winrt::LibChess::WinUI::implementation
         void BackendActionButton_Click(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void SavedCredentialButton_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void ReopenAuthorizationButton_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void CancelOAuthButton_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void MainNavigation_SelectionChanged(
             Microsoft::UI::Xaml::Controls::NavigationView const&,
             Microsoft::UI::Xaml::Controls::NavigationViewSelectionChangedEventArgs const& args);
@@ -302,6 +311,7 @@ namespace winrt::LibChess::WinUI::implementation
         winrt::hstring account_username_;
         winrt::hstring account_title_;
         winrt::hstring pending_account_request_id_;
+        winrt::hstring authorization_url_;
         std::optional<::LibChess::Windows::Wire::LiveGame> live_game_;
         std::vector<::LibChess::Windows::Wire::LiveGameSummary> live_game_summaries_;
         std::unordered_map<std::wstring, ::LibChess::Windows::Wire::LiveGame> live_games_;
@@ -372,6 +382,7 @@ namespace winrt::LibChess::WinUI::implementation
         bool customization_edit_pending_{ false };
         bool protocol_activation_available_{ true };
         bool oauth_authorizing_{ false };
+        bool backend_connecting_{ false };
         bool connecting_with_saved_credential_{ false };
         bool populating_time_controls_{ false };
         std::uint64_t next_request_id_{ 1 };

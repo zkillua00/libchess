@@ -1,7 +1,7 @@
 # Current Architecture
 
 This document describes the implementation that exists in the repository as of
-2026-08-16. [`architecture.md`](architecture.md) remains the longer-term design
+2026-08-17. [`architecture.md`](architecture.md) remains the longer-term design
 and portability contract; this file records the current runtime, platform
 integration, implemented providers, and known boundaries.
 
@@ -9,7 +9,7 @@ integration, implemented providers, and known boundaries.
 
 | Area | Current implementation | Not implemented yet |
 | --- | --- | --- |
-| Native frontends | macOS 14+ using AppKit and SwiftUI; Windows 10 2004+ using WinUI 3 and C++/WinRT | Full Windows feature parity and Qt |
+| Native frontends | macOS 14+ using AppKit and SwiftUI; Windows 10 2004+ using WinUI 3 and C++/WinRT, with equivalent current product surfaces | Qt and a Linux frontend |
 | Chess backends | Lichess and a discovered local Stockfish UCI engine | Chess.com and other platform or engine adapters |
 | Game creation | Lichess computer games and private local Stockfish games | Human challenges and matchmaking |
 | Live play | Multiple normalized online or local games, prediction, clocks, and game actions | Persistent local sessions across app restarts |
@@ -23,7 +23,9 @@ and probes a real UCI executable at startup; on this development machine the
 discovered engine reports itself as Stockfish 18. An undiscoverable engine stays
 in the launcher as an unavailable backend with a backend-supplied explanation.
 Chess.com and Linux remain extension points rather than code currently shipped
-by this repository. Windows now has its first native product slice.
+by this repository. Windows now covers the same current launcher, account,
+gameplay, history/review, appearance, and floating-board product areas as macOS
+using Windows-native interaction patterns.
 
 ## Runtime topology
 
@@ -66,9 +68,12 @@ macOS process
 Windows process
 |
 +-- Windows App SDK / WinUI 3 application lifecycle
-|   `-- native XAML launcher, workspace, and chessboard
+|   +-- native XAML launcher and NavigationView workspace
+|   `-- titleless floating-board utility window
 +-- C++/WinRT wire models and ABI wrapper
-|   `-- DispatcherQueue handoff to the UI thread
+|   +-- DispatcherQueue handoff to the UI thread
+|   +-- Windows Credential Manager token storage
+|   `-- registry and Local AppData presentation persistence
 `-- libchess_ffi.dll
     `-- the same Rust worker, providers, rules, and board presentation
 ```
@@ -338,23 +343,35 @@ WinUI `DispatcherQueue`. Windows Runtime JSON APIs decode provider-neutral wire
 models on the UI thread. The window and every launcher, navigation, form, status,
 and board control are WinUI objects.
 
-The first Windows slice implements:
+The Windows frontend implements the same current provider-neutral product areas
+as the macOS frontend while following WinUI navigation, command, flyout, and
+window conventions:
 
-- provider discovery, selection, availability, and backend-supplied launcher
-  content;
-- Lichess OAuth PKCE through the system browser, per-user protocol activation,
-  callback redirection to the original process, Windows Credential Manager
-  persistence, and saved-account reconnection;
-- credential-free local-backend connection and provider-advertised new-game
-  defaults;
-- live-game startup, player perspective, native board rendering, legal
-  click-to-move, draw offers, and resignation;
-- portable board palettes and text-glyph piece assets supplied by Rust;
-- Windows-aware Stockfish discovery through `PATH`, WinGet, Chocolatey, and
-  conventional installation directories.
+- the launcher renders backend discovery, selection, availability, explicit
+  online sign-in, saved-account continuation, browser authorization controls,
+  local-backend startup, and backend-supplied copy;
+- Lichess OAuth PKCE uses the system browser, per-user protocol activation,
+  callback redirection to the original process, and Windows Credential Manager;
+- the connected `NavigationView` exposes new-game creation, a hierarchical
+  ongoing-game list, history, appearance, and a footer account flyout with
+  refresh, disconnect, saved-credential removal, and backend switching;
+- live play includes native SVG and text pieces, Rust-provided palettes and
+  motion, rounded and annotated boards, clocks, promotion, pockets and drops,
+  prediction and rollback, offers and claims, reconnect, and termination;
+- finished-game history opens an in-app review board with chess notation,
+  opening data, evaluations, principal variations, service handoff, and native
+  annotated-PGN export;
+- the appearance surface selects and persists installed board, piece, and zoom
+  choices and creates portable derived board themes or six-role SVG piece sets;
+- a titleless, square, always-on-top utility window renders only the current
+  board, resizes continuously, restores its frame, and exposes contextual game
+  actions through a native menu; and
+- Stockfish discovery covers `PATH`, WinGet, Chocolatey, and conventional
+  installation directories.
 
-History, review, clocks, pockets and drops, SVG piece assets, theme selection,
-promotion choice, and production packaging remain Windows follow-up work.
+The two frontends intentionally do not share widget layouts. They share Rust
+contracts and product capabilities while presenting them through their native
+platform conventions. Production Windows packaging remains follow-up work.
 
 ## Authentication and credentials
 
@@ -426,8 +443,9 @@ The creation flow is the common backend `create_bot_game` contract. Each
 descriptor supplies opaque opponent identifiers, supported variants, player
 colors, time-control choices, custom-position and move-history rules, and
 explicit defaults.
-Swift renders that descriptor and returns selected values without calculating a
-default, translating provider identifiers, or classifying a time control.
+Each native frontend renders that descriptor and returns selected values without
+calculating a default, translating provider identifiers, or classifying a time
+control.
 
 The Lichess adapter validates the request against its descriptor, maps it to the
 provider form, and returns a normalized game. These games are casual because the
@@ -489,12 +507,12 @@ FFI worker validates against its latest authoritative snapshot
         v
 libchess-rules reconstructs snapshot + proposed move
         |
-        +-- move_predicted event -> Swift displays predicted board
+        +-- move_predicted event -> native frontend displays predicted board
         |
         v
 selected backend move submission
         |
-        +-- request/engine error -> Swift removes prediction and rolls back
+        +-- request/engine error -> native frontend removes prediction and rolls back
         `-- success -> prediction remains until authoritative state advances
                                 |
                                 v
@@ -527,17 +545,17 @@ catalog. Both emit the same normalized entries. Selecting any history entry
 opens the native review workspace.
 
 PGN export is requested through the provider adapter. Rust validates and bounds
-the response and supplies a safe filename. Swift validates the game identity,
-provider, filename, NUL absence, and an eight-megabyte size limit before
-presenting the native save panel.
+the response and supplies a safe filename. The native frontend validates the
+game identity, provider, filename, NUL absence, and an eight-megabyte size limit
+before presenting the platform save picker.
 
 Game review is backend-backed. Lichess returns the initial position, SAN,
 normalized move identifiers, clocks, opening data, and any evaluations, best
 lines, and judgments present in provider data; missing evaluation data remains
 missing. Stockfish generates SAN and position evaluations locally after the
 game. The FFI worker retains a loaded review and reconstructs requested plies
-through `libchess-rules`; Swift renders either source without opening a browser
-or parsing PGN itself.
+through `libchess-rules`; each native frontend renders either source without
+opening a browser or parsing PGN itself.
 
 ## Board customization and persistence
 
@@ -552,27 +570,29 @@ built-in identifier shadowing, duplicate definitions, missing roles, unsafe or
 oversized assets, and oversized catalogs. Successful mutations return the full
 validated state and updated provider catalog.
 
-The macOS settings window edits these portable values, but it does not perform
+The native settings surfaces edit these portable values, but they do not perform
 theme composition or color math. The validated state is encoded as JSON and
-written atomically to:
+written to the platform application-data location:
 
 ```text
 ~/Library/Application Support/LibChess/board-customization.json
+%LOCALAPPDATA%\LibChess\board-customization.json
 ```
 
-The work occurs away from the main actor. Board provider, board theme, piece
-theme, and zoom selections use `UserDefaults`. Reduce Motion remains an
-operating-system preference; Swift maps the portable animation rules to native
-animations with that accessibility setting applied.
+macOS performs the work away from the main actor and stores selections in
+`UserDefaults`. Windows stores selections under
+`HKCU\Software\LibChess\Windows`. Each frontend maps portable motion rules to
+native animations and honors the operating system's animation accessibility
+setting.
 
 ## Storage ownership
 
 | Data | Owner | Lifetime |
 | --- | --- | --- |
-| OAuth access token | macOS Keychain | Persistent and device-local where supported |
-| Custom board and piece definitions | Application Support JSON | Persistent |
-| Selected themes and zoom | `UserDefaults` | Persistent |
-| Floating panel frame | AppKit frame autosave | Persistent |
+| OAuth access token | macOS Keychain or Windows Credential Manager | Persistent and device-local where supported |
+| Custom board and piece definitions | macOS Application Support or Windows Local AppData JSON | Persistent |
+| Selected themes and zoom | `UserDefaults` or `HKCU\Software\LibChess\Windows` | Persistent |
+| Floating panel/window frame | AppKit frame autosave or the Windows preference key | Persistent |
 | OAuth verifier and state | Authenticated adapter | In memory; Lichess expires it after ten minutes |
 | Selected backend, active backend, and access-token copies | Rust client | In memory until cleared, disconnected, or destroyed |
 | Local Stockfish game catalog and UCI processes | Stockfish backend | In memory for the selected backend's lifetime |
@@ -584,13 +604,14 @@ Provider data is treated as untrusted at every layer:
 
 - Rust validates identifiers, lengths, enum-like wire values, URLs, NDJSON line
   sizes, response structure, legal moves, PGN, review data, and SVG assets.
-- Online backend descriptors carry a trusted HTTPS web origin. Swift verifies
-  returned game and analysis URLs against it before opening them; local games
-  have no URL and expose no external-page action.
+- Online backend descriptors carry a trusted HTTPS web origin. Each native
+  frontend verifies returned game and analysis URLs against it before opening
+  them; local games have no URL and expose no external-page action.
 - OAuth authorization URLs are checked against the selected descriptor's
   authorization origin, and callbacks against its redirect URI.
-- Swift correlates asynchronous results with pending request identifiers and
-  revalidates decoded collections, board states, filenames, and payload sizes.
+- Each native frontend correlates asynchronous results with pending request
+  identifiers and revalidates decoded collections, board states, filenames,
+  URLs, and payload sizes.
 - No arbitrary engine command or executable path crosses the ABI. The Stockfish
   adapter owns discovery and UCI text, and the shared core guard rejects engine
   use in every live online context.
@@ -639,8 +660,8 @@ the broader product matches the long-term design:
 
 - A Chess.com integration needs a new platform factory and backend using an
   officially authorized API. No Chess.com networking code exists today.
-- Windows still needs the remaining macOS feature surfaces and production
-  packaging. Linux needs its native wrapper and renderer.
+- Windows still needs production packaging. Linux needs its native wrapper and
+  renderer.
 - Local history needs durable persistence if games must survive backend changes
   or application restarts.
 - Interactive free-form engine analysis needs new commands beyond the current

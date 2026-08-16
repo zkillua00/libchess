@@ -695,11 +695,13 @@ namespace winrt::LibChess::WinUI::implementation
                     cancel.Insert(L"type", JsonString(L"cancel_oauth"));
                     SendCommand(cancel);
                     oauth_authorizing_ = false;
-                    BackendProgress().Visibility(Visibility::Collapsed);
+                    authorization_url_.clear();
                     UpdateBackendAction();
                     ShowMessage(L"The sign-in request could not be verified.");
                     return;
                 }
+                authorization_url_ = authorization_url;
+                UpdateBackendAction();
                 LaunchAuthorizationAsync(authorization_url);
                 return;
             }
@@ -719,6 +721,7 @@ namespace winrt::LibChess::WinUI::implementation
                 try
                 {
                     ::LibChess::Windows::CredentialStore::Save(provider, access_token);
+                    authorization_url_.clear();
                     UpdateBackendAction();
                 }
                 catch (std::exception const&)
@@ -758,7 +761,9 @@ namespace winrt::LibChess::WinUI::implementation
                 if (state == L"connected")
                 {
                     oauth_authorizing_ = false;
+                    backend_connecting_ = false;
                     connecting_with_saved_credential_ = false;
+                    authorization_url_.clear();
                     BackendProgress().Visibility(Visibility::Collapsed);
                     ShowWorkspace();
                     auto const supports_live_games = selected_provider_
@@ -786,13 +791,15 @@ namespace winrt::LibChess::WinUI::implementation
                 else if (state == L"connecting" || state == L"authorizing")
                 {
                     oauth_authorizing_ = state == L"authorizing";
-                    BackendProgress().Visibility(Visibility::Visible);
-                    BackendActionButton().IsEnabled(false);
+                    backend_connecting_ = state == L"connecting";
+                    UpdateBackendAction();
                 }
                 else
                 {
                     oauth_authorizing_ = false;
+                    backend_connecting_ = false;
                     connecting_with_saved_credential_ = false;
+                    authorization_url_.clear();
                     BackendProgress().Visibility(Visibility::Collapsed);
                     if (String(event, L"request_id") == pending_account_request_id_)
                     {
@@ -1198,6 +1205,9 @@ namespace winrt::LibChess::WinUI::implementation
                         providers_[*selected_provider_].id);
                 }
                 connecting_with_saved_credential_ = false;
+                backend_connecting_ = false;
+                oauth_authorizing_ = false;
+                authorization_url_.clear();
                 UpdateBackendAction();
                 ShowMessage(error_message);
                 return;
@@ -1348,7 +1358,9 @@ namespace winrt::LibChess::WinUI::implementation
         LauncherInfoBar().Message(provider.unavailable_reason);
 
         auto const oauth = provider.connection_type == L"oauth_pkce";
-        BackendActionButton().Visibility(oauth ? Visibility::Visible : Visibility::Collapsed);
+        BackendAuthenticationPanel().Visibility(
+            oauth ? Visibility::Visible : Visibility::Collapsed);
+        BackendAuthorizationPanel().Visibility(Visibility::Collapsed);
         UpdateBackendAction();
 
         if (select)
@@ -1384,20 +1396,63 @@ namespace winrt::LibChess::WinUI::implementation
         }
         try
         {
-            if (::LibChess::Windows::CredentialStore::Contains(provider.id))
-            {
-                ConnectUsingSavedCredential();
-            }
-            else
-            {
-                BeginOAuth();
-            }
+            BeginOAuth();
         }
         catch (std::exception const& error)
         {
             ShowMessage(winrt::to_hstring(error.what()));
             UpdateBackendAction();
         }
+    }
+
+    void MainWindow::SavedCredentialButton_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        try
+        {
+            ConnectUsingSavedCredential();
+        }
+        catch (std::exception const& error)
+        {
+            ShowMessage(winrt::to_hstring(error.what()));
+            UpdateBackendAction();
+        }
+    }
+
+    void MainWindow::ReopenAuthorizationButton_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!oauth_authorizing_ || authorization_url_.empty())
+        {
+            return;
+        }
+        LaunchAuthorizationAsync(authorization_url_);
+    }
+
+    void MainWindow::CancelOAuthButton_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!oauth_authorizing_)
+        {
+            return;
+        }
+        JsonObject command;
+        command.Insert(L"type", JsonString(L"cancel_oauth"));
+        try
+        {
+            SendCommand(command);
+        }
+        catch (std::exception const& error)
+        {
+            ShowMessage(winrt::to_hstring(error.what()));
+        }
+        oauth_authorizing_ = false;
+        backend_connecting_ = false;
+        authorization_url_.clear();
+        UpdateBackendAction();
     }
 
     void MainWindow::BeginOAuth()
@@ -1414,8 +1469,10 @@ namespace winrt::LibChess::WinUI::implementation
         }
 
         LauncherInfoBar().IsOpen(false);
-        BackendProgress().Visibility(Visibility::Visible);
-        BackendActionButton().IsEnabled(false);
+        oauth_authorizing_ = true;
+        backend_connecting_ = false;
+        authorization_url_.clear();
+        UpdateBackendAction();
         JsonObject command;
         command.Insert(L"type", JsonString(L"begin_oauth"));
         command.Insert(L"provider", JsonString(provider.id));
@@ -1433,7 +1490,7 @@ namespace winrt::LibChess::WinUI::implementation
             ::LibChess::Windows::DiagnosticLog::Write(
                 L"oauth",
                 L"The begin_oauth command could not be sent to Rust.");
-            BackendProgress().Visibility(Visibility::Collapsed);
+            oauth_authorizing_ = false;
             UpdateBackendAction();
             throw;
         }
@@ -1464,9 +1521,9 @@ namespace winrt::LibChess::WinUI::implementation
             return;
         }
 
-        BackendProgress().Visibility(Visibility::Visible);
-        BackendActionButton().IsEnabled(false);
+        backend_connecting_ = true;
         connecting_with_saved_credential_ = true;
+        UpdateBackendAction();
         try
         {
             JsonObject command;
@@ -1480,7 +1537,7 @@ namespace winrt::LibChess::WinUI::implementation
         {
             SecureZeroMemory(access_token->data(), access_token->size());
             connecting_with_saved_credential_ = false;
-            BackendProgress().Visibility(Visibility::Collapsed);
+            backend_connecting_ = false;
             UpdateBackendAction();
             throw;
         }
@@ -1512,7 +1569,8 @@ namespace winrt::LibChess::WinUI::implementation
         {
         }
         oauth_authorizing_ = false;
-        BackendProgress().Visibility(Visibility::Collapsed);
+        backend_connecting_ = false;
+        authorization_url_.clear();
         UpdateBackendAction();
         ::LibChess::Windows::DiagnosticLog::Write(
             L"oauth",
@@ -1669,12 +1727,16 @@ namespace winrt::LibChess::WinUI::implementation
                 L"oauth",
                 L"Callback forwarded to Rust for exact redirect and state validation.");
             oauth_authorizing_ = false;
-            BackendProgress().Visibility(Visibility::Visible);
+            backend_connecting_ = true;
+            authorization_url_.clear();
+            UpdateBackendAction();
         }
         catch (std::exception const& error)
         {
             ShowMessage(winrt::to_hstring(error.what()));
-            BackendProgress().Visibility(Visibility::Collapsed);
+            oauth_authorizing_ = false;
+            backend_connecting_ = false;
+            authorization_url_.clear();
             UpdateBackendAction();
         }
     }
@@ -1705,11 +1767,21 @@ namespace winrt::LibChess::WinUI::implementation
         catch (...)
         {
         }
-        BackendActionButton().Content(box_value(
-            (saved ? L"Continue with " : L"Sign in with ") + provider.display_name));
+        auto const show_authentication = !oauth_authorizing_ && !backend_connecting_;
+        BackendAuthenticationPanel().Visibility(
+            show_authentication ? Visibility::Visible : Visibility::Collapsed);
+        BackendAuthorizationPanel().Visibility(
+            oauth_authorizing_ ? Visibility::Visible : Visibility::Collapsed);
+        BackendProgress().Visibility(
+            backend_connecting_ ? Visibility::Visible : Visibility::Collapsed);
+        BackendActionButton().Content(box_value(L"Sign in with " + provider.display_name));
         BackendActionButton().IsEnabled(
-            provider.available && !oauth_authorizing_ && !connecting_with_saved_credential_ &&
-            (saved || protocol_activation_available_));
+            provider.available && show_authentication && protocol_activation_available_);
+        SavedCredentialButton().Visibility(
+            saved ? Visibility::Visible : Visibility::Collapsed);
+        SavedCredentialButton().IsEnabled(
+            provider.available && show_authentication && !connecting_with_saved_credential_);
+        ReopenAuthorizationButton().IsEnabled(!authorization_url_.empty());
     }
 
     void MainWindow::ShowLauncher()

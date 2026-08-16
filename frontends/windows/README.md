@@ -27,11 +27,16 @@ From the repository root:
 Use `-Configuration Debug` for a debug build or `-Run` to start the produced
 app after a successful build.
 
-The Windows slice implements backend discovery and selection, Lichess OAuth
-with PKCE in the system browser, per-user protocol activation, secure token
-persistence in Windows Credential Manager, saved-account reconnection, local
-backend connection, backend-advertised game defaults, and ongoing-game
-navigation. The live workspace includes a backend-presented board with native
+The Windows frontend implements backend discovery and selection, explicit
+online sign-in and saved-account continuation, Lichess OAuth with PKCE in the
+system browser, per-user protocol activation, secure token persistence in
+Windows Credential Manager, local-backend connection, backend-advertised game
+defaults, and hierarchical ongoing-game navigation. The launcher retains native
+browser authorization, reopen, and cancellation controls. The connected
+NavigationView footer opens an account flyout with account details, refresh,
+disconnect, saved-credential removal, and service switching.
+
+The live workspace includes a backend-presented board with native
 SVG support, themes and zoom, rounded chrome, coordinates, layered move/check
 indicators, piece motion, promotions, variant pockets and drops. It also
 includes ticking clock/correspondence/unlimited displays, move history,
@@ -51,7 +56,9 @@ roles. Theme-library state is saved under `%LOCALAPPDATA%\LibChess` and restored
 through the versioned FFI. A playable live board can also be detached into a
 titleless, square, always-on-top WinUI utility panel with native edge resizing.
 It stays out of normal window switching and exposes game actions through its
-context menu.
+context menu. Together these surfaces cover the same current end-to-end product
+areas as the macOS frontend while using WinUI 3 controls and Windows windowing
+patterns rather than reproducing the macOS layout.
 
 Packaging remains follow-up work.
 
