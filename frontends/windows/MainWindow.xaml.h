@@ -200,16 +200,23 @@ namespace winrt::LibChess::WinUI::implementation
             bool interactive);
         void RenderAppearancePreview();
         void RenderFloatingBoard();
+        void QueueFloatingBoardClose();
+        void CloseFloatingBoard();
+        void DetachFloatingBoardSubclass();
+        void StopBoardAnimations();
         void ApplyRoundedClip(
             Microsoft::UI::Xaml::FrameworkElement const& element,
             double extent);
         Microsoft::UI::Xaml::FrameworkElement CreatePieceVisual(
             ::LibChess::Windows::Wire::BoardPiece const& piece,
-            double square_extent);
+            double square_extent,
+            bool separate_xaml_root = false);
         Microsoft::UI::Xaml::Media::Imaging::SvgImageSource SvgSource(
             ::LibChess::Windows::Wire::BoardAsset const& asset,
-            ::LibChess::Windows::Wire::RgbaColor const& tint);
-        winrt::fire_and_forget LoadSvgAsync(
+            ::LibChess::Windows::Wire::RgbaColor const& tint,
+            double logical_extent,
+            bool separate_xaml_root = false);
+        static winrt::fire_and_forget LoadSvgAsync(
             Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source,
             winrt::hstring svg);
         void AnimatePiece(
@@ -325,6 +332,7 @@ namespace winrt::LibChess::WinUI::implementation
         RECT floating_board_drag_origin_window_{};
         bool floating_board_drag_pending_{ false };
         bool floating_board_drag_started_{ false };
+        bool floating_board_close_pending_{ false };
         winrt::hstring selected_drop_;
         winrt::hstring incoming_offer_;
         winrt::hstring pending_move_request_id_;

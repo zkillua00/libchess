@@ -159,6 +159,11 @@ namespace
 
     void SelectComboTag(ComboBox const& combo, hstring const& wanted)
     {
+        if (auto const selected = combo.SelectedItem().try_as<ComboBoxItem>();
+            selected && unbox_value_or<hstring>(selected.Tag(), {}) == wanted)
+        {
+            return;
+        }
         for (std::uint32_t index = 0; index < combo.Items().Size(); ++index)
         {
             auto const item = combo.Items().GetAt(index).try_as<ComboBoxItem>();
@@ -480,6 +485,7 @@ namespace winrt::LibChess::WinUI::implementation
                 }
                 if (auto const presentation = Object(event, L"board_presentation"))
                 {
+                    StopBoardAnimations();
                     board_presentation_ =
                         ::LibChess::Windows::Wire::ParseBoardPresentation(presentation);
                     svg_sources_.clear();
@@ -501,16 +507,19 @@ namespace winrt::LibChess::WinUI::implementation
                 AppearanceProgress().Visibility(Visibility::Collapsed);
                 if (auto const presentation = Object(event, L"board_presentation"))
                 {
+                    StopBoardAnimations();
                     board_presentation_ =
                         ::LibChess::Windows::Wire::ParseBoardPresentation(presentation);
-                    svg_sources_.clear();
                     WritePreference(L"BoardProvider", board_presentation_.provider);
                     WritePreference(L"BoardTheme", board_presentation_.board_theme);
                     WritePreference(L"PieceTheme", board_presentation_.piece_theme);
                     auto const settings_visible =
                         AppearancePane().Visibility() == Visibility::Visible;
-                    if (settings_visible) PopulateSettingsAppearance();
-                    else PopulateBoardAppearance();
+                    // The response can arrive while the initiating ComboBox's
+                    // popup is still open. Replacing its Items here leaves the
+                    // popup holding an element WinUI can no longer resolve and
+                    // causes a deferred ERROR_NOT_FOUND fail-fast. The catalog
+                    // has not changed, so synchronize selections in place.
                     populating_board_appearance_ = true;
                     if (settings_visible)
                     {
@@ -529,7 +538,6 @@ namespace winrt::LibChess::WinUI::implementation
                     RenderBoard();
                     RenderReviewBoard();
                     RenderAppearancePreview();
-                    RenderFloatingBoard();
                 }
                 return;
             }
@@ -1570,8 +1578,7 @@ namespace winrt::LibChess::WinUI::implementation
     {
         if (floating_board_window_)
         {
-            SaveFloatingBoardFrame();
-            floating_board_window_.Close();
+            QueueFloatingBoardClose();
         }
         WorkspaceView().Visibility(Visibility::Collapsed);
         LauncherView().Visibility(Visibility::Visible);
@@ -1958,8 +1965,7 @@ namespace winrt::LibChess::WinUI::implementation
     {
         if (floating_board_window_)
         {
-            SaveFloatingBoardFrame();
-            floating_board_window_.Close();
+            QueueFloatingBoardClose();
         }
         clock_timer_.Stop();
         live_game_.reset();
@@ -4105,16 +4111,41 @@ namespace winrt::LibChess::WinUI::implementation
 
     Microsoft::UI::Xaml::Media::Imaging::SvgImageSource MainWindow::SvgSource(
         ::LibChess::Windows::Wire::BoardAsset const& asset,
-        ::LibChess::Windows::Wire::RgbaColor const& tint)
+        ::LibChess::Windows::Wire::RgbaColor const& tint,
+        double logical_extent,
+        bool separate_xaml_root)
     {
         auto const svg = asset.tintable ? TintSvg(asset.value, tint) : asset.value;
-        auto const key = (asset.tintable ? HexColor(tint) : std::wstring(L"original"))
+        // SvgImageSource otherwise decodes at the asset's intrinsic 50 x 50 size.
+        // The board then enlarges that bitmap, which is especially visible on the
+        // CC0 silhouette set. Decode above the physical display size so WinUI can
+        // antialias the final downsample instead.
+        auto rasterization_scale = 1.0;
+        try
+        {
+            if (auto const root = Content().try_as<FrameworkElement>(); root && root.XamlRoot())
+            {
+                rasterization_scale = root.XamlRoot().RasterizationScale();
+            }
+        }
+        catch (...)
+        {
+        }
+        auto const raster_extent = std::ceil((std::max)(1.0, logical_extent)
+            * (std::max)(1.0, rasterization_scale) * 2.0);
+        // A DependencyObject must not be reused across the main window and the
+        // floating board's independent XAML root.
+        auto const key = std::wstring(separate_xaml_root ? L"floating/" : L"main/")
+            + (asset.tintable ? HexColor(tint) : std::wstring(L"original"))
+            + L"@" + std::to_wstring(static_cast<std::uint32_t>(raster_extent))
             + L"\n" + std::wstring(svg);
         if (auto const found = svg_sources_.find(key); found != svg_sources_.end())
         {
             return found->second;
         }
         Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source;
+        source.RasterizePixelWidth(raster_extent);
+        source.RasterizePixelHeight(raster_extent);
         svg_sources_.insert_or_assign(key, source);
         LoadSvgAsync(source, svg);
         return source;
@@ -4124,7 +4155,6 @@ namespace winrt::LibChess::WinUI::implementation
         Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source,
         hstring svg)
     {
-        auto lifetime = get_strong();
         try
         {
             Windows::Storage::Streams::InMemoryRandomAccessStream stream;
@@ -4137,14 +4167,22 @@ namespace winrt::LibChess::WinUI::implementation
             stream.Seek(0);
             static_cast<void>(co_await source.SetSourceAsync(stream));
         }
+        catch (hresult_error const& error)
+        {
+            ::LibChess::Windows::DiagnosticLog::Write(
+                L"board", L"SVG asset decode failed: " + error.message());
+        }
         catch (...)
         {
+            ::LibChess::Windows::DiagnosticLog::Write(
+                L"board", L"SVG asset decode failed with an unknown error.");
         }
     }
 
     FrameworkElement MainWindow::CreatePieceVisual(
         ::LibChess::Windows::Wire::BoardPiece const& piece,
-        double square_extent)
+        double square_extent,
+        bool separate_xaml_root)
     {
         auto const tint = piece.color == L"white"
             ? board_presentation_.white_piece
@@ -4166,7 +4204,7 @@ namespace winrt::LibChess::WinUI::implementation
                 image.Height(extent);
                 image.Stretch(Media::Stretch::Uniform);
                 image.Opacity(static_cast<double>(color.alpha) / 255.0);
-                image.Source(SvgSource(asset->second, color));
+                image.Source(SvgSource(asset->second, color, extent, separate_xaml_root));
                 image.IsHitTestVisible(false);
                 return image;
             }
@@ -4429,7 +4467,7 @@ namespace winrt::LibChess::WinUI::implementation
                 }
                 if (piece != board->pieces.end())
                 {
-                    auto visual = CreatePieceVisual(*piece, square_extent);
+                    auto visual = CreatePieceVisual(*piece, square_extent, interactive);
                     content.Children().Append(visual);
                     if (interactive)
                     {
@@ -4500,8 +4538,7 @@ namespace winrt::LibChess::WinUI::implementation
         if (!floating_board_window_ || !floating_board_grid_) return;
         if (!live_game_ || (live_game_->status != L"created" && live_game_->status != L"started"))
         {
-            SaveFloatingBoardFrame();
-            floating_board_window_.Close();
+            QueueFloatingBoardClose();
             return;
         }
         RenderBoardInto(floating_board_grid_, live_game_->board,
@@ -4509,6 +4546,67 @@ namespace winrt::LibChess::WinUI::implementation
         ApplyRoundedClip(floating_board_grid_, 640.0);
         auto const menu = BuildFloatingBoardMenu();
         floating_board_grid_.ContextFlyout(menu);
+    }
+
+    void MainWindow::QueueFloatingBoardClose()
+    {
+        if (!floating_board_window_ || floating_board_close_pending_)
+        {
+            return;
+        }
+        floating_board_close_pending_ = true;
+        auto const weak = get_weak();
+        if (!DispatcherQueue().TryEnqueue([weak]
+            {
+                if (auto const self = weak.get())
+                {
+                    self->CloseFloatingBoard();
+                }
+            }))
+        {
+            floating_board_close_pending_ = false;
+            ::LibChess::Windows::DiagnosticLog::Write(
+                L"window", L"Could not queue floating board closure.");
+        }
+    }
+
+    void MainWindow::DetachFloatingBoardSubclass()
+    {
+        auto const hwnd = floating_board_hwnd_;
+        floating_board_hwnd_ = nullptr;
+        if (hwnd && IsWindow(hwnd))
+        {
+            static_cast<void>(RemoveWindowSubclass(
+                hwnd, FloatingBoardSubclassProc, FloatingBoardSubclassId));
+        }
+    }
+
+    void MainWindow::CloseFloatingBoard()
+    {
+        floating_board_close_pending_ = false;
+        if (!floating_board_window_)
+        {
+            return;
+        }
+        SaveFloatingBoardFrame();
+        DetachFloatingBoardSubclass();
+        auto const window = floating_board_window_;
+        window.Close();
+    }
+
+    void MainWindow::StopBoardAnimations()
+    {
+        for (auto const& storyboard : active_storyboards_)
+        {
+            try
+            {
+                storyboard.Stop();
+            }
+            catch (...)
+            {
+            }
+        }
+        active_storyboards_.clear();
     }
 
     MenuFlyout MainWindow::BuildFloatingBoardMenu()
@@ -4568,8 +4666,7 @@ namespace winrt::LibChess::WinUI::implementation
         }
         append(L"Close floating board", [this](auto const&, auto const&)
         {
-            SaveFloatingBoardFrame();
-            if (floating_board_window_) floating_board_window_.Close();
+            QueueFloatingBoardClose();
         });
         return menu;
     }
@@ -4579,7 +4676,7 @@ namespace winrt::LibChess::WinUI::implementation
         UINT message,
         WPARAM wparam,
         LPARAM lparam,
-        UINT_PTR subclass_id,
+        UINT_PTR,
         DWORD_PTR reference_data)
     {
         auto* self = reinterpret_cast<MainWindow*>(reference_data);
@@ -4700,7 +4797,6 @@ namespace winrt::LibChess::WinUI::implementation
             self->SaveFloatingBoardFrame();
             break;
         case WM_NCDESTROY:
-            RemoveWindowSubclass(hwnd, FloatingBoardSubclassProc, subclass_id);
             if (self->floating_board_hwnd_ == hwnd)
             {
                 self->floating_board_hwnd_ = nullptr;
@@ -4928,20 +5024,20 @@ namespace winrt::LibChess::WinUI::implementation
             winrt::box_value<Microsoft::UI::Xaml::Input::PointerEventHandler>({
                 this, &MainWindow::FloatingBoard_PointerReleased }), true);
         floating_board_window_.Content(floating_board_root_);
+        auto const weak = get_weak();
         floating_board_closed_token_ = floating_board_window_.Closed(
-            [this](auto const&, auto const&)
+            [weak](auto const&, auto const&)
             {
-                floating_board_drag_pending_ = false;
-                floating_board_drag_started_ = false;
-                if (floating_board_hwnd_)
+                if (auto const self = weak.get())
                 {
-                    RemoveWindowSubclass(
-                        floating_board_hwnd_, FloatingBoardSubclassProc, FloatingBoardSubclassId);
-                    floating_board_hwnd_ = nullptr;
+                    self->floating_board_drag_pending_ = false;
+                    self->floating_board_drag_started_ = false;
+                    self->floating_board_close_pending_ = false;
+                    self->DetachFloatingBoardSubclass();
+                    self->floating_board_root_ = nullptr;
+                    self->floating_board_grid_ = nullptr;
+                    self->floating_board_window_ = nullptr;
                 }
-                floating_board_root_ = nullptr;
-                floating_board_grid_ = nullptr;
-                floating_board_window_ = nullptr;
             });
         ConfigureFloatingBoardWindow();
         RenderFloatingBoard();
@@ -4960,6 +5056,7 @@ namespace winrt::LibChess::WinUI::implementation
         {
             return;
         }
+        StopBoardAnimations();
         ApplyBoardChrome();
         BoardGrid().Children().Clear();
         BoardGrid().RowDefinitions().Clear();
@@ -5133,7 +5230,8 @@ namespace winrt::LibChess::WinUI::implementation
                                 board_presentation_.promoted_marker_color.alpha) / 255.0);
                             image.Source(SvgSource(
                                 board_presentation_.promoted_marker,
-                                board_presentation_.promoted_marker_color));
+                                board_presentation_.promoted_marker_color,
+                                marker_extent));
                             marker = image;
                         }
                         else

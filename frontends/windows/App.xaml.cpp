@@ -29,17 +29,19 @@ namespace winrt::LibChess::WinUI::implementation
     {
         InitializeComponent();
 
-#if defined(_DEBUG) && !defined(DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION)
         UnhandledException([](auto const&, Microsoft::UI::Xaml::UnhandledExceptionEventArgs const& args)
         {
+#if defined(_DEBUG) && !defined(DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION)
             if (IsDebuggerPresent())
             {
                 auto const message = args.Message();
                 static_cast<void>(message);
                 __debugbreak();
             }
-        });
 #endif
+            ::LibChess::Windows::DiagnosticLog::Write(
+                L"xaml", L"Unhandled WinUI exception: " + args.Message());
+        });
     }
 
     winrt::fire_and_forget App::OnLaunched(
