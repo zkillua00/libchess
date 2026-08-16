@@ -56,9 +56,31 @@ roles. Theme-library state is saved under `%LOCALAPPDATA%\LibChess` and restored
 through the versioned FFI. A playable live board can also be detached into a
 titleless, square, always-on-top WinUI utility panel with native edge resizing.
 It stays out of normal window switching and exposes game actions through its
-context menu. Together these surfaces cover the same current end-to-end product
-areas as the macOS frontend while using WinUI 3 controls and Windows windowing
-patterns rather than reproducing the macOS layout.
+context menu. Together these surfaces cover the same major product areas as the
+macOS frontend while using WinUI 3 controls and Windows windowing patterns
+rather than reproducing the macOS layout.
+
+## Parity status
+
+Windows has broad product-surface parity with macOS, not strict behavioral
+parity. The remaining audited gaps are:
+
+- the new-game form sends a backend's default reply delay but does not expose
+  its adjustable range;
+- custom-position game creation does not yet decode `supports_move_history` or
+  submit preloaded UCI moves after the X-FEN;
+- switching games stops the previous detailed live stream instead of retaining
+  independent live streams and pending state for every opened game;
+- piece movement does not yet preserve the Rust presentation's spring curve,
+  extra bounce, and exact duration;
+- opening a live game has no explicit cancel action, and a failed review lacks
+  dedicated retry/refresh actions; and
+- chessboard buttons do not yet publish explicit accessible square-and-piece
+  names for screen readers.
+
+These are Windows frontend gaps. The corresponding Rust commands and portable
+models already exist, except that the missing creation fields still need to be
+decoded by the Windows wire-model layer.
 
 Packaging remains follow-up work.
 

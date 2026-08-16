@@ -9,7 +9,7 @@ integration, implemented providers, and known boundaries.
 
 | Area | Current implementation | Not implemented yet |
 | --- | --- | --- |
-| Native frontends | macOS 14+ using AppKit and SwiftUI; Windows 10 2004+ using WinUI 3 and C++/WinRT, with equivalent current product surfaces | Qt and a Linux frontend |
+| Native frontends | macOS 14+ using AppKit and SwiftUI; Windows 10 2004+ using WinUI 3 and C++/WinRT, with the same major product areas but not strict behavioral parity | Remaining Windows parity work, Qt, and a Linux frontend |
 | Chess backends | Lichess and a discovered local Stockfish UCI engine | Chess.com and other platform or engine adapters |
 | Game creation | Lichess computer games and private local Stockfish games | Human challenges and matchmaking |
 | Live play | Multiple normalized online or local games, prediction, clocks, and game actions | Persistent local sessions across app restarts |
@@ -23,9 +23,10 @@ and probes a real UCI executable at startup; on this development machine the
 discovered engine reports itself as Stockfish 18. An undiscoverable engine stays
 in the launcher as an unavailable backend with a backend-supplied explanation.
 Chess.com and Linux remain extension points rather than code currently shipped
-by this repository. Windows now covers the same current launcher, account,
-gameplay, history/review, appearance, and floating-board product areas as macOS
-using Windows-native interaction patterns.
+by this repository. Windows now covers the same launcher, account, gameplay,
+history/review, appearance, and floating-board product areas as macOS using
+Windows-native interaction patterns. That is broad surface coverage, not strict
+feature or behavioral parity; the remaining differences are recorded below.
 
 ## Runtime topology
 
@@ -343,9 +344,9 @@ WinUI `DispatcherQueue`. Windows Runtime JSON APIs decode provider-neutral wire
 models on the UI thread. The window and every launcher, navigation, form, status,
 and board control are WinUI objects.
 
-The Windows frontend implements the same current provider-neutral product areas
-as the macOS frontend while following WinUI navigation, command, flyout, and
-window conventions:
+The Windows frontend implements the same major provider-neutral product areas as
+the macOS frontend while following WinUI navigation, command, flyout, and window
+conventions:
 
 - the launcher renders backend discovery, selection, availability, explicit
   online sign-in, saved-account continuation, browser authorization controls,
@@ -370,8 +371,34 @@ window conventions:
   installation directories.
 
 The two frontends intentionally do not share widget layouts. They share Rust
-contracts and product capabilities while presenting them through their native
-platform conventions. Production Windows packaging remains follow-up work.
+contracts and broad product capabilities while presenting them through their
+native platform conventions.
+
+### Remaining Windows parity gaps
+
+Strict macOS-to-Windows behavioral parity has not yet been reached:
+
+- Windows game creation does not expose the backend-advertised reply-delay
+  range. It sends the advertised default when the option exists. It also does
+  not decode or expose `supports_move_history`, so a custom X-FEN cannot preload
+  and submit the validated UCI move list available in the macOS creator.
+- Windows keeps cached snapshots for multiple games but stops the previous
+  detailed live stream when another game is opened. macOS retains independent
+  live streams and pending move/action state per opened game.
+- Windows honors the operating system's animation setting, but its piece-move
+  renderer maps every non-linear portable motion rule to one cubic ease-out,
+  clamps the duration, and does not apply the Rust-supplied spring
+  `extra_bounce_percent` value.
+- The Windows live-game loading surface has no explicit cancel command. Its
+  review failure state lacks the macOS retry/refresh actions.
+- Windows board squares are native buttons, but they do not yet publish the
+  explicit square-and-piece accessibility names supplied by the macOS board.
+
+These are frontend gaps rather than missing Rust backend commands. Authentication,
+account management, ordinary game creation, primary live play and game actions,
+history/review basics, theme selection and customization, and the floating board
+are implemented on both platforms. Production Windows packaging also remains
+follow-up work.
 
 ## Authentication and credentials
 
@@ -660,8 +687,8 @@ the broader product matches the long-term design:
 
 - A Chess.com integration needs a new platform factory and backend using an
   officially authorized API. No Chess.com networking code exists today.
-- Windows still needs production packaging. Linux needs its native wrapper and
-  renderer.
+- Windows still needs the strict parity work listed in the Windows frontend
+  section and production packaging. Linux needs its native wrapper and renderer.
 - Local history needs durable persistence if games must survive backend changes
   or application restarts.
 - Interactive free-form engine analysis needs new commands beyond the current
