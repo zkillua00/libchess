@@ -1,7 +1,7 @@
 # Current Architecture
 
 This document describes the implementation that exists in the repository as of
-2026-08-14. [`architecture.md`](architecture.md) remains the longer-term design
+2026-08-16. [`architecture.md`](architecture.md) remains the longer-term design
 and portability contract; this file records the current runtime, platform
 integration, implemented providers, and known boundaries.
 
@@ -9,21 +9,21 @@ integration, implemented providers, and known boundaries.
 
 | Area | Current implementation | Not implemented yet |
 | --- | --- | --- |
-| Native frontends | macOS 14+ using AppKit and SwiftUI | WinUI 3 and Qt |
+| Native frontends | macOS 14+ using AppKit and SwiftUI; Windows 10 2004+ using WinUI 3 and C++/WinRT | Full Windows feature parity and Qt |
 | Chess backends | Lichess and a discovered local Stockfish UCI engine | Chess.com and other platform or engine adapters |
 | Game creation | Lichess computer games and private local Stockfish games | Human challenges and matchmaking |
 | Live play | Multiple normalized online or local games, prediction, clocks, and game actions | Persistent local sessions across app restarts |
 | Analysis | Native provider review plus local Stockfish post-game evaluation | A general interactive analysis-board command set |
 | Board presentation | Built-in and user-defined board and piece themes | Downloadable provider or theme packages |
-| Distribution | Locally assembled, ad-hoc-signed macOS app bundle | Developer ID signing, notarization, and an installer |
+| Distribution | Locally assembled macOS app bundle and unpackaged self-contained Windows build | Production signing, notarization, and installers |
 
 `ClientBuilder::with_builtin_providers()` registers `LichessFactory`,
 `StockfishFactory`, and `BuiltinBoardProvider`. The Stockfish factory discovers
 and probes a real UCI executable at startup; on this development machine the
 discovered engine reports itself as Stockfish 18. An undiscoverable engine stays
 in the launcher as an unavailable backend with a backend-supplied explanation.
-References to Chess.com, Windows, and Linux in the design document remain
-extension points rather than code currently shipped by this repository.
+Chess.com and Linux remain extension points rather than code currently shipped
+by this repository. Windows now has its first native product slice.
 
 ## Runtime topology
 
@@ -62,6 +62,17 @@ macOS process
         `-- persistent UCI child process per active local game
 ```
 
+```text
+Windows process
+|
++-- Windows App SDK / WinUI 3 application lifecycle
+|   `-- native XAML launcher, workspace, and chessboard
++-- C++/WinRT wire models and ABI wrapper
+|   `-- DispatcherQueue handoff to the UI thread
+`-- libchess_ffi.dll
+    `-- the same Rust worker, providers, rules, and board presentation
+```
+
 The native frontend owns windows, menus, dialogs, operating-system storage,
 accessibility adaptation, and rendering. Rust owns backend discovery and
 selection, provider networking, engine processes, response parsing, chess rules,
@@ -70,10 +81,10 @@ normalized application models, and portable board-presentation policy.
 Backend selection is provider-neutral. Rust descriptors carry the backend kind,
 display copy, semantic icon, availability, action title, connection method,
 OAuth configuration, capabilities, opponent catalog, and game-creation defaults.
-Swift lists and renders those values and sends the selected opaque backend ID.
-The only presentation mapping retained by Swift converts the backend's semantic
-icon enum to an SF Symbol; provider facts and identifiers are not encoded in the
-launcher.
+Each frontend lists and renders those values and sends the selected opaque
+backend ID. Platform presentation code maps the backend's semantic icon to an
+SF Symbol or Segoe Fluent icon; provider facts and identifiers are not encoded
+in either launcher.
 
 ## Rust workspace
 
@@ -221,15 +232,17 @@ results and errors with the initiating UI operation.
 `ready` contains the backend catalog and current selection. The generic
 `select_backend` command chooses a descriptor by ID; local selection immediately
 creates an account and connection, while an OAuth selection waits for
-`begin_oauth`. `backend_selection_changed` keeps Swift synchronized, and
-`clear_backend_selection` returns the app to the launcher. Starting OAuth with
-no frontend-supplied configuration uses the selected descriptor's trusted Rust
-configuration; optional legacy fields remain decodable for ABI compatibility.
+`begin_oauth`. `backend_selection_changed` keeps each native frontend
+synchronized, and `clear_backend_selection` returns the app to the launcher.
+Starting OAuth with no frontend-supplied configuration uses the selected
+descriptor's trusted Rust configuration; optional legacy fields remain
+decodable for ABI compatibility.
 
-The event callback receives borrowed bytes on the Rust worker thread. Swift
-copies those bytes immediately and dispatches decoding onto the main actor. Rust
-zeroizes serialized event buffers after the callback returns. Destroying the
-handle requests shutdown, stops live tasks, and joins the worker thread.
+The event callback receives borrowed bytes on the Rust worker thread. Both
+native wrappers copy those bytes immediately and dispatch decoding onto their
+UI thread. Rust zeroizes serialized event buffers after the callback returns.
+Destroying the handle requests shutdown, stops live tasks, and joins the worker
+thread.
 
 The current command queue is unbounded. A bounded queue or explicit producer
 backpressure policy has not been implemented.
@@ -311,21 +324,53 @@ actions, reconnect, resign or abort confirmation, opening the full game, an
 external provider page when the backend supplies one, and closing the floating
 board. Those controls are deliberately absent from the normal board surface.
 
+## Windows frontend
+
+The Windows product is an unpackaged native WinUI 3 desktop application written
+in C++20 with C++/WinRT. It targets Windows 10 build 19041 or newer and does not
+host the CLR, a browser control, or a cross-platform UI abstraction. The Windows
+App SDK runtime is currently copied beside the executable for a self-contained
+developer build.
+
+`NativeClient` loads `libchess_ffi.dll`, verifies C ABI version 1, copies every
+borrowed callback payload on the Rust worker thread, and posts it through a
+WinUI `DispatcherQueue`. Windows Runtime JSON APIs decode provider-neutral wire
+models on the UI thread. The window and every launcher, navigation, form, status,
+and board control are WinUI objects.
+
+The first Windows slice implements:
+
+- provider discovery, selection, availability, and backend-supplied launcher
+  content;
+- Lichess OAuth PKCE through the system browser, per-user protocol activation,
+  callback redirection to the original process, Windows Credential Manager
+  persistence, and saved-account reconnection;
+- credential-free local-backend connection and provider-advertised new-game
+  defaults;
+- live-game startup, player perspective, native board rendering, legal
+  click-to-move, draw offers, and resignation;
+- portable board palettes and text-glyph piece assets supplied by Rust;
+- Windows-aware Stockfish discovery through `PATH`, WinGet, Chocolatey, and
+  conventional installation directories.
+
+History, review, clocks, pockets and drops, SVG piece assets, theme selection,
+promotion choice, and production packaging remain Windows follow-up work.
+
 ## Authentication and credentials
 
 The OAuth flow is divided across the selected backend and native frontend:
 
 ```text
-macOS selectBackend(opaque descriptor ID)
+native launcher selects an opaque descriptor ID
         |
         v
 Rust publishes selected descriptor -> launcher context pane
         |
         v
-launcher beginOAuth (no provider constants)
+launcher begins OAuth
         |
         v
-begin_oauth command using descriptor configuration
+begin_oauth command using the platform callback identity
         |
         v
 Lichess adapter creates state, verifier, and S256 challenge
@@ -334,7 +379,7 @@ Lichess adapter creates state, verifier, and S256 challenge
 oauth_authorization_required event
         |
         v
-system browser -> org.libchess.macos://oauth/lichess callback
+system browser -> native protocol callback
         |
         v
 complete_oauth command
@@ -342,16 +387,18 @@ complete_oauth command
         v
 adapter validates callback and exchanges one-time code
         |
-        +-- oauth_credential_issued -> macOS Keychain
+        +-- oauth_credential_issued -> native credential store
         +-- account_updated
         `-- connected state -> hide launcher and create/show workspace
 ```
 
 The Lichess adapter fixes the scope to `board:play`, requires S256 PKCE, and
-expires a pending authorization after ten minutes. Its client ID, redirect URI,
-and authorization origin live in the Rust descriptor. The verifier remains
-inside Rust and never enters a command or event. The access token crosses the
-ABI once so the native wrapper can persist it.
+expires a pending authorization after ten minutes. macOS uses the client ID and
+redirect URI in the Rust descriptor. Windows supplies its platform callback
+identity when beginning the same Rust-owned transaction and validates the
+authorization URL against the descriptor's trusted HTTPS origin before opening
+it. The verifier remains inside Rust and never enters a command or event. The
+access token crosses the ABI once so the native wrapper can persist it.
 
 macOS stores each backend token as a generic-password Keychain item keyed by the
 selected backend ID. It prefers the data
@@ -361,8 +408,16 @@ required entitlement. Reads use a noninteractive `LAContext`; an inaccessible
 item returns an error instead of displaying a password prompt. Keychain work is
 performed away from the main actor.
 
+The unpackaged Windows app registers `org.libchess.windows` per user through
+Windows App Lifecycle. It is single-instanced: protocol activations from the
+browser are redirected to the process that owns the pending OAuth session.
+Callbacks must match the registered scheme, host, and path before they reach
+Rust, which then performs the authoritative state and redirect validation.
+Tokens are generic credentials keyed by backend ID in the current user's
+Windows Credential Manager and persist only on the local machine.
+
 Authenticated adapters hold credentials only in memory. Local connections do
-not read or write the Keychain. `AccessToken` redacts debug
+not read or write platform credential storage. `AccessToken` redacts debug
 output and zeroizes owned secret data on drop.
 
 ## Game creation and discovery
@@ -572,6 +627,11 @@ The default output is:
 profile favors a small binary through size optimization, fat LTO, one codegen
 unit, symbol stripping, and abort-on-panic behavior.
 
+`scripts/build-windows-app.ps1` is the native Windows build workflow. It restores
+the pinned packages, builds `libchess-ffi.dll`, builds the C++/WinRT WinUI 3
+executable with MSBuild, and copies the DLL beside the unpackaged executable.
+`-Configuration Debug` selects a debug build and `-Run` starts the result.
+
 ## Current extension boundaries
 
 The intended portable seams exist, but the following work is required before
@@ -579,9 +639,8 @@ the broader product matches the long-term design:
 
 - A Chess.com integration needs a new platform factory and backend using an
   officially authorized API. No Chess.com networking code exists today.
-- Windows and Linux need native wrappers for the version 1 C ABI, secure
-  credential stores, persistence adapters, and renderers for the portable board
-  presentation.
+- Windows still needs the remaining macOS feature surfaces and production
+  packaging. Linux needs its native wrapper and renderer.
 - Local history needs durable persistence if games must survive backend changes
   or application restarts.
 - Interactive free-form engine analysis needs new commands beyond the current

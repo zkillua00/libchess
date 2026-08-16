@@ -1,0 +1,44 @@
+#pragma once
+
+#include <windows.h>
+#include <unknwn.h>
+#include <restrictederrorinfo.h>
+#include <hstring.h>
+#include <wincred.h>
+#include <shlobj.h>
+#undef GetCurrentTime
+
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cwctype>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <winrt/Windows.ApplicationModel.Activation.h>
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Graphics.h>
+#include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.h>
+#include <winrt/Windows.UI.Text.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Windowing.h>
+#include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Shapes.h>
+#include <winrt/Microsoft.Windows.AppLifecycle.h>

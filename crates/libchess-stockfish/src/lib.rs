@@ -96,7 +96,7 @@ fn descriptor(engine_name: String, unavailable_reason: Option<String>) -> Provid
         kind: BackendKind::LocalEngine,
         display_name: engine_name,
         subtitle: "Local UCI chess engine".to_owned(),
-        description: "Play private games and run post-game analysis entirely on this Mac. No account or network connection is required."
+        description: "Play private games and run post-game analysis entirely on this device. No account or network connection is required."
             .to_owned(),
         icon: BackendIcon::Processor,
         action_title: "Use Local Engine".to_owned(),

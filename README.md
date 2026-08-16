@@ -4,10 +4,10 @@ LibChess is an open-source, native chess client foundation. Rust owns the
 platform-independent chess application layer; each operating system gets a
 native user interface.
 
-The first frontend is macOS with SwiftUI. Windows with WinUI 3 and Linux with
-Qt are intended to consume the same Rust library through its stable C ABI.
-Lichess is the first online provider. A future Chess.com provider can be added
-without changing the frontend contract.
+The native frontends are macOS with SwiftUI and Windows with WinUI 3 and
+C++/WinRT. Linux with Qt is intended to consume the same Rust library through
+its stable C ABI. Lichess is the first online provider. A future Chess.com
+provider can be added without changing the frontend contract.
 
 ## Repository layout
 
@@ -18,9 +18,10 @@ without changing the frontend contract.
 - `crates/libchess`: provider registry and application service
 - `crates/libchess-ffi`: small, versioned C ABI for native frontends
 - `frontends/macos`: SwiftUI app and its Swift wrapper
+- `frontends/windows`: WinUI 3 app and its C++/WinRT wrapper
 - `docs/architecture.md`: boundaries and extension rules
 
-## Build the first macOS slice
+## Build on macOS
 
 The Rust tests and library can be built with:
 
@@ -44,16 +45,29 @@ library:
 open .build/LibChess.app
 ```
 
+## Build on Windows
+
+The Windows frontend is a native, unpackaged WinUI 3 desktop application. From
+a PowerShell prompt with Visual Studio 2022 C++ tools and Rust installed, run:
+
+```powershell
+.\scripts\build-windows-app.ps1
+```
+
+Add `-Configuration Debug` for a debug build or `-Run` to launch after a
+successful build. The script restores the pinned Windows App SDK and C++/WinRT
+packages, builds the Rust DLL, builds the native executable, and places both in
+the same output directory. See [`frontends/windows/README.md`](frontends/windows/README.md)
+for the current Windows feature boundary.
+
 ## Lichess sign-in
 
-The macOS app uses Lichess OAuth Authorization Code with PKCE. Choose **Sign in
-with Lichess**, approve the narrowly fixed `board:play` scope in the system
-browser, and Lichess returns to the app through
-`org.libchess.macos://oauth/lichess`. The Rust adapter creates and validates the
-PKCE transaction and exchanges the one-time code. The macOS wrapper stores the
-validated access token in Keychain. Credential reads explicitly disallow
-authentication UI, so LibChess never opens a Keychain password prompt or waits
-for one on the app's UI thread.
+The macOS and Windows apps use Lichess OAuth Authorization Code with PKCE.
+Choose **Sign in with Lichess**, approve the narrowly fixed `board:play` scope
+in the system browser, and Lichess returns through the native callback registered
+for that platform. The Rust adapter creates and validates the PKCE transaction
+and exchanges the one-time code. macOS stores the validated access token in
+Keychain; Windows stores it in the current user's Windows Credential Manager.
 
 A provisioned, stably signed build uses the macOS data-protection Keychain with
 `AfterFirstUnlockThisDeviceOnly`, which keeps the token available to background
@@ -67,8 +81,14 @@ The callback scheme and OAuth client identifier are tied to the macOS bundle
 identifier, `org.libchess.macos`. A distributable fork should choose its own
 bundle identifier and update `LichessOAuth` plus `Info.plist` together.
 
-The release build is deliberately small: the app links the Rust library as a
-single dynamic library and uses the operating system browser and Keychain.
+The unpackaged Windows build registers `org.libchess.windows` for the current
+user through Windows App Lifecycle. Its callback is redirected to the original
+single app instance so the pending verifier never leaves Rust. The registration
+is refreshed to the current executable path on launch; a production installer
+should remove it during uninstall.
+
+The release builds use the operating system browser and native credential
+storage rather than embedding web authentication.
 
 ## Create a bot game
 

@@ -34,8 +34,38 @@ pub(crate) fn locate_and_probe() -> Result<EngineProbe, LibChessError> {
         candidates.push(PathBuf::from(path));
     }
     if let Some(paths) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&paths).map(|path| path.join("stockfish")));
+        candidates
+            .extend(std::env::split_paths(&paths).map(|path| path.join(stockfish_binary_name())));
     }
+    #[cfg(windows)]
+    {
+        for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(root) = std::env::var_os(variable) {
+                candidates.push(
+                    PathBuf::from(root)
+                        .join("Stockfish")
+                        .join(stockfish_binary_name()),
+                );
+            }
+        }
+        if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(root)
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links")
+                    .join(stockfish_binary_name()),
+            );
+        }
+        if let Some(root) = std::env::var_os("ChocolateyInstall") {
+            candidates.push(
+                PathBuf::from(root)
+                    .join("bin")
+                    .join(stockfish_binary_name()),
+            );
+        }
+    }
+    #[cfg(not(windows))]
     candidates.extend(
         [
             "/opt/homebrew/bin/stockfish",
@@ -76,6 +106,16 @@ pub(crate) fn locate_and_probe() -> Result<EngineProbe, LibChessError> {
         )
     };
     Err(engine_error(detail, false))
+}
+
+#[cfg(windows)]
+const fn stockfish_binary_name() -> &'static str {
+    "stockfish.exe"
+}
+
+#[cfg(not(windows))]
+const fn stockfish_binary_name() -> &'static str {
+    "stockfish"
 }
 
 pub(crate) struct UciEngine {
@@ -307,6 +347,14 @@ fn engine_error(message: impl Into<String>, retryable: bool) -> LibChessError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uses_the_platform_engine_executable_name() {
+        #[cfg(windows)]
+        assert_eq!(stockfish_binary_name(), "stockfish.exe");
+        #[cfg(not(windows))]
+        assert_eq!(stockfish_binary_name(), "stockfish");
+    }
 
     #[test]
     fn parses_the_latest_uci_score_and_variation() {

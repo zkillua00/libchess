@@ -2,6 +2,16 @@
 /.build/
 /frontends/macos/.build/
 /frontends/macos/.swiftpm/
+/frontends/windows/.vs/
+/frontends/windows/Generated Files/
+/frontends/windows/LibChess.WinUI/
+/frontends/windows/obj/
+/frontends/windows/packages/
+/frontends/windows/Win32/
+/frontends/windows/x64/
+/frontends/windows/ARM64/
 *.xcuserstate
+*.VC.db
+*.VC.opendb
 .DS_Store
 
