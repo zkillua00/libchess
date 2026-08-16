@@ -40,11 +40,13 @@ final class LibChessStoreStreamTests: XCTestCase {
 
         store.receive(
             Data(
-                #"{"version":1,"type":"live_game_updated","live_game":{"provider":"responsive-test","id":"game-1","url":"","player_color":"white","initial_fen":"startpos","variant_id":"standard","variant_name":"Standard","rated":false,"speed":"rapid","white":{"id":"player-1","name":"Player One","provisional":false},"black":{"name":"Opponent","provisional":false},"state":{"board":{"pieces":[],"pockets":[],"turn":"white","ply":0,"moves":[],"legal_moves":[],"in_check":false},"status":"started","white_draw_offer":false,"black_draw_offer":false,"white_takeback_offer":false,"black_takeback_offer":false,"opponent_gone":false}}}"#.utf8
+                #"{"version":1,"type":"live_game_updated","live_game":{"provider":"responsive-test","id":"game-1","url":"","player_color":"white","initial_fen":"startpos","variant_id":"standard","variant_name":"Standard","rated":false,"speed":"rapid","white":{"id":"player-1","name":"Player One","provisional":false},"black":{"name":"Opponent","provisional":false},"state":{"board":{"pieces":[],"pockets":[],"turn":"black","ply":1,"moves":["e2e4"],"legal_moves":[],"in_check":false},"status":"started","white_draw_offer":false,"black_draw_offer":false,"white_takeback_offer":false,"black_takeback_offer":false,"opponent_gone":false}},"san_moves":["e4"]}"#.utf8
             )
         )
         XCTAssertFalse(store.isLoadingLiveGame("game-1"))
         XCTAssertTrue(store.isLiveStreamConnected("game-1"))
+        let game = try XCTUnwrap(store.liveGame("game-1"))
+        XCTAssertEqual(store.displayedMoves(for: game), ["e4"])
 
         store.receive(
             Data(

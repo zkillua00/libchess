@@ -243,7 +243,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesLiveGameSnapshotWithBoardAndLegalMoves() throws {
         let data = Data(
-            #"{"version":1,"type":"live_game_updated","live_game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"white","initial_fen":"startpos","variant_id":"standard","variant_name":"Standard","rated":false,"speed":"rapid","clock":{"initial_millis":600000,"increment_millis":0},"white":{"id":"test-user","name":"TestUser","rating":1500,"provisional":false},"black":{"name":"Stockfish level 4","provisional":false,"ai_level":4},"state":{"board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e2","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"white","ply":0,"moves":[],"legal_moves":[{"id":"e2e4","from":"e2","to":"e4"}],"in_check":false},"status":"started","white_time_millis":600000,"black_time_millis":600000,"white_increment_millis":0,"black_increment_millis":0,"white_draw_offer":false,"black_draw_offer":false,"white_takeback_offer":false,"black_takeback_offer":false,"opponent_gone":false}}}"#.utf8
+            #"{"version":1,"type":"live_game_updated","live_game":{"provider":"lichess","id":"v8BRXYtM","url":"https://lichess.org/v8BRXYtM","player_color":"white","initial_fen":"startpos","variant_id":"standard","variant_name":"Standard","rated":false,"speed":"rapid","clock":{"initial_millis":600000,"increment_millis":0},"white":{"id":"test-user","name":"TestUser","rating":1500,"provisional":false},"black":{"name":"Stockfish level 4","provisional":false,"ai_level":4},"state":{"board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e2","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"white","ply":0,"moves":[],"legal_moves":[{"id":"e2e4","from":"e2","to":"e4"}],"in_check":false},"status":"started","white_time_millis":600000,"black_time_millis":600000,"white_increment_millis":0,"black_increment_millis":0,"white_draw_offer":false,"black_draw_offer":false,"white_takeback_offer":false,"black_takeback_offer":false,"opponent_gone":false}},"san_moves":[]}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
@@ -257,6 +257,7 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(game.state.board.legalMoves.first?.id, "e2e4")
         XCTAssertEqual(game.state.board.legalMoves.first?.from, "e2")
         XCTAssertEqual(game.state.board.legalMoves.first?.to, "e4")
+        XCTAssertEqual(event.sanMoves, [])
         XCTAssertTrue(game.state.isPlayable)
     }
 
@@ -441,7 +442,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testDecodesAClientPredictedBoardBeforeServerConfirmation() throws {
         let data = Data(
-            #"{"version":1,"request_id":"move-1","type":"move_predicted","game_id":"v8BRXYtM","move_id":"e2e4","board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e4","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"black","ply":1,"moves":["e2e4"],"last_move":{"id":"e2e4","from":"e2","to":"e4"},"legal_moves":[{"id":"e7e5","from":"e7","to":"e5"}],"in_check":false}}"#.utf8
+            #"{"version":1,"request_id":"move-1","type":"move_predicted","game_id":"v8BRXYtM","move_id":"e2e4","board":{"pieces":[{"square":"e1","color":"white","role":"king","promoted":false},{"square":"e8","color":"black","role":"king","promoted":false},{"square":"e4","color":"white","role":"pawn","promoted":false}],"pockets":[],"turn":"black","ply":1,"moves":["e2e4"],"last_move":{"id":"e2e4","from":"e2","to":"e4"},"legal_moves":[{"id":"e7e5","from":"e7","to":"e5"}],"in_check":false},"san_moves":["e4"]}"#.utf8
         )
 
         let event = try JSONDecoder().decode(WireEvent.self, from: data)
@@ -451,6 +452,7 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(event.gameID, "v8BRXYtM")
         XCTAssertEqual(event.moveID, "e2e4")
         XCTAssertEqual(board.moves, ["e2e4"])
+        XCTAssertEqual(event.sanMoves, ["e4"])
         XCTAssertEqual(board.turn, .black)
         XCTAssertEqual(board.lastMove?.id, "e2e4")
         XCTAssertTrue(board.pieces.contains(where: { $0.square == "e4" }))
