@@ -43,6 +43,25 @@ namespace
         return value.ValueType() == JsonValueType::Array ? value.GetArray() : nullptr;
     }
 
+    std::vector<hstring> StringArray(JsonArray const& values)
+    {
+        std::vector<hstring> strings;
+        if (!values)
+        {
+            return strings;
+        }
+        strings.reserve(values.Size());
+        for (auto const& value : values)
+        {
+            if (value.ValueType() != JsonValueType::String)
+            {
+                return {};
+            }
+            strings.push_back(value.GetString());
+        }
+        return strings;
+    }
+
     hstring String(JsonObject const& parent, wchar_t const* name)
     {
         if (!parent || !parent.HasKey(name))
@@ -785,6 +804,7 @@ namespace winrt::LibChess::WinUI::implementation
                 if (auto const game = Object(event, L"live_game"))
                 {
                     auto parsed = ::LibChess::Windows::Wire::ParseLiveGame(game);
+                    parsed.san_moves = StringArray(Array(event, L"san_moves"));
                     if (!current_game_id_.empty() && parsed.id != current_game_id_)
                     {
                         return;
@@ -858,7 +878,7 @@ namespace winrt::LibChess::WinUI::implementation
                 pending_export_request_id_.clear();
                 pending_export_game_id_.clear();
                 ExportPgnButton().IsEnabled(true);
-                ExportPgnButton().Content(box_value(L"Export annotated PGN…"));
+                ExportPgnButton().Label(L"Export annotated PGN…");
                 if (provider != expected_provider || game_id != expected_game_id
                     || filename.empty() || filename.size() > 128
                     || !filename_text.ends_with(L".pgn")
@@ -922,6 +942,7 @@ namespace winrt::LibChess::WinUI::implementation
                     if (!move_rollback_board_)
                     {
                         move_rollback_board_ = live_game_->board;
+                        move_rollback_san_moves_ = live_game_->san_moves;
                         move_rollback_white_time_millis_ = live_game_->white_time_millis;
                         move_rollback_black_time_millis_ = live_game_->black_time_millis;
                         move_rollback_received_at_ = live_game_received_at_;
@@ -944,8 +965,10 @@ namespace winrt::LibChess::WinUI::implementation
                     auto predicted = *live_game_;
                     predicted.board = ::LibChess::Windows::Wire::ParseBoardState(
                         Object(event, L"board"));
+                    predicted.san_moves = StringArray(Array(event, L"san_moves"));
                     PreparePieceAnimations(live_game_, predicted);
                     live_game_->board = std::move(predicted.board);
+                    live_game_->san_moves = std::move(predicted.san_moves);
                     live_games_.insert_or_assign(std::wstring(live_game_->id), *live_game_);
                     live_game_received_times_.insert_or_assign(
                         std::wstring(live_game_->id), live_game_received_at_);
@@ -1070,7 +1093,7 @@ namespace winrt::LibChess::WinUI::implementation
                     pending_export_request_id_.clear();
                     pending_export_game_id_.clear();
                     ExportPgnButton().IsEnabled(true);
-                    ExportPgnButton().Content(box_value(L"Export annotated PGN…"));
+                    ExportPgnButton().Label(L"Export annotated PGN…");
                 }
                 if (auto const live_request = live_start_requests_.find(std::wstring(request_id));
                     live_request != live_start_requests_.end())
@@ -1109,9 +1132,10 @@ namespace winrt::LibChess::WinUI::implementation
                 if (!request_id.empty() && request_id == pending_move_request_id_)
                 {
                     pending_move_request_id_.clear();
-                    if (live_game_ && move_rollback_board_)
+                    if (live_game_ && move_rollback_board_ && move_rollback_san_moves_)
                     {
                         live_game_->board = std::move(*move_rollback_board_);
+                        live_game_->san_moves = std::move(*move_rollback_san_moves_);
                         live_game_->white_time_millis = move_rollback_white_time_millis_;
                         live_game_->black_time_millis = move_rollback_black_time_millis_;
                         live_game_received_at_ = move_rollback_received_at_;
@@ -1119,6 +1143,7 @@ namespace winrt::LibChess::WinUI::implementation
                         live_game_received_times_.insert_or_assign(
                             std::wstring(live_game_->id), live_game_received_at_);
                         move_rollback_board_.reset();
+                        move_rollback_san_moves_.reset();
                         move_rollback_white_time_millis_.reset();
                         move_rollback_black_time_millis_.reset();
                         selected_square_.clear();
@@ -2070,6 +2095,7 @@ namespace winrt::LibChess::WinUI::implementation
         pending_export_request_id_.clear();
         pending_export_game_id_.clear();
         move_rollback_board_.reset();
+        move_rollback_san_moves_.reset();
         move_rollback_white_time_millis_.reset();
         move_rollback_black_time_millis_.reset();
         game_history_.clear();
@@ -2390,22 +2416,56 @@ namespace winrt::LibChess::WinUI::implementation
             ? game_review_->opening->eco + L" · " + game_review_->opening->name
             : hstring(L"Opening not identified"));
         ReviewMovesPanel().Children().Clear();
-        for (auto const& move : game_review_->moves)
+        auto const transparent = CreateBrush(Windows::UI::Color{ 0, 0, 0, 0 });
+        auto const selected = Application::Current().Resources()
+            .Lookup(box_value(L"SubtleFillColorSecondaryBrush")).as<Brush>();
+        for (std::size_t index = 0; index < game_review_->moves.size(); index += 2)
         {
-            Button button;
-            button.Tag(box_value(move.ply));
-            button.HorizontalAlignment(HorizontalAlignment::Stretch);
-            button.HorizontalContentAlignment(HorizontalAlignment::Left);
-            button.Click({ this, &MainWindow::ReviewMove_Click });
-            auto const move_number = (move.ply + 1) / 2;
-            button.Content(box_value(winrt::to_hstring(move_number)
-                + (move.ply % 2 == 1 ? L". " : L"… ") + move.san));
-            if (move.ply == review_ply_)
+            Grid row;
+            row.MinHeight(32);
+            row.ColumnSpacing(8);
+            ColumnDefinition number_column;
+            number_column.Width(GridLength{ 34, GridUnitType::Pixel });
+            row.ColumnDefinitions().Append(number_column);
+            for (int column = 0; column < 2; ++column)
             {
-                button.Style(Application::Current().Resources()
-                    .Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+                ColumnDefinition move_column;
+                move_column.Width(GridLength{ 1, GridUnitType::Star });
+                row.ColumnDefinitions().Append(move_column);
             }
-            ReviewMovesPanel().Children().Append(button);
+
+            TextBlock number;
+            number.Text(winrt::to_hstring(index / 2 + 1));
+            number.HorizontalAlignment(HorizontalAlignment::Right);
+            number.VerticalAlignment(VerticalAlignment::Center);
+            number.Opacity(0.58);
+            Grid::SetColumn(number, 0);
+            row.Children().Append(number);
+
+            auto append_move = [&](std::size_t move_index, int column)
+            {
+                if (move_index >= game_review_->moves.size())
+                {
+                    return;
+                }
+                auto const& move = game_review_->moves[move_index];
+                Button button;
+                button.Tag(box_value(move.ply));
+                button.Content(box_value(move.san));
+                button.MinWidth(0);
+                button.MinHeight(28);
+                button.Padding(Thickness{ 6, 2, 6, 2 });
+                button.HorizontalAlignment(HorizontalAlignment::Stretch);
+                button.HorizontalContentAlignment(HorizontalAlignment::Left);
+                button.BorderThickness(Thickness{ 0 });
+                button.Background(move.ply == review_ply_ ? selected : transparent);
+                button.Click({ this, &MainWindow::ReviewMove_Click });
+                Grid::SetColumn(button, column);
+                row.Children().Append(button);
+            };
+            append_move(index, 1);
+            append_move(index + 1, 2);
+            ReviewMovesPanel().Children().Append(row);
         }
         OpenAnalysisButton().Visibility(history != game_history_.end()
             && !history->analysis_url.empty() ? Visibility::Visible : Visibility::Collapsed);
@@ -2627,6 +2687,7 @@ namespace winrt::LibChess::WinUI::implementation
         pending_move_request_id_.clear();
         pending_game_action_request_id_.clear();
         move_rollback_board_.reset();
+        move_rollback_san_moves_.reset();
         live_stream_connected_ = false;
         if (auto const cached = live_games_.find(std::wstring(game_id)); cached != live_games_.end())
         {
@@ -2698,6 +2759,7 @@ namespace winrt::LibChess::WinUI::implementation
         live_game_claim_received_at_ = claim_received != live_game_claim_received_times_.end()
             ? claim_received->second : live_game_received_at_;
         move_rollback_board_.reset();
+        move_rollback_san_moves_.reset();
         move_rollback_white_time_millis_.reset();
         move_rollback_black_time_millis_.reset();
         selected_square_.clear();
@@ -2949,7 +3011,7 @@ namespace winrt::LibChess::WinUI::implementation
 
     void MainWindow::PopulateMoveList()
     {
-        MoveListView().Items().Clear();
+        MoveListPanel().Children().Clear();
         if (!live_game_ || live_game_->board.moves.empty())
         {
             TextBlock empty;
@@ -2957,12 +3019,23 @@ namespace winrt::LibChess::WinUI::implementation
             empty.Foreground(Application::Current().Resources()
                 .Lookup(box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
             empty.Margin(Thickness{ 8, 6, 8, 6 });
-            MoveListView().Items().Append(empty);
+            MoveListPanel().Children().Append(empty);
             return;
         }
-        for (std::size_t index = 0; index < live_game_->board.moves.size(); index += 2)
+        if (live_game_->san_moves.size() != live_game_->board.moves.size())
+        {
+            TextBlock unavailable;
+            unavailable.Text(L"Move notation is unavailable.");
+            unavailable.Foreground(Application::Current().Resources()
+                .Lookup(box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+            unavailable.Margin(Thickness{ 8, 6, 8, 6 });
+            MoveListPanel().Children().Append(unavailable);
+            return;
+        }
+        for (std::size_t index = 0; index < live_game_->san_moves.size(); index += 2)
         {
             Grid row;
+            row.MinHeight(32);
             row.ColumnSpacing(8);
             ColumnDefinition number_column;
             number_column.Width(GridLength{ 34, GridUnitType::Pixel });
@@ -2974,28 +3047,30 @@ namespace winrt::LibChess::WinUI::implementation
                 row.ColumnDefinitions().Append(move_column);
             }
             TextBlock number;
-            number.Text(winrt::to_hstring(index / 2 + 1) + L".");
+            number.Text(winrt::to_hstring(index / 2 + 1));
             number.HorizontalAlignment(HorizontalAlignment::Right);
+            number.VerticalAlignment(VerticalAlignment::Center);
             number.Opacity(0.58);
             Grid::SetColumn(number, 0);
             row.Children().Append(number);
             TextBlock white;
-            white.Text(live_game_->board.moves[index]);
-            white.FontFamily(Media::FontFamily(L"Cascadia Mono, Consolas"));
+            white.Text(live_game_->san_moves[index]);
+            white.VerticalAlignment(VerticalAlignment::Center);
             Grid::SetColumn(white, 1);
             row.Children().Append(white);
-            if (index + 1 < live_game_->board.moves.size())
+            if (index + 1 < live_game_->san_moves.size())
             {
                 TextBlock black;
-                black.Text(live_game_->board.moves[index + 1]);
-                black.FontFamily(Media::FontFamily(L"Cascadia Mono, Consolas"));
+                black.Text(live_game_->san_moves[index + 1]);
+                black.VerticalAlignment(VerticalAlignment::Center);
                 Grid::SetColumn(black, 2);
                 row.Children().Append(black);
             }
-            MoveListView().Items().Append(row);
+            MoveListPanel().Children().Append(row);
         }
-        auto const last = MoveListView().Items().GetAt(MoveListView().Items().Size() - 1);
-        MoveListView().ScrollIntoView(last);
+        MoveScrollViewer().UpdateLayout();
+        MoveScrollViewer().ChangeView(
+            nullptr, MoveScrollViewer().ScrollableHeight(), nullptr, true);
     }
 
     void MainWindow::PopulatePockets()
@@ -3178,7 +3253,7 @@ namespace winrt::LibChess::WinUI::implementation
         pending_export_game_id_ = review_game_id_;
         pending_export_request_id_ = SendCommand(command);
         ExportPgnButton().IsEnabled(false);
-        ExportPgnButton().Content(box_value(L"Preparing PGN…"));
+        ExportPgnButton().Label(L"Preparing PGN…");
     }
 
     winrt::fire_and_forget MainWindow::SavePgnAsync(hstring filename, hstring pgn)
@@ -5534,6 +5609,7 @@ namespace winrt::LibChess::WinUI::implementation
         selected_square_.clear();
         selected_drop_.clear();
         move_rollback_board_.reset();
+        move_rollback_san_moves_.reset();
         move_rollback_white_time_millis_.reset();
         move_rollback_black_time_millis_.reset();
         pending_move_request_id_ = SendCommand(command);

@@ -599,16 +599,46 @@
                     <Grid
                         x:Name="ReviewPane"
                         MaxWidth="1280"
-                        Padding="32"
+                        Padding="24"
                         HorizontalAlignment="Center"
-                        ColumnSpacing="28"
+                        ColumnSpacing="24"
                         Visibility="Collapsed">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="360" />
+                            <ColumnDefinition Width="336" />
                         </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                        <Grid Grid.Column="0">
+                        <CommandBar
+                            Grid.ColumnSpan="2"
+                            Margin="0,0,0,12"
+                            HorizontalAlignment="Right"
+                            Background="Transparent"
+                            DefaultLabelPosition="Right">
+                            <AppBarButton Click="ReviewFirst_Click" Label="First">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE892;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <AppBarButton Click="ReviewPrevious_Click" Label="Previous">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE72B;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <AppBarButton Click="ReviewNext_Click" Label="Next">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE72A;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <AppBarButton Click="ReviewLast_Click" Label="Last">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE893;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <AppBarButton x:Name="OpenAnalysisButton" Click="OpenAnalysis_Click" Label="Service analysis">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE9D2;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <CommandBar.SecondaryCommands>
+                                <AppBarButton x:Name="ExportPgnButton" Click="ExportPgn_Click" Label="Export annotated PGN…" />
+                            </CommandBar.SecondaryCommands>
+                        </CommandBar>
+
+                        <Grid Grid.Row="1" Grid.Column="0">
                             <Viewbox
                                 x:Name="ReviewBoardViewbox"
                                 MaxWidth="720"
@@ -632,6 +662,7 @@
                         </Grid>
 
                         <Border
+                            Grid.Row="1"
                             Grid.Column="1"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -644,10 +675,8 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="1" />
                                     <RowDefinition Height="*" />
-                                    <RowDefinition Height="1" />
-                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <StackPanel Padding="16,14" Spacing="4">
+                                <StackPanel Padding="14,12" Spacing="4">
                                     <TextBlock x:Name="ReviewTitle" FontWeight="SemiBold" Style="{StaticResource SubtitleTextBlockStyle}" />
                                     <TextBlock
                                         x:Name="ReviewSubtitle"
@@ -655,7 +684,7 @@
                                         TextWrapping="Wrap" />
                                 </StackPanel>
                                 <Rectangle Grid.Row="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                <StackPanel Grid.Row="2" Padding="16,12" Spacing="6">
+                                <StackPanel Grid.Row="2" Padding="14,12" Spacing="6">
                                     <TextBlock x:Name="ReviewOpening" FontWeight="SemiBold" TextWrapping="Wrap" />
                                     <TextBlock x:Name="ReviewEvaluation" FontFamily="Cascadia Mono, Consolas" FontSize="20" />
                                     <InfoBar
@@ -669,34 +698,20 @@
                                         Style="{StaticResource CaptionTextBlockStyle}" />
                                 </StackPanel>
                                 <Rectangle Grid.Row="3" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                <ScrollViewer Grid.Row="4" Padding="10,8">
-                                    <StackPanel x:Name="ReviewMovesPanel" Spacing="4" />
-                                </ScrollViewer>
-                                <Rectangle Grid.Row="5" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                <StackPanel Grid.Row="6" Padding="10" Spacing="8">
-                                    <Grid ColumnSpacing="6">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <Button Grid.Column="0" HorizontalAlignment="Stretch" Click="ReviewFirst_Click" Content="|&lt;" />
-                                        <Button Grid.Column="1" HorizontalAlignment="Stretch" Click="ReviewPrevious_Click" Content="&lt;" />
-                                        <Button Grid.Column="2" HorizontalAlignment="Stretch" Click="ReviewNext_Click" Content="&gt;" />
-                                        <Button Grid.Column="3" HorizontalAlignment="Stretch" Click="ReviewLast_Click" Content="&gt;|" />
-                                    </Grid>
-                                    <Button
-                                        x:Name="OpenAnalysisButton"
-                                        HorizontalAlignment="Stretch"
-                                        Click="OpenAnalysis_Click"
-                                        Content="Open service analysis" />
-                                    <Button
-                                        x:Name="ExportPgnButton"
-                                        HorizontalAlignment="Stretch"
-                                        Click="ExportPgn_Click"
-                                        Content="Export annotated PGN…" />
-                                </StackPanel>
+                                <Grid Grid.Row="4">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock
+                                        Margin="14,10,14,6"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="Moves"
+                                        Style="{StaticResource CaptionTextBlockStyle}" />
+                                    <ScrollViewer Grid.Row="1" Padding="8,0,8,6">
+                                        <StackPanel x:Name="ReviewMovesPanel" Spacing="0" />
+                                    </ScrollViewer>
+                                </Grid>
                             </Grid>
                         </Border>
                     </Grid>
@@ -927,16 +942,75 @@
                     <Grid
                         x:Name="GamePane"
                         MaxWidth="1280"
-                        Padding="32"
+                        Padding="24"
                         HorizontalAlignment="Center"
-                        ColumnSpacing="28"
+                        ColumnSpacing="24"
                         Visibility="Collapsed">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="320" />
+                            <ColumnDefinition Width="336" />
                         </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                        <Grid Grid.Column="0">
+                        <CommandBar
+                            Grid.ColumnSpan="2"
+                            Margin="0,0,0,12"
+                            HorizontalAlignment="Right"
+                            Background="Transparent"
+                            DefaultLabelPosition="Right">
+                            <AppBarButton x:Name="OfferDrawButton" Click="OfferDraw_Click" Label="Offer draw">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE8C2;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <AppBarButton x:Name="TakebackButton" Click="OfferTakeback_Click" Label="Request takeback">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE7A7;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <AppBarButton x:Name="TerminateGameButton" Click="Resign_Click" Label="Resign">
+                                <AppBarButton.Icon><FontIcon Glyph="&#xE7BA;" /></AppBarButton.Icon>
+                            </AppBarButton>
+                            <CommandBar.SecondaryCommands>
+                                <AppBarButton Click="GameAppearance_Click" Label="Appearance">
+                                    <AppBarButton.Icon><FontIcon Glyph="&#xE790;" /></AppBarButton.Icon>
+                                    <FlyoutBase.AttachedFlyout>
+                                        <Flyout x:Name="GameAppearanceFlyout" Placement="BottomEdgeAlignedRight">
+                                            <ScrollViewer MaxHeight="680" HorizontalScrollBarVisibility="Disabled">
+                                                <StackPanel Width="320" Spacing="8">
+                                                    <TextBlock Margin="4,0,4,4" Text="Quick appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                                    <TextBlock Margin="4,0" Text="Provider" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                    <ListView x:Name="BoardProviderChoices" MaxHeight="96" SelectionMode="Single" SelectionChanged="BoardAppearancePicker_SelectionChanged" />
+                                                    <TextBlock Margin="4,4,4,0" Text="Board" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                    <ListView x:Name="BoardThemeChoices" MaxHeight="160" SelectionMode="Single" SelectionChanged="BoardAppearancePicker_SelectionChanged" />
+                                                    <TextBlock Margin="4,4,4,0" Text="Pieces" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                    <ListView x:Name="PieceThemeChoices" MaxHeight="160" SelectionMode="Single" SelectionChanged="BoardAppearancePicker_SelectionChanged" />
+                                                    <TextBlock Margin="4,4,4,0" Text="Board size" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                    <ListView x:Name="BoardZoomChoices" MaxHeight="128" SelectionMode="Single" SelectionChanged="BoardZoomPicker_SelectionChanged" />
+                                                    <Grid ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <ProgressRing x:Name="GameAppearanceProgress" Width="16" Height="16" IsActive="False" Visibility="Collapsed" />
+                                                        <TextBlock x:Name="GameAppearanceStatus" Grid.Column="1" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                    </Grid>
+                                                    <Button HorizontalAlignment="Stretch" Click="OpenAppearanceEditor_Click" Content="Open theme editor" />
+                                                    <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="Selections apply to the live board. Use the theme editor to create or import themes." TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                </StackPanel>
+                                            </ScrollViewer>
+                                        </Flyout>
+                                    </FlyoutBase.AttachedFlyout>
+                                </AppBarButton>
+                                <AppBarButton Click="FloatingBoard_Click" Label="Floating board">
+                                    <AppBarButton.Icon><FontIcon Glyph="&#xE7F4;" /></AppBarButton.Icon>
+                                </AppBarButton>
+                                <AppBarButton x:Name="ClaimVictoryButton" Click="ClaimVictory_Click" Label="Claim victory" Visibility="Collapsed" />
+                                <AppBarButton x:Name="ClaimDrawButton" Click="ClaimDraw_Click" Label="Claim draw" />
+                                <AppBarButton x:Name="OpenGameButton" Click="OpenGame_Click" Label="Open on service" />
+                            </CommandBar.SecondaryCommands>
+                        </CommandBar>
+
+                        <Grid Grid.Row="1" Grid.Column="0">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
@@ -986,6 +1060,7 @@
                         </Grid>
 
                         <Border
+                            Grid.Row="1"
                             Grid.Column="1"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -1082,12 +1157,13 @@
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                         Text="Moves"
                                         Style="{StaticResource CaptionTextBlockStyle}" />
-                                    <ListView
-                                        x:Name="MoveListView"
+                                    <ScrollViewer
+                                        x:Name="MoveScrollViewer"
                                         Grid.Row="1"
-                                        Padding="6,0,6,6"
-                                        IsItemClickEnabled="False"
-                                        SelectionMode="None" />
+                                        Padding="8,0,8,6"
+                                        HorizontalScrollBarVisibility="Disabled">
+                                        <StackPanel x:Name="MoveListPanel" Spacing="0" />
+                                    </ScrollViewer>
                                 </Grid>
 
                                 <Rectangle Grid.Row="5" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
@@ -1100,92 +1176,6 @@
                                             <Button x:Name="DeclineOfferButton" Click="DeclineOffer_Click" Content="Decline" />
                                         </StackPanel>
                                     </StackPanel>
-                                    <CommandBar
-                                        HorizontalAlignment="Stretch"
-                                        Background="Transparent"
-                                        DefaultLabelPosition="Collapsed">
-                                <AppBarButton Click="GameAppearance_Click" Label="Appearance">
-                                    <AppBarButton.Icon><FontIcon Glyph="&#xE790;" /></AppBarButton.Icon>
-                                    <FlyoutBase.AttachedFlyout>
-                                        <Flyout x:Name="GameAppearanceFlyout" Placement="TopEdgeAlignedRight">
-                                            <ScrollViewer MaxHeight="680" HorizontalScrollBarVisibility="Disabled">
-                                                <StackPanel Width="320" Spacing="8">
-                                                <TextBlock Margin="4,0,4,4" Text="Quick appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
-                                                <TextBlock Margin="4,0" Text="Provider" Style="{StaticResource CaptionTextBlockStyle}" />
-                                                <ListView
-                                                    x:Name="BoardProviderChoices"
-                                                    MaxHeight="96"
-                                                    SelectionMode="Single"
-                                                    SelectionChanged="BoardAppearancePicker_SelectionChanged" />
-                                                <TextBlock Margin="4,4,4,0" Text="Board" Style="{StaticResource CaptionTextBlockStyle}" />
-                                                <ListView
-                                                    x:Name="BoardThemeChoices"
-                                                    MaxHeight="160"
-                                                    SelectionMode="Single"
-                                                    SelectionChanged="BoardAppearancePicker_SelectionChanged" />
-                                                <TextBlock Margin="4,4,4,0" Text="Pieces" Style="{StaticResource CaptionTextBlockStyle}" />
-                                                <ListView
-                                                    x:Name="PieceThemeChoices"
-                                                    MaxHeight="160"
-                                                    SelectionMode="Single"
-                                                    SelectionChanged="BoardAppearancePicker_SelectionChanged" />
-                                                <TextBlock Margin="4,4,4,0" Text="Board size" Style="{StaticResource CaptionTextBlockStyle}" />
-                                                <ListView
-                                                    x:Name="BoardZoomChoices"
-                                                    MaxHeight="128"
-                                                    SelectionMode="Single"
-                                                    SelectionChanged="BoardZoomPicker_SelectionChanged" />
-                                                <Grid ColumnSpacing="8">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="Auto" />
-                                                        <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <ProgressRing
-                                                        x:Name="GameAppearanceProgress"
-                                                        Width="16"
-                                                        Height="16"
-                                                        IsActive="False"
-                                                        Visibility="Collapsed" />
-                                                    <TextBlock
-                                                        x:Name="GameAppearanceStatus"
-                                                        Grid.Column="1"
-                                                        VerticalAlignment="Center"
-                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                        TextWrapping="Wrap"
-                                                        Style="{StaticResource CaptionTextBlockStyle}" />
-                                                </Grid>
-                                                <Button
-                                                    HorizontalAlignment="Stretch"
-                                                    Click="OpenAppearanceEditor_Click"
-                                                    Content="Open theme editor" />
-                                                <TextBlock
-                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                    Text="Selections apply to the live board. Use the theme editor to create or import themes."
-                                                    TextWrapping="Wrap"
-                                                    Style="{StaticResource CaptionTextBlockStyle}" />
-                                                </StackPanel>
-                                            </ScrollViewer>
-                                        </Flyout>
-                                    </FlyoutBase.AttachedFlyout>
-                                </AppBarButton>
-                                <AppBarButton Click="FloatingBoard_Click" Label="Floating board">
-                                    <AppBarButton.Icon><FontIcon Glyph="&#xE7F4;" /></AppBarButton.Icon>
-                                </AppBarButton>
-                                <AppBarButton x:Name="OfferDrawButton" Click="OfferDraw_Click" Label="Offer draw">
-                                    <AppBarButton.Icon><FontIcon Glyph="&#xE8C2;" /></AppBarButton.Icon>
-                                </AppBarButton>
-                                <AppBarButton x:Name="TakebackButton" Click="OfferTakeback_Click" Label="Request takeback">
-                                    <AppBarButton.Icon><FontIcon Glyph="&#xE7A7;" /></AppBarButton.Icon>
-                                </AppBarButton>
-                                <AppBarButton x:Name="TerminateGameButton" Click="Resign_Click" Label="Resign">
-                                    <AppBarButton.Icon><FontIcon Glyph="&#xE7BA;" /></AppBarButton.Icon>
-                                </AppBarButton>
-                                        <CommandBar.SecondaryCommands>
-                                            <AppBarButton x:Name="ClaimVictoryButton" Click="ClaimVictory_Click" Label="Claim victory" Visibility="Collapsed" />
-                                            <AppBarButton x:Name="ClaimDrawButton" Click="ClaimDraw_Click" Label="Claim draw" />
-                                            <AppBarButton x:Name="OpenGameButton" Click="OpenGame_Click" Label="Open on service" />
-                                        </CommandBar.SecondaryCommands>
-                                    </CommandBar>
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <ProgressRing
                                             x:Name="GameActionProgress"

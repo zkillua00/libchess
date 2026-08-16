@@ -248,6 +248,7 @@ enum Event {
     },
     LiveGameUpdated {
         live_game: Box<LiveGame>,
+        san_moves: Vec<String>,
     },
     LiveGamesChanged,
     LiveGamesUpdated {
@@ -257,6 +258,7 @@ enum Event {
         game_id: String,
         move_id: String,
         board: BoardState,
+        san_moves: Vec<String>,
     },
     MoveSubmitted {
         game_id: String,
@@ -753,12 +755,16 @@ async fn run_worker_with_client(
                                 let task = tokio::spawn(async move {
                                     let events = Arc::new(move |event| match event {
                                         LiveGameEvent::GameUpdated { game } => {
+                                            let san_moves = live_game_san_moves(&game);
                                             if let Ok(mut games) = stream_games.lock() {
                                                 games.insert(game.id.to_string(), (*game).clone());
                                             }
                                             event_sink.emit(
                                                 None,
-                                                Event::LiveGameUpdated { live_game: game },
+                                                Event::LiveGameUpdated {
+                                                    live_game: game,
+                                                    san_moves,
+                                                },
                                             );
                                         }
                                         LiveGameEvent::ChatMessage { message } => event_sink
@@ -796,13 +802,14 @@ async fn run_worker_with_client(
                         offer_draw,
                     } => match MoveSubmission::new(&game_id, &move_id, offer_draw) {
                         Ok(submission) => match predict_move(&latest_games, &game_id, &move_id) {
-                            Ok(board) => {
+                            Ok((board, san_moves)) => {
                                 sink.emit(
                                     request_id,
                                     Event::MovePredicted {
                                         game_id: game_id.clone(),
                                         move_id: move_id.clone(),
                                         board,
+                                        san_moves,
                                     },
                                 );
                                 match client.play_move(submission).await {
@@ -1018,11 +1025,20 @@ fn review_position(review: &GameReview, ply: usize) -> Result<BoardState, LibChe
     Ok(board)
 }
 
+fn live_game_san_moves(game: &LiveGame) -> Vec<String> {
+    libchess_rules::san_moves(
+        game.variant_id.as_str(),
+        &game.initial_fen,
+        &game.state.board.moves,
+    )
+    .unwrap_or_default()
+}
+
 fn predict_move(
     latest_games: &Mutex<BTreeMap<String, LiveGame>>,
     game_id: &str,
     move_id: &str,
-) -> Result<BoardState, LibChessError> {
+) -> Result<(BoardState, Vec<String>), LibChessError> {
     let game = latest_games
         .lock()
         .map_err(|_| {
@@ -1044,15 +1060,23 @@ fn predict_move(
     }
     let mut moves = game.state.board.moves.clone();
     moves.push(move_id.to_owned());
-    libchess_rules::reconstruct(game.variant_id.as_str(), &game.initial_fen, &moves).map_err(
-        |error| {
+    let board = libchess_rules::reconstruct(game.variant_id.as_str(), &game.initial_fen, &moves)
+        .map_err(|error| {
             LibChessError::new(
                 ErrorKind::Provider,
                 format!("could not predict the legal move: {error}"),
                 false,
             )
-        },
-    )
+        })?;
+    let san_moves = libchess_rules::san_moves(game.variant_id.as_str(), &game.initial_fen, &moves)
+        .map_err(|error| {
+            LibChessError::new(
+                ErrorKind::Provider,
+                format!("could not render the predicted move notation: {error}"),
+                false,
+            )
+        })?;
+    Ok((board, san_moves))
 }
 
 async fn stop_independent_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
@@ -1788,13 +1812,28 @@ mod tests {
         .expect("live game fixture");
         let games = Mutex::new(BTreeMap::from([(game.id.to_string(), game)]));
 
-        let predicted = predict_move(&games, "v8BRXYtM", "e2e4").expect("legal prediction");
+        let (predicted, san_moves) =
+            predict_move(&games, "v8BRXYtM", "e2e4").expect("legal prediction");
 
         assert_eq!(predicted.moves, ["e2e4"]);
+        assert_eq!(san_moves, ["e4"]);
         assert_eq!(predicted.turn, PlayerColor::Black);
         assert_eq!(predicted.ply, 1);
         assert!(predicted.pieces.iter().any(|piece| piece.square == "e4"));
         assert!(!predicted.pieces.iter().any(|piece| piece.square == "e2"));
+
+        let event = serde_json::to_value(EventEnvelope {
+            version: API_VERSION,
+            request_id: Some("move-1"),
+            event: Event::MovePredicted {
+                game_id: "v8BRXYtM".to_owned(),
+                move_id: "e2e4".to_owned(),
+                board: predicted,
+                san_moves,
+            },
+        })
+        .expect("predicted move event");
+        assert_eq!(event["san_moves"], serde_json::json!(["e4"]));
 
         let error = predict_move(&games, "v8BRXYtM", "e2e5")
             .expect_err("an illegal move must not be predicted");

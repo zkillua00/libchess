@@ -163,6 +163,7 @@ namespace LibChess::Windows::Wire
         bool black_takeback_offer{ false };
         bool opponent_gone{ false };
         std::optional<std::uint32_t> claim_win_in_seconds;
+        std::vector<winrt::hstring> san_moves;
         BoardState board;
     };
 

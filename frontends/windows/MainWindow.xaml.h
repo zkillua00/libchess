@@ -308,6 +308,7 @@ namespace winrt::LibChess::WinUI::implementation
             live_game_claim_received_times_;
         winrt::hstring current_game_id_;
         std::optional<::LibChess::Windows::Wire::BoardState> move_rollback_board_;
+        std::optional<std::vector<winrt::hstring>> move_rollback_san_moves_;
         std::optional<std::uint64_t> move_rollback_white_time_millis_;
         std::optional<std::uint64_t> move_rollback_black_time_millis_;
         std::chrono::steady_clock::time_point move_rollback_received_at_{};
