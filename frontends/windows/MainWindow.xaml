@@ -168,6 +168,7 @@
                     <NavigationViewItem
                         x:Name="BoardNavigationItem"
                         Content="Games"
+                        IsExpanded="True"
                         Tag="games">
                         <NavigationViewItem.Icon><SymbolIcon Symbol="Play" /></NavigationViewItem.Icon>
                     </NavigationViewItem>
@@ -214,13 +215,100 @@
                             </StackPanel>
                         </NavigationViewItem.Content>
                         <NavigationViewItem.ContextFlyout>
-                            <MenuFlyout>
-                                <MenuFlyoutItem Click="ChangeBackend_Click" Text="Switch service…">
-                                    <MenuFlyoutItem.Icon>
-                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8AB;" />
-                                    </MenuFlyoutItem.Icon>
-                                </MenuFlyoutItem>
-                            </MenuFlyout>
+                            <Flyout x:Name="AccountFlyout" Placement="RightEdgeAlignedBottom">
+                                <StackPanel Width="320" Spacing="16">
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="48" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <PersonPicture
+                                            x:Name="AccountPicture"
+                                            Width="44"
+                                            Height="44"
+                                            VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock
+                                                x:Name="AccountFlyoutName"
+                                                FontWeight="SemiBold"
+                                                TextTrimming="CharacterEllipsis"
+                                                Style="{StaticResource SubtitleTextBlockStyle}" />
+                                            <TextBlock
+                                                x:Name="AccountFlyoutStatus"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="Connected" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <Grid RowSpacing="10" ColumnSpacing="18">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="88" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="Username" />
+                                        <TextBlock
+                                            x:Name="AccountUsernameText"
+                                            Grid.Column="1"
+                                            IsTextSelectionEnabled="True"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Row="1" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="Provider" />
+                                        <TextBlock x:Name="AccountProviderText" Grid.Row="1" Grid.Column="1" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Row="2" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="Account ID" />
+                                        <TextBlock
+                                            x:Name="AccountIdText"
+                                            Grid.Row="2"
+                                            Grid.Column="1"
+                                            FontFamily="Cascadia Mono, Consolas"
+                                            IsTextSelectionEnabled="True"
+                                            TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+
+                                    <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button
+                                            x:Name="AccountRefreshButton"
+                                            Click="RefreshAccount_Click"
+                                            Content="Refresh" />
+                                        <ProgressRing
+                                            x:Name="AccountActionProgress"
+                                            Grid.Column="1"
+                                            Width="16"
+                                            Height="16"
+                                            HorizontalAlignment="Left"
+                                            IsActive="False"
+                                            Visibility="Collapsed" />
+                                        <Button
+                                            x:Name="AccountDisconnectButton"
+                                            Grid.Column="2"
+                                            Click="DisconnectAccount_Click"
+                                            Content="Disconnect" />
+                                    </Grid>
+
+                                    <Button
+                                        x:Name="AccountRemoveCredentialButton"
+                                        HorizontalAlignment="Left"
+                                        Click="RemoveSavedCredential_Click"
+                                        Content="Remove saved credential…" />
+
+                                    <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                    <Button
+                                        HorizontalAlignment="Left"
+                                        Click="ChangeBackend_Click"
+                                        Content="Choose another service…" />
+                                </StackPanel>
+                            </Flyout>
                         </NavigationViewItem.ContextFlyout>
                     </NavigationViewItem>
                 </NavigationView.FooterMenuItems>

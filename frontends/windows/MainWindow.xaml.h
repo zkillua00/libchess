@@ -77,6 +77,15 @@ namespace winrt::LibChess::WinUI::implementation
         void ChangeBackend_Click(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void RefreshAccount_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void DisconnectAccount_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void RemoveSavedCredential_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void OfferDraw_Click(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -141,6 +150,8 @@ namespace winrt::LibChess::WinUI::implementation
         void ConnectUsingSavedCredential();
         winrt::fire_and_forget LaunchAuthorizationAsync(winrt::hstring authorization_url);
         void UpdateBackendAction();
+        void UpdateAccountFlyout();
+        winrt::fire_and_forget ConfirmCredentialRemovalAsync();
         bool AuthorizationUrlIsValid(winrt::hstring const& authorization_url) const;
         static bool CallbackUrlIsValid(winrt::hstring const& callback_url);
         void ReceiveNativeEvent(std::string const& payload);
@@ -286,6 +297,11 @@ namespace winrt::LibChess::WinUI::implementation
         std::unique_ptr<::LibChess::Windows::NativeClient> native_client_;
         std::vector<::LibChess::Windows::Wire::Provider> providers_;
         std::optional<std::size_t> selected_provider_;
+        winrt::hstring account_provider_;
+        winrt::hstring account_id_;
+        winrt::hstring account_username_;
+        winrt::hstring account_title_;
+        winrt::hstring pending_account_request_id_;
         std::optional<::LibChess::Windows::Wire::LiveGame> live_game_;
         std::vector<::LibChess::Windows::Wire::LiveGameSummary> live_game_summaries_;
         std::unordered_map<std::wstring, ::LibChess::Windows::Wire::LiveGame> live_games_;
@@ -349,6 +365,7 @@ namespace winrt::LibChess::WinUI::implementation
         std::chrono::steady_clock::time_point live_game_claim_received_at_{};
         bool live_stream_connected_{ true };
         bool termination_dialog_open_{ false };
+        bool credential_dialog_open_{ false };
         bool populating_board_appearance_{ false };
         bool populating_customization_{ false };
         bool customization_state_restored_{ false };

@@ -658,6 +658,10 @@ namespace winrt::LibChess::WinUI::implementation
                 if (!backend)
                 {
                     selected_provider_.reset();
+                    account_provider_.clear();
+                    account_id_.clear();
+                    account_username_.clear();
+                    account_title_.clear();
                     ClearLiveGames();
                     ShowLauncher();
                     return;
@@ -730,18 +734,15 @@ namespace winrt::LibChess::WinUI::implementation
             if (type == L"account_updated")
             {
                 auto const account = Object(event, L"account");
-                auto const username = String(account, L"username");
-                auto const title = String(account, L"title");
-                AccountName().Text(title.empty()
-                    ? username
-                    : hstring(std::wstring(title) + L" " + std::wstring(username)));
-                auto const service = selected_provider_ && *selected_provider_ < providers_.size()
-                    ? providers_[*selected_provider_].display_name : hstring{};
-                AccountConnection().Text(service.empty()
-                    ? hstring(L"Signed in") : service + L" · Signed in");
-                ToolTipService::SetToolTip(
-                    AccountNavigationItem(),
-                    box_value(AccountName().Text() + L" — " + AccountConnection().Text()));
+                account_provider_ = String(account, L"provider");
+                account_id_ = String(account, L"id");
+                account_username_ = String(account, L"username");
+                account_title_ = String(account, L"title");
+                if (String(event, L"request_id") == pending_account_request_id_)
+                {
+                    pending_account_request_id_.clear();
+                }
+                UpdateAccountFlyout();
                 return;
             }
             if (type == L"connection_state_changed")
@@ -793,8 +794,22 @@ namespace winrt::LibChess::WinUI::implementation
                     oauth_authorizing_ = false;
                     connecting_with_saved_credential_ = false;
                     BackendProgress().Visibility(Visibility::Collapsed);
+                    if (String(event, L"request_id") == pending_account_request_id_)
+                    {
+                        pending_account_request_id_.clear();
+                    }
                     UpdateBackendAction();
-                    if (!selected_provider_)
+                    if (state == L"disconnected")
+                    {
+                        account_provider_.clear();
+                        account_id_.clear();
+                        account_username_.clear();
+                        account_title_.clear();
+                        ClearLiveGames();
+                        UpdateAccountFlyout();
+                        ShowLauncher();
+                    }
+                    else if (!selected_provider_)
                     {
                         ShowLauncher();
                     }
@@ -1101,6 +1116,11 @@ namespace winrt::LibChess::WinUI::implementation
                     pending_export_game_id_.clear();
                     ExportPgnButton().IsEnabled(true);
                     ExportPgnButton().Label(L"Export annotated PGN…");
+                }
+                if (request_id == pending_account_request_id_)
+                {
+                    pending_account_request_id_.clear();
+                    UpdateAccountFlyout();
                 }
                 if (auto const live_request = live_start_requests_.find(std::wstring(request_id));
                     live_request != live_start_requests_.end())
@@ -2121,25 +2141,13 @@ namespace winrt::LibChess::WinUI::implementation
 
     void MainWindow::RefreshLiveGameNavigation()
     {
-        auto const menu = MainNavigation().MenuItems();
-        for (auto index = static_cast<std::int32_t>(menu.Size()) - 1; index >= 0; --index)
-        {
-            auto const item = menu.GetAt(static_cast<std::uint32_t>(index))
-                .try_as<NavigationViewItem>();
-            auto const tag = item ? unbox_value_or<hstring>(item.Tag(), {}) : hstring{};
-            auto const value = std::wstring(tag);
-            if (value.size() > 5 && value.compare(0, 5, L"game:") == 0)
-            {
-                menu.RemoveAt(static_cast<std::uint32_t>(index));
-            }
-        }
-        std::uint32_t insert_index = 2;
+        auto const games = BoardNavigationItem().MenuItems();
+        games.Clear();
         auto append = [&](hstring const& id, hstring const& name, hstring const& detail, bool my_turn)
         {
             NavigationViewItem item;
             item.Tag(box_value(L"game:" + id));
             item.Icon(SymbolIcon(Symbol::Play));
-            item.Margin(Thickness{ 12, 0, 0, 0 });
             if (my_turn)
             {
                 item.InfoBadge(InfoBadge());
@@ -2166,7 +2174,7 @@ namespace winrt::LibChess::WinUI::implementation
             item.Content(content);
             ToolTipService::SetToolTip(item, box_value(my_turn
                 ? name + L" · your move" : name));
-            menu.InsertAt(insert_index++, item);
+            games.Append(item);
         };
 
         bool current_is_listed = false;
@@ -2195,7 +2203,8 @@ namespace winrt::LibChess::WinUI::implementation
                     && live_game_->board.turn == live_game_->player_color);
         }
         BoardNavigationItem().Content(box_value(
-            L"Games (" + winrt::to_hstring(insert_index - 2) + L")"));
+            L"Games (" + winrt::to_hstring(games.Size()) + L")"));
+        BoardNavigationItem().IsExpanded(games.Size() > 0);
         PopulateGamesPage();
         if (!current_game_id_.empty())
         {
@@ -2756,10 +2765,10 @@ namespace winrt::LibChess::WinUI::implementation
     void MainWindow::SelectNavigationForGame(hstring const& game_id)
     {
         auto const wanted = L"game:" + game_id;
-        for (std::uint32_t index = 0; index < MainNavigation().MenuItems().Size(); ++index)
+        auto const games = BoardNavigationItem().MenuItems();
+        for (std::uint32_t index = 0; index < games.Size(); ++index)
         {
-            auto const item = MainNavigation().MenuItems().GetAt(index)
-                .try_as<NavigationViewItem>();
+            auto const item = games.GetAt(index).try_as<NavigationViewItem>();
             if (item && unbox_value_or<hstring>(item.Tag(), {}) == wanted)
             {
                 if (MainNavigation().SelectedItem() != item)
@@ -3389,11 +3398,156 @@ namespace winrt::LibChess::WinUI::implementation
         Microsoft::UI::Xaml::Input::TappedRoutedEventArgs const& args)
     {
         auto const item = sender.as<NavigationViewItem>();
+        UpdateAccountFlyout();
         if (auto const flyout = item.ContextFlyout())
         {
             flyout.ShowAt(item);
             args.Handled(true);
         }
+    }
+
+    void MainWindow::UpdateAccountFlyout()
+    {
+        auto const display_name = account_title_.empty()
+            ? account_username_
+            : account_title_ + L" " + account_username_;
+        ::LibChess::Windows::Wire::Provider const* provider = nullptr;
+        if (selected_provider_ && *selected_provider_ < providers_.size())
+        {
+            provider = &providers_[*selected_provider_];
+        }
+        if (!account_provider_.empty() && (!provider || provider->id != account_provider_))
+        {
+            auto const match = std::find_if(providers_.begin(), providers_.end(),
+                [&](auto const& candidate) { return candidate.id == account_provider_; });
+            if (match != providers_.end())
+            {
+                provider = &*match;
+            }
+        }
+        auto const provider_name = provider ? provider->display_name : hstring{};
+        auto const connected = !account_id_.empty() && !account_username_.empty();
+        auto const pending = !pending_account_request_id_.empty();
+        auto const local = provider && provider->connection_type == L"local";
+        auto const oauth = provider && provider->connection_type == L"oauth_pkce";
+        bool saved_credential = false;
+        if (oauth)
+        {
+            try
+            {
+                saved_credential = ::LibChess::Windows::CredentialStore::Contains(provider->id);
+            }
+            catch (...)
+            {
+            }
+        }
+
+        AccountName().Text(display_name.empty() ? hstring(L"Account") : display_name);
+        AccountConnection().Text(provider_name.empty()
+            ? hstring(L"Signed in") : provider_name + L" · Signed in");
+        AccountPicture().DisplayName(account_username_);
+        AccountFlyoutName().Text(display_name.empty() ? hstring(L"Account") : display_name);
+        AccountFlyoutStatus().Text(pending ? hstring(L"Updating…")
+            : connected ? hstring(L"Connected") : hstring(L"Not connected"));
+        AccountUsernameText().Text(account_username_.empty() ? hstring(L"—") : account_username_);
+        AccountProviderText().Text(provider_name.empty() ? hstring(L"—") : provider_name);
+        AccountIdText().Text(account_id_.empty() ? hstring(L"—") : account_id_);
+        AccountActionProgress().IsActive(pending);
+        AccountActionProgress().Visibility(pending ? Visibility::Visible : Visibility::Collapsed);
+        AccountRefreshButton().Visibility(
+            connected && !local ? Visibility::Visible : Visibility::Collapsed);
+        AccountDisconnectButton().Visibility(
+            connected && !local ? Visibility::Visible : Visibility::Collapsed);
+        AccountRemoveCredentialButton().Visibility(
+            connected && oauth && saved_credential ? Visibility::Visible : Visibility::Collapsed);
+        AccountRefreshButton().IsEnabled(!pending);
+        AccountDisconnectButton().IsEnabled(!pending);
+        AccountRemoveCredentialButton().IsEnabled(!pending);
+        ToolTipService::SetToolTip(
+            AccountNavigationItem(),
+            box_value(AccountName().Text() + L" — " + AccountConnection().Text()));
+    }
+
+    void MainWindow::RefreshAccount_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!pending_account_request_id_.empty() || account_id_.empty())
+        {
+            return;
+        }
+        JsonObject command;
+        command.Insert(L"type", JsonString(L"refresh_account"));
+        pending_account_request_id_ = SendCommand(command);
+        UpdateAccountFlyout();
+    }
+
+    void MainWindow::DisconnectAccount_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!pending_account_request_id_.empty() || account_id_.empty())
+        {
+            return;
+        }
+        AccountFlyout().Hide();
+        JsonObject command;
+        command.Insert(L"type", JsonString(L"disconnect"));
+        pending_account_request_id_ = SendCommand(command);
+    }
+
+    void MainWindow::RemoveSavedCredential_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        ConfirmCredentialRemovalAsync();
+    }
+
+    winrt::fire_and_forget MainWindow::ConfirmCredentialRemovalAsync()
+    {
+        auto lifetime = get_strong();
+        if (credential_dialog_open_ || termination_dialog_open_
+            || !pending_account_request_id_.empty() || !selected_provider_
+            || *selected_provider_ >= providers_.size()
+            || providers_[*selected_provider_].connection_type != L"oauth_pkce")
+        {
+            co_return;
+        }
+        auto const provider_id = providers_[*selected_provider_].id;
+        auto const provider_name = providers_[*selected_provider_].display_name;
+        AccountFlyout().Hide();
+        credential_dialog_open_ = true;
+        ContentDialog dialog;
+        dialog.XamlRoot(RootGrid().XamlRoot());
+        dialog.Title(box_value(L"Remove saved credential?"));
+        dialog.Content(box_value(
+            L"LibChess will disconnect and remove the saved " + provider_name
+            + L" credential from this PC."));
+        dialog.PrimaryButtonText(L"Remove");
+        dialog.CloseButtonText(L"Cancel");
+        dialog.DefaultButton(ContentDialogButton::Close);
+        ContentDialogResult result{ ContentDialogResult::None };
+        try
+        {
+            result = co_await dialog.ShowAsync();
+        }
+        catch (winrt::hresult_error const&)
+        {
+            ShowMessage(L"Windows couldn't show the credential confirmation.");
+        }
+        credential_dialog_open_ = false;
+        if (result != ContentDialogResult::Primary || !selected_provider_
+            || *selected_provider_ >= providers_.size()
+            || providers_[*selected_provider_].id != provider_id)
+        {
+            co_return;
+        }
+        ::LibChess::Windows::CredentialStore::Remove(provider_id);
+        JsonObject command;
+        command.Insert(L"type", JsonString(L"disconnect"));
+        pending_account_request_id_ = SendCommand(command);
+        UpdateBackendAction();
+        ShowMessage(L"The saved credential was removed.", false);
     }
 
     Windows::UI::Color MainWindow::Color(::LibChess::Windows::Wire::RgbaColor const& color)
@@ -5815,7 +5969,7 @@ namespace winrt::LibChess::WinUI::implementation
     winrt::fire_and_forget MainWindow::ConfirmTerminationAsync()
     {
         auto lifetime = get_strong();
-        if (!live_game_ || termination_dialog_open_)
+        if (!live_game_ || termination_dialog_open_ || credential_dialog_open_)
         {
             co_return;
         }
@@ -5862,6 +6016,7 @@ namespace winrt::LibChess::WinUI::implementation
         Windows::Foundation::IInspectable const&,
         Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
+        AccountFlyout().Hide();
         JsonObject command;
         command.Insert(L"type", JsonString(L"clear_backend_selection"));
         SendCommand(command);
