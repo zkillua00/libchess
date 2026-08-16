@@ -52,6 +52,7 @@ public final class LibChessStore: ObservableObject {
     private var pendingGameActionRequests: [String: String] = [:]
     private var pendingGameActionRequestByGame: [String: String] = [:]
     private var predictions: [String: MovePrediction] = [:]
+    private var liveGameSANMoves: [String: [String]] = [:]
     private var pendingGameHistoryRequest: PendingGameHistoryRequest?
     private var pendingGameExportRequests: [String: String] = [:]
     private var pendingGameReviewRequests: [String: String] = [:]
@@ -304,6 +305,15 @@ public final class LibChessStore: ObservableObject {
         predictedBoards[game.id] ?? game.state.board
     }
 
+    public func displayedMoves(for game: LiveGame) -> [String] {
+        let board = displayedBoard(for: game)
+        let sanMoves = predictions[game.id]?.sanMoves ?? liveGameSANMoves[game.id]
+        guard let sanMoves, sanMoves.count == board.moves.count else {
+            return board.moves
+        }
+        return sanMoves
+    }
+
     public func liveGameReceivedAt(_ gameID: String) -> Date? {
         liveGameReceivedDates[gameID]
     }
@@ -543,6 +553,7 @@ public final class LibChessStore: ObservableObject {
             send(StopLiveGameCommand(gameID: gameID))
         }
         liveGames.removeValue(forKey: gameID)
+        liveGameSANMoves.removeValue(forKey: gameID)
         liveGameReceivedDates.removeValue(forKey: gameID)
         chatMessagesByGame.removeValue(forKey: gameID)
         loadingGameIDs.remove(gameID)
@@ -596,6 +607,7 @@ public final class LibChessStore: ObservableObject {
         loadingReviewPositionIDs = []
         focusedGameID = nil
         predictedBoards = [:]
+        liveGameSANMoves = [:]
         liveGameReceivedDates = [:]
         chatMessagesByGame = [:]
         loadingGameIDs = []
@@ -710,7 +722,7 @@ public final class LibChessStore: ObservableObject {
             case "bot_game_created":
                 receiveBotGame(event.game, requestID: event.requestID)
             case "live_game_updated":
-                receiveLiveGame(event.liveGame)
+                receiveLiveGame(event.liveGame, sanMoves: event.sanMoves)
             case "live_games_updated":
                 receiveLiveGames(event.games)
             case "game_history_updated":
@@ -1136,6 +1148,7 @@ public final class LibChessStore: ObservableObject {
         )
         if !preservingSnapshot {
             liveGames.removeValue(forKey: game.id)
+            liveGameSANMoves.removeValue(forKey: game.id)
             liveGameReceivedDates.removeValue(forKey: game.id)
             chatMessagesByGame[game.id] = []
         }
@@ -1149,7 +1162,7 @@ public final class LibChessStore: ObservableObject {
         }
     }
 
-    private func receiveLiveGame(_ game: LiveGame?) {
+    private func receiveLiveGame(_ game: LiveGame?, sanMoves: [String]?) {
         guard let game,
               let provider = connectedProvider,
               game.provider == provider.id,
@@ -1166,6 +1179,7 @@ public final class LibChessStore: ObservableObject {
         }
 
         reconcilePrediction(with: game)
+        liveGameSANMoves[game.id] = sanMoves
         liveGames[game.id] = game
         liveGameReceivedDates[game.id] = Date()
         loadingGameIDs.remove(game.id)
@@ -1406,6 +1420,8 @@ public final class LibChessStore: ObservableObject {
               let board = event.board,
               board.moves == pending.baseMoves + [pending.moveID],
               board.ply == UInt32(pending.baseMoves.count + 1),
+              let sanMoves = event.sanMoves,
+              sanMoves.count == board.moves.count,
               boardStateIsValid(board)
         else {
             return
@@ -1413,7 +1429,8 @@ public final class LibChessStore: ObservableObject {
         predictions[pending.gameID] = MovePrediction(
             requestID: requestID,
             moveID: pending.moveID,
-            baseMoves: pending.baseMoves
+            baseMoves: pending.baseMoves,
+            sanMoves: sanMoves
         )
         predictedBoards[pending.gameID] = board
     }
@@ -1701,6 +1718,7 @@ private struct MovePrediction {
     let requestID: String
     let moveID: String
     let baseMoves: [String]
+    let sanMoves: [String]
 }
 
 private enum PendingBoardCustomizationAction {

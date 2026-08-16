@@ -2093,12 +2093,13 @@ private struct GameInspector: View {
     }
 
     private var movePairs: [MovePair] {
-        stride(from: 0, to: boardState.moves.count, by: 2).map { index in
+        let moves = store.displayedMoves(for: game)
+        return stride(from: 0, to: moves.count, by: 2).map { index in
             MovePair(
                 number: index / 2 + 1,
-                white: boardState.moves[index],
-                black: boardState.moves.indices.contains(index + 1)
-                    ? boardState.moves[index + 1]
+                white: moves[index],
+                black: moves.indices.contains(index + 1)
+                    ? moves[index + 1]
                     : nil
             )
         }

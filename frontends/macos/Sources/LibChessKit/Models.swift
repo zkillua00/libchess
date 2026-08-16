@@ -804,6 +804,7 @@ struct WireEvent: Decodable, Sendable {
     let liveGame: LiveGame?
     let games: [LiveGameSummary]?
     let board: BoardState?
+    let sanMoves: [String]?
     let chat: LiveChatMessage?
     let gameID: String?
     let moveID: String?
@@ -835,6 +836,7 @@ struct WireEvent: Decodable, Sendable {
         case liveGame = "live_game"
         case games
         case board
+        case sanMoves = "san_moves"
         case chat
         case gameID = "game_id"
         case moveID = "move_id"
