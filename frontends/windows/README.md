@@ -49,8 +49,9 @@ persists the selection, and creates or edits portable derived themes. Custom
 piece themes can inherit installed assets or import the six validated SVG
 roles. Theme-library state is saved under `%LOCALAPPDATA%\LibChess` and restored
 through the versioned FFI. A playable live board can also be detached into a
-borderless, square, always-on-top WinUI utility panel that stays out of normal
-window switching and exposes game actions through its context menu.
+titleless, square, always-on-top WinUI utility panel with native edge resizing.
+It stays out of normal window switching and exposes game actions through its
+context menu.
 
 Packaging remains follow-up work.
 

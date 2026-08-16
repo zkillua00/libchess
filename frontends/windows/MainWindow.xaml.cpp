@@ -4564,31 +4564,17 @@ namespace winrt::LibChess::WinUI::implementation
         return menu;
     }
 
-    void MainWindow::ConfigureFloatingBoardResizeRegions()
-    {
-        if (!floating_board_non_client_ || !floating_board_window_) return;
-        auto const size = floating_board_window_.AppWindow().Size();
-        auto const inset = static_cast<std::int32_t>((std::clamp)(
-            static_cast<double>((std::min)(size.Width, size.Height)) * 0.045, 18.0, 24.0));
-        using Microsoft::UI::Input::NonClientRegionKind;
-        auto set = [&](NonClientRegionKind kind, Windows::Graphics::RectInt32 const& rect)
-        {
-            std::array<Windows::Graphics::RectInt32, 1> regions{ rect };
-            floating_board_non_client_.SetRegionRects(kind, regions);
-        };
-        set(NonClientRegionKind::TopBorder, { 0, 0, size.Width, inset });
-        set(NonClientRegionKind::LeftBorder, { 0, 0, inset, size.Height });
-        set(NonClientRegionKind::BottomBorder, { 0, size.Height - inset, size.Width, inset });
-        set(NonClientRegionKind::RightBorder, { size.Width - inset, 0, inset, size.Height });
-    }
-
     void MainWindow::ConfigureFloatingBoardWindow()
     {
         auto const app_window = floating_board_window_.AppWindow();
         app_window.IsShownInSwitchers(false);
         auto const presenter = app_window.Presenter().as<Microsoft::UI::Windowing::OverlappedPresenter>();
-        presenter.SetBorderAndTitleBar(false, false);
+        // Retain Windows' native resize frame but remove the caption completely.
+        // The XAML window also extends through that removed caption area so the
+        // board, rather than an empty title-bar strip, occupies the whole panel.
+        presenter.SetBorderAndTitleBar(true, false);
         presenter.IsAlwaysOnTop(true);
+        presenter.IsResizable(true);
         presenter.IsMaximizable(false);
         presenter.IsMinimizable(false);
 
@@ -4601,6 +4587,8 @@ namespace winrt::LibChess::WinUI::implementation
         SetWindowLongPtrW(floating_hwnd, GWL_EXSTYLE,
             extended_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
         SetWindowLongPtrW(floating_hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner_hwnd));
+        SetWindowPos(floating_hwnd, nullptr, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
         static_cast<void>(DwmSetWindowAttribute(
             floating_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
@@ -4664,14 +4652,19 @@ namespace winrt::LibChess::WinUI::implementation
                 auto const proposed = args.NewWindowRect();
                 auto const operation = args.MoveSizeOperation();
                 if (operation == Microsoft::UI::Input::MoveSizeOperation::Move) return;
-                auto const horizontal = operation == Microsoft::UI::Input::MoveSizeOperation::SizeLeft
-                    || operation == Microsoft::UI::Input::MoveSizeOperation::SizeRight;
-                auto const extent = (std::clamp)(horizontal ? proposed.Width : proposed.Height,
+                using Microsoft::UI::Input::MoveSizeOperation;
+                auto const horizontal = operation == MoveSizeOperation::SizeLeft
+                    || operation == MoveSizeOperation::SizeRight;
+                auto const vertical = operation == MoveSizeOperation::SizeTop
+                    || operation == MoveSizeOperation::SizeBottom;
+                auto const use_width = horizontal || (!vertical
+                    && std::abs(proposed.Width - old_rect.Width)
+                        >= std::abs(proposed.Height - old_rect.Height));
+                auto const extent = (std::clamp)(use_width ? proposed.Width : proposed.Height,
                     minimum, maximum);
                 auto rect = proposed;
                 rect.Width = extent;
                 rect.Height = extent;
-                using Microsoft::UI::Input::MoveSizeOperation;
                 switch (operation)
                 {
                 case MoveSizeOperation::SizeLeft:
@@ -4713,10 +4706,8 @@ namespace winrt::LibChess::WinUI::implementation
         floating_board_rect_changed_token_ = floating_board_non_client_.WindowRectChanged(
             [this](auto const&, auto const&)
             {
-                ConfigureFloatingBoardResizeRegions();
                 SaveFloatingBoardFrame();
             });
-        ConfigureFloatingBoardResizeRegions();
     }
 
     void MainWindow::SaveFloatingBoardFrame()
@@ -4818,6 +4809,7 @@ namespace winrt::LibChess::WinUI::implementation
         floating_board_window_ = Microsoft::UI::Xaml::Window();
         floating_board_window_.Title(L"Floating Chessboard");
         floating_board_window_.SystemBackdrop(nullptr);
+        floating_board_window_.ExtendsContentIntoTitleBar(true);
         floating_board_root_ = Grid();
         floating_board_root_.Background(CreateBrush(Windows::UI::Colors::Transparent()));
         Viewbox viewbox; viewbox.Stretch(Stretch::Uniform);

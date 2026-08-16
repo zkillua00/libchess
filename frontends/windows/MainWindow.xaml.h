@@ -239,7 +239,6 @@ namespace winrt::LibChess::WinUI::implementation
         winrt::fire_and_forget SavePgnAsync(winrt::hstring filename, winrt::hstring pgn);
         void OpenFloatingBoard();
         void ConfigureFloatingBoardWindow();
-        void ConfigureFloatingBoardResizeRegions();
         void SaveFloatingBoardFrame();
         Microsoft::UI::Xaml::Controls::MenuFlyout BuildFloatingBoardMenu();
         void FloatingBoard_PointerPressed(
