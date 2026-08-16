@@ -179,12 +179,64 @@ namespace
         }
     }
 
+    hstring ThemeDisplayName(
+        std::vector<::LibChess::Windows::Wire::BoardProvider> const& providers,
+        hstring const& provider_id,
+        hstring const& theme_id,
+        bool board_theme)
+    {
+        auto const provider = std::find_if(
+            providers.begin(), providers.end(),
+            [&](auto const& candidate) { return candidate.id == provider_id; });
+        if (provider == providers.end())
+        {
+            return theme_id;
+        }
+        auto const& themes = board_theme ? provider->board_themes : provider->piece_themes;
+        auto const theme = std::find_if(
+            themes.begin(), themes.end(),
+            [&](auto const& candidate) { return candidate.id == theme_id; });
+        return theme == themes.end() ? theme_id : theme->display_name;
+    }
+
     void AppendComboItem(ComboBox const& combo, hstring const& title, hstring const& tag)
     {
         ComboBoxItem item;
         item.Content(box_value(title));
         item.Tag(box_value(tag));
         combo.Items().Append(item);
+    }
+
+    hstring ChoiceTag(ListView const& choices)
+    {
+        auto const item = choices.SelectedItem().try_as<ListViewItem>();
+        return item ? unbox_value_or<hstring>(item.Tag(), {}) : hstring{};
+    }
+
+    void AppendChoice(ListView const& choices, hstring const& title, hstring const& tag)
+    {
+        ListViewItem item;
+        item.Content(box_value(title));
+        item.Tag(box_value(tag));
+        choices.Items().Append(item);
+    }
+
+    void SelectChoiceTag(ListView const& choices, hstring const& wanted)
+    {
+        if (ChoiceTag(choices) == wanted)
+        {
+            return;
+        }
+        for (std::uint32_t index = 0; index < choices.Items().Size(); ++index)
+        {
+            auto const item = choices.Items().GetAt(index).try_as<ListViewItem>();
+            if (item && unbox_value_or<hstring>(item.Tag(), {}) == wanted)
+            {
+                choices.SelectedIndex(static_cast<std::int32_t>(index));
+                return;
+            }
+        }
+        choices.SelectedIndex(choices.Items().Size() > 0 ? 0 : -1);
     }
 
     hstring FormatInitialTime(std::uint32_t seconds)
@@ -505,11 +557,20 @@ namespace winrt::LibChess::WinUI::implementation
                     return;
                 }
                 AppearanceProgress().Visibility(Visibility::Collapsed);
+                GameAppearanceProgress().IsActive(false);
+                GameAppearanceProgress().Visibility(Visibility::Collapsed);
                 if (auto const presentation = Object(event, L"board_presentation"))
                 {
+                    pending_board_presentation_request_id_.clear();
                     StopBoardAnimations();
                     board_presentation_ =
                         ::LibChess::Windows::Wire::ParseBoardPresentation(presentation);
+                    ::LibChess::Windows::DiagnosticLog::Write(
+                        L"appearance",
+                        L"Applying board presentation provider=" + board_presentation_.provider
+                            + L", board=" + board_presentation_.board_theme
+                            + L", pieces=" + board_presentation_.piece_theme
+                            + L", assets=" + winrt::to_hstring(board_presentation_.assets.size()) + L".");
                     WritePreference(L"BoardProvider", board_presentation_.provider);
                     WritePreference(L"BoardTheme", board_presentation_.board_theme);
                     WritePreference(L"PieceTheme", board_presentation_.piece_theme);
@@ -529,15 +590,19 @@ namespace winrt::LibChess::WinUI::implementation
                     }
                     else
                     {
-                        SelectComboTag(BoardProviderPicker(), board_presentation_.provider);
-                        SelectComboTag(BoardThemePicker(), board_presentation_.board_theme);
-                        SelectComboTag(PieceThemePicker(), board_presentation_.piece_theme);
+                        SelectChoiceTag(BoardProviderChoices(), board_presentation_.provider);
+                        SelectChoiceTag(BoardThemeChoices(), board_presentation_.board_theme);
+                        SelectChoiceTag(PieceThemeChoices(), board_presentation_.piece_theme);
                     }
                     populating_board_appearance_ = false;
                     UpdateGameInspector();
                     RenderBoard();
                     RenderReviewBoard();
                     RenderAppearancePreview();
+                    GameAppearanceStatus().Text(
+                        L"Applied · " + ThemeDisplayName(
+                            board_providers_, board_presentation_.provider,
+                            board_presentation_.piece_theme, false));
                 }
                 return;
             }
@@ -954,6 +1019,27 @@ namespace winrt::LibChess::WinUI::implementation
                 if (request_id == pending_board_presentation_request_id_)
                 {
                     AppearanceProgress().Visibility(Visibility::Collapsed);
+                    GameAppearanceProgress().IsActive(false);
+                    GameAppearanceProgress().Visibility(Visibility::Collapsed);
+                    pending_board_presentation_request_id_.clear();
+                    auto const message = String(Object(event, L"error"), L"message");
+                    ::LibChess::Windows::DiagnosticLog::Write(
+                        L"appearance", L"Board presentation request failed: " + message);
+                    populating_board_appearance_ = true;
+                    if (AppearancePane().Visibility() == Visibility::Visible)
+                    {
+                        SelectComboTag(SettingsBoardProviderPicker(), board_presentation_.provider);
+                        SelectComboTag(SettingsBoardThemePicker(), board_presentation_.board_theme);
+                        SelectComboTag(SettingsPieceThemePicker(), board_presentation_.piece_theme);
+                    }
+                    else
+                    {
+                        SelectChoiceTag(BoardProviderChoices(), board_presentation_.provider);
+                        SelectChoiceTag(BoardThemeChoices(), board_presentation_.board_theme);
+                        SelectChoiceTag(PieceThemeChoices(), board_presentation_.piece_theme);
+                    }
+                    populating_board_appearance_ = false;
+                    GameAppearanceStatus().Text(L"Could not apply that appearance.");
                 }
                 if (request_id == pending_customization_request_id_)
                 {
@@ -3331,34 +3417,34 @@ namespace winrt::LibChess::WinUI::implementation
         hstring const& board_theme,
         hstring const& piece_theme)
     {
-        BoardThemePicker().Items().Clear();
-        PieceThemePicker().Items().Clear();
+        BoardThemeChoices().Items().Clear();
+        PieceThemeChoices().Items().Clear();
         for (auto const& theme : provider.board_themes)
         {
-            AppendComboItem(BoardThemePicker(), theme.display_name, theme.id);
+            AppendChoice(BoardThemeChoices(), theme.display_name, theme.id);
         }
         for (auto const& theme : provider.piece_themes)
         {
-            AppendComboItem(PieceThemePicker(), theme.display_name, theme.id);
+            AppendChoice(PieceThemeChoices(), theme.display_name, theme.id);
         }
-        SelectComboTag(
-            BoardThemePicker(),
+        SelectChoiceTag(
+            BoardThemeChoices(),
             board_theme.empty() ? provider.default_board_theme : board_theme);
-        SelectComboTag(
-            PieceThemePicker(),
+        SelectChoiceTag(
+            PieceThemeChoices(),
             piece_theme.empty() ? provider.default_piece_theme : piece_theme);
     }
 
     void MainWindow::PopulateBoardAppearance()
     {
         populating_board_appearance_ = true;
-        BoardProviderPicker().Items().Clear();
+        BoardProviderChoices().Items().Clear();
         for (auto const& provider : board_providers_)
         {
-            AppendComboItem(BoardProviderPicker(), provider.display_name, provider.id);
+            AppendChoice(BoardProviderChoices(), provider.display_name, provider.id);
         }
-        SelectComboTag(BoardProviderPicker(), board_presentation_.provider);
-        auto const provider_id = ComboTag(BoardProviderPicker());
+        SelectChoiceTag(BoardProviderChoices(), board_presentation_.provider);
+        auto const provider_id = ChoiceTag(BoardProviderChoices());
         auto const provider = std::find_if(
             board_providers_.begin(), board_providers_.end(),
             [&](auto const& candidate) { return candidate.id == provider_id; });
@@ -3372,20 +3458,20 @@ namespace winrt::LibChess::WinUI::implementation
                     ? board_presentation_.piece_theme : provider->default_piece_theme);
         }
 
-        BoardZoomPicker().Items().Clear();
+        BoardZoomChoices().Items().Clear();
         for (auto const& preset : board_presentation_.zoom_presets)
         {
-            AppendComboItem(BoardZoomPicker(), preset.display_name, preset.id);
+            AppendChoice(BoardZoomChoices(), preset.display_name, preset.id);
         }
         auto saved_zoom = ReadPreference(L"BoardZoom");
         auto const saved_is_valid = std::any_of(
             board_presentation_.zoom_presets.begin(),
             board_presentation_.zoom_presets.end(),
             [&](auto const& preset) { return preset.id == saved_zoom; });
-        SelectComboTag(
-            BoardZoomPicker(),
+        SelectChoiceTag(
+            BoardZoomChoices(),
             saved_is_valid ? saved_zoom : board_presentation_.default_zoom_preset);
-        auto const selected_zoom = ComboTag(BoardZoomPicker());
+        auto const selected_zoom = ChoiceTag(BoardZoomChoices());
         auto const zoom = std::find_if(
             board_presentation_.zoom_presets.begin(),
             board_presentation_.zoom_presets.end(),
@@ -3433,7 +3519,7 @@ namespace winrt::LibChess::WinUI::implementation
         {
             AppendComboItem(SettingsBoardZoomPicker(), preset.display_name, preset.id);
         }
-        SelectComboTag(SettingsBoardZoomPicker(), ComboTag(BoardZoomPicker()));
+        SelectComboTag(SettingsBoardZoomPicker(), ChoiceTag(BoardZoomChoices()));
         populating_board_appearance_ = false;
     }
 
@@ -3461,20 +3547,17 @@ namespace winrt::LibChess::WinUI::implementation
         }
 
         populating_board_appearance_ = true;
-        SelectComboTag(BoardProviderPicker(), provider_id);
+        SelectChoiceTag(BoardProviderChoices(), provider_id);
         PopulateThemeChoices(*provider, board_theme, piece_theme);
         populating_board_appearance_ = false;
-        RequestBoardPresentation(BoardProviderPicker(), BoardThemePicker(), PieceThemePicker());
+        RequestBoardPresentation(provider_id, board_theme, piece_theme);
     }
 
     void MainWindow::RequestBoardPresentation(
-        ComboBox const& provider_picker,
-        ComboBox const& board_picker,
-        ComboBox const& piece_picker)
+        hstring const& provider,
+        hstring const& board_theme,
+        hstring const& piece_theme)
     {
-        auto const provider = ComboTag(provider_picker);
-        auto const board_theme = ComboTag(board_picker);
-        auto const piece_theme = ComboTag(piece_picker);
         if (provider.empty() || board_theme.empty() || piece_theme.empty())
         {
             return;
@@ -3484,8 +3567,15 @@ namespace winrt::LibChess::WinUI::implementation
         command.Insert(L"provider", JsonString(provider));
         command.Insert(L"board_theme", JsonString(board_theme));
         command.Insert(L"piece_theme", JsonString(piece_theme));
+        ::LibChess::Windows::DiagnosticLog::Write(
+            L"appearance",
+            L"Requesting board presentation provider=" + provider
+                + L", board=" + board_theme + L", pieces=" + piece_theme + L".");
         pending_board_presentation_request_id_ = SendCommand(command);
         AppearanceProgress().Visibility(Visibility::Visible);
+        GameAppearanceStatus().Text(L"Applying…");
+        GameAppearanceProgress().Visibility(Visibility::Visible);
+        GameAppearanceProgress().IsActive(true);
     }
 
     void MainWindow::BoardAppearancePicker_SelectionChanged(
@@ -3496,9 +3586,9 @@ namespace winrt::LibChess::WinUI::implementation
         {
             return;
         }
-        if (sender == BoardProviderPicker())
+        if (sender == BoardProviderChoices())
         {
-            auto const provider_id = ComboTag(BoardProviderPicker());
+            auto const provider_id = ChoiceTag(BoardProviderChoices());
             auto const provider = std::find_if(
                 board_providers_.begin(), board_providers_.end(),
                 [&](auto const& candidate) { return candidate.id == provider_id; });
@@ -3511,7 +3601,10 @@ namespace winrt::LibChess::WinUI::implementation
                 *provider, provider->default_board_theme, provider->default_piece_theme);
             populating_board_appearance_ = false;
         }
-        RequestBoardPresentation(BoardProviderPicker(), BoardThemePicker(), PieceThemePicker());
+        RequestBoardPresentation(
+            ChoiceTag(BoardProviderChoices()),
+            ChoiceTag(BoardThemeChoices()),
+            ChoiceTag(PieceThemeChoices()));
     }
 
     void MainWindow::GameAppearance_Click(
@@ -3519,8 +3612,20 @@ namespace winrt::LibChess::WinUI::implementation
         Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
         PopulateBoardAppearance();
+        GameAppearanceStatus().Text(
+            L"Current · " + ThemeDisplayName(
+                board_providers_, board_presentation_.provider,
+                board_presentation_.piece_theme, false));
         Microsoft::UI::Xaml::Controls::Primitives::FlyoutBase::ShowAttachedFlyout(
             sender.as<Microsoft::UI::Xaml::FrameworkElement>());
+    }
+
+    void MainWindow::OpenAppearanceEditor_Click(
+        Windows::Foundation::IInspectable const&,
+        Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        GameAppearanceFlyout().Hide();
+        MainNavigation().SelectedItem(AppearanceNavigationItem());
     }
 
     void MainWindow::SettingsBoardAppearancePicker_SelectionChanged(
@@ -3557,7 +3662,9 @@ namespace winrt::LibChess::WinUI::implementation
             populating_board_appearance_ = false;
         }
         RequestBoardPresentation(
-            SettingsBoardProviderPicker(), SettingsBoardThemePicker(), SettingsPieceThemePicker());
+            ComboTag(SettingsBoardProviderPicker()),
+            ComboTag(SettingsBoardThemePicker()),
+            ComboTag(SettingsPieceThemePicker()));
     }
 
     void MainWindow::BoardZoomPicker_SelectionChanged(
@@ -3568,7 +3675,7 @@ namespace winrt::LibChess::WinUI::implementation
         {
             return;
         }
-        auto const selected = ComboTag(BoardZoomPicker());
+        auto const selected = ChoiceTag(BoardZoomChoices());
         auto const preset = std::find_if(
             board_presentation_.zoom_presets.begin(),
             board_presentation_.zoom_presets.end(),
@@ -3602,7 +3709,7 @@ namespace winrt::LibChess::WinUI::implementation
         board_zoom_scale_percent_ = preset->scale_percent;
         WritePreference(L"BoardZoom", preset->id);
         populating_board_appearance_ = true;
-        SelectComboTag(BoardZoomPicker(), preset->id);
+        SelectChoiceTag(BoardZoomChoices(), preset->id);
         populating_board_appearance_ = false;
         ApplyBoardChrome();
     }

@@ -1107,35 +1107,64 @@
                                 <AppBarButton Click="GameAppearance_Click" Label="Appearance">
                                     <AppBarButton.Icon><FontIcon Glyph="&#xE790;" /></AppBarButton.Icon>
                                     <FlyoutBase.AttachedFlyout>
-                                        <Flyout Placement="TopEdgeAlignedRight">
-                                            <StackPanel Width="280" Spacing="12">
-                                                <TextBlock Text="Board appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
-                                                <ComboBox
-                                                    x:Name="BoardProviderPicker"
-                                                    Header="Provider"
-                                                    HorizontalAlignment="Stretch"
+                                        <Flyout x:Name="GameAppearanceFlyout" Placement="TopEdgeAlignedRight">
+                                            <ScrollViewer MaxHeight="680" HorizontalScrollBarVisibility="Disabled">
+                                                <StackPanel Width="320" Spacing="8">
+                                                <TextBlock Margin="4,0,4,4" Text="Quick appearance" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                                <TextBlock Margin="4,0" Text="Provider" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                <ListView
+                                                    x:Name="BoardProviderChoices"
+                                                    MaxHeight="96"
+                                                    SelectionMode="Single"
                                                     SelectionChanged="BoardAppearancePicker_SelectionChanged" />
-                                                <ComboBox
-                                                    x:Name="BoardThemePicker"
-                                                    Header="Board"
-                                                    HorizontalAlignment="Stretch"
+                                                <TextBlock Margin="4,4,4,0" Text="Board" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                <ListView
+                                                    x:Name="BoardThemeChoices"
+                                                    MaxHeight="160"
+                                                    SelectionMode="Single"
                                                     SelectionChanged="BoardAppearancePicker_SelectionChanged" />
-                                                <ComboBox
-                                                    x:Name="PieceThemePicker"
-                                                    Header="Pieces"
-                                                    HorizontalAlignment="Stretch"
+                                                <TextBlock Margin="4,4,4,0" Text="Pieces" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                <ListView
+                                                    x:Name="PieceThemeChoices"
+                                                    MaxHeight="160"
+                                                    SelectionMode="Single"
                                                     SelectionChanged="BoardAppearancePicker_SelectionChanged" />
-                                                <ComboBox
-                                                    x:Name="BoardZoomPicker"
-                                                    Header="Board size"
-                                                    HorizontalAlignment="Stretch"
+                                                <TextBlock Margin="4,4,4,0" Text="Board size" Style="{StaticResource CaptionTextBlockStyle}" />
+                                                <ListView
+                                                    x:Name="BoardZoomChoices"
+                                                    MaxHeight="128"
+                                                    SelectionMode="Single"
                                                     SelectionChanged="BoardZoomPicker_SelectionChanged" />
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <ProgressRing
+                                                        x:Name="GameAppearanceProgress"
+                                                        Width="16"
+                                                        Height="16"
+                                                        IsActive="False"
+                                                        Visibility="Collapsed" />
+                                                    <TextBlock
+                                                        x:Name="GameAppearanceStatus"
+                                                        Grid.Column="1"
+                                                        VerticalAlignment="Center"
+                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                        TextWrapping="Wrap"
+                                                        Style="{StaticResource CaptionTextBlockStyle}" />
+                                                </Grid>
+                                                <Button
+                                                    HorizontalAlignment="Stretch"
+                                                    Click="OpenAppearanceEditor_Click"
+                                                    Content="Open theme editor" />
                                                 <TextBlock
                                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                    Text="Colors, pieces, spacing, and motion are supplied by LibChess."
+                                                    Text="Selections apply to the live board. Use the theme editor to create or import themes."
                                                     TextWrapping="Wrap"
                                                     Style="{StaticResource CaptionTextBlockStyle}" />
-                                            </StackPanel>
+                                                </StackPanel>
+                                            </ScrollViewer>
                                         </Flyout>
                                     </FlyoutBase.AttachedFlyout>
                                 </AppBarButton>

@@ -34,6 +34,9 @@ namespace winrt::LibChess::WinUI::implementation
         void GameAppearance_Click(
             Windows::Foundation::IInspectable const& sender,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void OpenAppearanceEditor_Click(
+            Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void BoardZoomPicker_SelectionChanged(
             Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
@@ -233,9 +236,9 @@ namespace winrt::LibChess::WinUI::implementation
             winrt::hstring const& piece_theme);
         void RestoreBoardAppearance();
         void RequestBoardPresentation(
-            Microsoft::UI::Xaml::Controls::ComboBox const& provider_picker,
-            Microsoft::UI::Xaml::Controls::ComboBox const& board_picker,
-            Microsoft::UI::Xaml::Controls::ComboBox const& piece_picker);
+            winrt::hstring const& provider,
+            winrt::hstring const& board_theme,
+            winrt::hstring const& piece_theme);
         void PopulateCustomizationEditors();
         void PopulateSettingsAppearance();
         void PopulateBaseThemes(bool board);
